@@ -36,6 +36,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -604,7 +606,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
             topBar = {
                 Row(
                     Modifier.fillMaxWidth()
-                        .background(Panel)
+                        .background(Ink)
                         .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -640,7 +642,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 }
             },
             bottomBar = {
-                Column(Modifier.fillMaxWidth().background(Panel).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)).padding(horizontal = 14.dp, vertical = 9.dp)) {
+                Column(Modifier.fillMaxWidth().background(Ink).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)).padding(horizontal = 12.dp, vertical = 8.dp)) {
                     if (vm.pendingAttachments.isNotEmpty()) {
                         Column(Modifier.fillMaxWidth().padding(bottom = 7.dp)) {
                             vm.pendingAttachments.forEachIndexed { index, attachment ->
@@ -674,8 +676,8 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         }
                     }
                     Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
-                            .background(PanelRaised).padding(start = 8.dp, end = 7.dp, top = 7.dp, bottom = 7.dp),
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp))
+                            .background(PanelRaised).padding(start = 7.dp, end = 7.dp, top = 7.dp, bottom = 7.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(
@@ -700,7 +702,8 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                             value = input,
                             onValueChange = { input = it },
                             modifier = Modifier.weight(1f).padding(vertical = 10.dp),
-                            textStyle = androidx.compose.ui.text.TextStyle(color = MainText, fontSize = 15.sp),
+                            textStyle = androidx.compose.ui.text.TextStyle(color = MainText, fontSize = 15.sp, lineHeight = 21.sp),
+                            maxLines = 6,
                             decorationBox = { inner ->
                                 Box {
                                     if (input.isEmpty()) Text("Напишите сообщение…", color = Muted, fontSize = 14.sp)
@@ -769,11 +772,11 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         items(lines) { line ->
                             val isUser = line.role == "user"
                             Column(Modifier.fillMaxWidth(), horizontalAlignment = if (isUser) Alignment.End else Alignment.Start) {
-                                Text(if (isUser) "ВЫ" else "NEXUS", color = if (isUser) Blue else Violet, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp, modifier = Modifier.padding(horizontal = 5.dp, vertical = 5.dp))
+                                if (isUser) Spacer(Modifier.height(2.dp))
                                 Surface(
-                                    color = if (isUser) PanelRaised else Ink,
-                                    shape = RoundedCornerShape(18.dp),
-                                    modifier = Modifier.widthIn(max = 340.dp)
+                                    color = if (isUser) PanelRaised else Color.Transparent,
+                                    shape = RoundedCornerShape(22.dp),
+                                    modifier = Modifier.widthIn(max = if (isUser) 340.dp else 520.dp)
                                 ) {
                                     if (isUser) {
                                         Column(Modifier.padding(horizontal = 15.dp, vertical = 13.dp)) {
@@ -846,42 +849,116 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     }
 
     if (showHistory) {
-        ModalBottomSheet(
+        Dialog(
             onDismissRequest = { showHistory = false },
-            containerColor = Panel,
-            contentColor = MainText,
-            dragHandle = { BottomSheetDefaults.DragHandle(color = Muted) }
+            properties = DialogProperties(usePlatformDefaultWidth = false)
         ) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 28.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("История диалогов", fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { vm.createChat(); showHistory = false }) { Text("+ Новый чат", color = Violet) }
-                }
-                Spacer(Modifier.height(12.dp))
-                if (vm.chats.isEmpty()) {
-                    Text("Пока нет сохранённых диалогов.", color = Muted, modifier = Modifier.padding(vertical = 20.dp))
-                }
-                vm.chats.forEach { chat ->
-                    Surface(
-                        color = if (chat.id == vm.activeChatId) Color(0xFF35272A) else PanelRaised,
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterStart) {
+                Surface(
+                    modifier = Modifier.fillMaxHeight().width(316.dp),
+                    color = Panel,
+                    shape = RoundedCornerShape(topEnd = 22.dp, bottomEnd = 22.dp),
+                    tonalElevation = 8.dp
+                ) {
+                    Column(
+                        Modifier.fillMaxSize()
+                            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Bottom))
+                            .padding(horizontal = 14.dp, vertical = 12.dp)
                     ) {
-                        Column(Modifier.padding(12.dp)) {
-                            Text(chat.title, color = MainText, fontSize = 14.sp, fontWeight = FontWeight.Medium, modifier = Modifier.fillMaxWidth().clickable {
-                                vm.selectChat(chat.id); showHistory = false
-                            })
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("${chat.lines.size} сообщений", color = Muted, fontSize = 10.sp, modifier = Modifier.weight(1f))
-                                TextButton(onClick = {
-                                    renameTarget = chat
-                                    renameValue = chat.title
-                                }, contentPadding = PaddingValues(horizontal = 7.dp)) { Text("Изменить", color = Blue, fontSize = 11.sp) }
-                                TextButton(onClick = { vm.deleteChat(chat.id) }, contentPadding = PaddingValues(horizontal = 7.dp)) { Text("Удалить", color = Color(0xFFFF8798), fontSize = 11.sp) }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("NEXUS", color = MainText, fontWeight = FontWeight.Bold, fontSize = 19.sp, letterSpacing = 1.2.sp)
+                                Text("AI MAX", color = Violet, fontSize = 10.sp, letterSpacing = 2.sp, fontWeight = FontWeight.Bold)
+                            }
+                            IconButton(onClick = { showHistory = false }) {
+                                Text("×", color = Muted, fontSize = 25.sp)
+                            }
+                        }
+                        Spacer(Modifier.height(18.dp))
+                        Surface(
+                            color = PanelRaised,
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                vm.createChat()
+                                input = ""
+                                showHistory = false
+                            }
+                        ) {
+                            Row(Modifier.padding(horizontal = 14.dp, vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("+", color = MainText, fontSize = 21.sp)
+                                Spacer(Modifier.width(12.dp))
+                                Text("Новый чат", color = MainText, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            }
+                        }
+                        Spacer(Modifier.height(24.dp))
+                        Text("ИСТОРИЯ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp, modifier = Modifier.padding(start = 8.dp, bottom = 9.dp))
+                        if (vm.chats.isEmpty()) {
+                            Text("Пока нет сохранённых диалогов.", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(8.dp))
+                        } else {
+                            LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                items(vm.chats) { chat ->
+                                    Surface(
+                                        color = if (chat.id == vm.activeChatId) AccentSoft.copy(alpha = 0.38f) else Color.Transparent,
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(Modifier.padding(start = 11.dp, end = 5.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Column(Modifier.weight(1f).clickable {
+                                                vm.selectChat(chat.id)
+                                                showHistory = false
+                                            }) {
+                                                Text(chat.title, color = MainText, fontSize = 13.sp, maxLines = 1)
+                                                Text("${chat.lines.size} сообщений", color = Muted, fontSize = 10.sp)
+                                            }
+                                            var menuExpanded by remember(chat.id) { mutableStateOf(false) }
+                                            Box {
+                                                IconButton(onClick = { menuExpanded = true }) {
+                                                    Text("⋯", color = Muted, fontSize = 20.sp)
+                                                }
+                                                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                                                    DropdownMenuItem(
+                                                        text = { Text("Переименовать", color = MainText) },
+                                                        onClick = {
+                                                            renameTarget = chat
+                                                            renameValue = chat.title
+                                                            menuExpanded = false
+                                                        }
+                                                    )
+                                                    DropdownMenuItem(
+                                                        text = { Text("Удалить", color = Color(0xFFE28B93)) },
+                                                        onClick = {
+                                                            vm.deleteChat(chat.id)
+                                                            menuExpanded = false
+                                                        }
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Divider(color = DividerTone, modifier = Modifier.padding(vertical = 10.dp))
+                        Surface(
+                            color = Color.Transparent,
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                url = vm.settings.baseUrl
+                                model = vm.settings.model
+                                key = vm.settings.apiKey
+                                showSettings = true
+                                showHistory = false
+                            },
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("⚙", color = Muted, fontSize = 17.sp)
+                                Spacer(Modifier.width(12.dp))
+                                Text("Настройки", color = MainText, fontSize = 13.sp)
                             }
                         }
                     }
                 }
+                Box(Modifier.fillMaxSize().padding(start = 316.dp).clickable { showHistory = false })
             }
         }
     }
