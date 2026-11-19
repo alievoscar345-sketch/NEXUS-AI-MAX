@@ -38,6 +38,10 @@ jobs:
 
       - name: Extract project
         run: unzip -q NEXUS_AI_MAX_0.2.0_source.zip
+      - name: Fix Kotlin visibility
+        run: |
+          sed -i 's/private data class ApiSettings/data class ApiSettings/' NEXUS_MAX/app/src/main/java/ai/nexus/max/MainActivity.kt
+          sed -i 's/private data class ChatLine/data class ChatLine/' NEXUS_MAX/app/src/main/java/ai/nexus/max/MainActivity.kt
       - name: Fix Java and Kotlin targets
         run: |
           cat >> NEXUS_MAX/app/build.gradle.kts <<'EOF'
