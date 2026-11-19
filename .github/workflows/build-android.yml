@@ -57,6 +57,19 @@ jobs:
         working-directory: NEXUS_MAX
         run: gradle --no-daemon :app:assembleDebug
 
+      - name: Upload source snapshot for development
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXUS-source-snapshot
+          path: |
+            NEXUS_MAX/app/src/main/**
+            NEXUS_MAX/app/build.gradle.kts
+            NEXUS_MAX/build.gradle.kts
+            NEXUS_MAX/settings.gradle.kts
+            NEXUS_MAX/gradle.properties
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
