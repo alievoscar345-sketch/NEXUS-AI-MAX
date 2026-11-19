@@ -636,6 +636,130 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         prefs.edit().putString("chats_json", array.toString()).apply()
     }
 
+    fun exportBackup(uri: Uri) {
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val root = JSONObject()
+                        .put("format", "nexus-ai-max-backup")
+                        .put("schemaVersion", 1)
+                        .put("exportedAt", System.currentTimeMillis())
+                    val chatArray = JSONArray()
+                    chats.forEach { chat ->
+                        val lineArray = JSONArray()
+                        chat.lines.forEach { line ->
+                            val attachmentArray = JSONArray()
+                            line.attachments.forEach { attachment ->
+                                val item = JSONObject()
+                                    .put("name", attachment.name)
+                                    .put("mimeType", attachment.mimeType)
+                                    .put("textContent", attachment.textContent)
+                                val source = attachment.localPath.takeIf { it.isNotBlank() }?.let { File(it) }
+                                if (source != null && source.isFile) {
+                                    item.put("fileBase64", Base64.encodeToString(source.readBytes(), Base64.NO_WRAP))
+                                }
+                                attachmentArray.put(item)
+                            }
+                            val lineObject = JSONObject()
+                                .put("role", line.role)
+                                .put("content", line.content)
+                                .put("attachments", attachmentArray)
+                            line.providerMessagesJson?.let { lineObject.put("providerMessagesJson", it) }
+                            lineArray.put(lineObject)
+                        }
+                        chatArray.put(
+                            JSONObject().put("id", chat.id).put("title", chat.title)
+                                .put("updatedAt", chat.updatedAt).put("isPinned", chat.isPinned)
+                                .put("lines", lineArray)
+                        )
+                    }
+                    root.put("chats", chatArray)
+                    val output = getApplication<Application>().contentResolver.openOutputStream(uri)
+                        ?: throw IllegalStateException("Не удалось открыть файл для записи.")
+                    output.bufferedWriter(Charsets.UTF_8).use { it.write(root.toString()) }
+                }
+                error = "Резервная копия успешно сохранена. API-ключи в неё не входят."
+            } catch (e: Exception) {
+                error = "Экспорт не выполнен: " + (e.message ?: "ошибка записи файла")
+            }
+        }
+    }
+
+    fun importBackup(uri: Uri) {
+        viewModelScope.launch {
+            try {
+                val restoredChats = withContext(Dispatchers.IO) {
+                    val resolver = getApplication<Application>().contentResolver
+                    val raw = resolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+                        ?: throw IllegalStateException("Не удалось прочитать выбранный файл.")
+                    if (raw.length > 120 * 1024 * 1024) throw IllegalStateException("Файл резервной копии превышает 120 МБ.")
+                    val root = JSONObject(raw)
+                    if (root.optString("format") != "nexus-ai-max-backup" || root.optInt("schemaVersion") != 1) {
+                        throw IllegalArgumentException("Формат или версия резервной копии не поддерживается.")
+                    }
+                    val sourceChats = root.optJSONArray("chats")
+                        ?: throw IllegalArgumentException("В резервной копии отсутствует список чатов.")
+                    val attachmentDir = File(getApplication<Application>().filesDir, "nexus_attachments").apply { mkdirs() }
+                    val createdFiles = mutableListOf<File>()
+                    try {
+                        val result = (0 until sourceChats.length()).map { chatIndex ->
+                            val chat = sourceChats.getJSONObject(chatIndex)
+                            val sourceLines = chat.optJSONArray("lines") ?: JSONArray()
+                            val lines = (0 until sourceLines.length()).map { lineIndex ->
+                                val line = sourceLines.getJSONObject(lineIndex)
+                                val sourceAttachments = line.optJSONArray("attachments") ?: JSONArray()
+                                val attachments = (0 until sourceAttachments.length()).map { attachmentIndex ->
+                                    val attachment = sourceAttachments.getJSONObject(attachmentIndex)
+                                    val encoded = attachment.optString("fileBase64", "")
+                                    val localPath = if (encoded.isNotBlank()) {
+                                        val bytes = Base64.decode(encoded, Base64.DEFAULT)
+                                        val safeName = attachment.optString("name", "attachment")
+                                            .substringAfterLast('/').substringAfterLast('\\')
+                                            .replace(Regex("[^A-Za-z0-9._-]"), "_").take(80)
+                                        val file = File(attachmentDir, "restored_" + UUID.randomUUID() + "_" + safeName)
+                                        FileOutputStream(file).use { it.write(bytes) }
+                                        createdFiles.add(file)
+                                        file.absolutePath
+                                    } else ""
+                                    ChatAttachment(
+                                        attachment.optString("name", "attachment"),
+                                        attachment.optString("mimeType", "application/octet-stream"),
+                                        localPath,
+                                        attachment.optString("textContent", "")
+                                    )
+                                }
+                                ChatLine(
+                                    line.optString("role", "user"),
+                                    line.optString("content", ""),
+                                    attachments,
+                                    line.optString("providerMessagesJson", "").takeIf { it.isNotBlank() }
+                                )
+                            }
+                            ChatSession(
+                                chat.optString("id", UUID.randomUUID().toString()),
+                                chat.optString("title", "Диалог"),
+                                chat.optLong("updatedAt", System.currentTimeMillis()),
+                                lines,
+                                chat.optBoolean("isPinned", false)
+                            )
+                        }.sortedWith(compareByDescending<ChatSession> { it.isPinned }.thenByDescending { it.updatedAt })
+                        result
+                    } catch (e: Exception) {
+                        createdFiles.forEach { it.delete() }
+                        throw e
+                    }
+                }
+                chats = restoredChats
+                activeChatId = chats.firstOrNull()?.id
+                saveChats()
+                if (chats.isEmpty()) createChat()
+                error = "Импорт завершён: восстановлено чатов — ${chats.size}. Текущая история заменена данными из копии."
+            } catch (e: Exception) {
+                error = "Импорт не выполнен: " + (e.message ?: "неверная резервная копия")
+            }
+        }
+    }
+
     private fun loadChats(): List<ChatSession> {
         return try {
             val array = JSONArray(prefs.getString("chats_json", "[]") ?: "[]")
@@ -733,6 +857,13 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     }
     val documentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { vm.addAttachment(it) }
+    }
+    val backupExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        uri?.let { vm.exportBackup(it) }
+    }
+    var pendingBackupImport by remember { mutableStateOf<Uri?>(null) }
+    val backupImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        pendingBackupImport = uri
     }
     val context = LocalContext.current
     var ttsReady by remember { mutableStateOf(false) }
@@ -1367,6 +1498,16 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
             title = { Text("Подключение API", color = MainText) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Text("РЕЗЕРВНАЯ КОПИЯ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text("Экспорт сохраняет чаты и доступные вложения. API-ключи не экспортируются. Импорт заменяет текущую историю.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { backupExportLauncher.launch("NEXUS-backup.json") }) {
+                            Text("Экспорт", color = MainText)
+                        }
+                        OutlinedButton(onClick = { backupImportLauncher.launch(arrayOf("application/json", "text/*")) }) {
+                            Text("Импорт", color = MainText)
+                        }
+                    }
                     Text("ПРОВАЙДЕР", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(selected = selectedProvider == "AnyModel", onClick = { selectedProvider = "AnyModel" }, label = { Text("AnyModel") })
@@ -1425,6 +1566,24 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 }) { Text("Сохранить", color = Violet) }
             },
             dismissButton = { TextButton(onClick = { showSettings = false }) { Text("Отмена", color = Muted) } }
+        )
+    }
+
+    pendingBackupImport?.let { backupUri ->
+        AlertDialog(
+            onDismissRequest = { pendingBackupImport = null },
+            containerColor = Panel,
+            title = { Text("Заменить историю чатов?", color = MainText) },
+            text = { Text("Импорт заменит все текущие чаты и сообщения данными из выбранной резервной копии. Перед продолжением убедись, что экспорт текущей истории уже сохранён.", color = Muted) },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingBackupImport = null
+                    vm.importBackup(backupUri)
+                }) { Text("Заменить и импортировать", color = AccentRed) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingBackupImport = null }) { Text("Отмена", color = Muted) }
+            }
         )
     }
 
