@@ -53,13 +53,15 @@ import com.mikepenz.markdown.compose.elements.MarkdownHighlightedCodeBlock
 import com.mikepenz.markdown.compose.elements.MarkdownHighlightedCodeFence
 import org.intellij.markdown.ast.ASTNode
 
-private val Ink = Color(0xFF212121)
-private val Panel = Color(0xFF212121)
-private val PanelRaised = Color(0xFF303030)
-private val Violet = Color(0xFF10A37F)
-private val Blue = Color(0xFFD1D5DB)
-private val MainText = Color(0xFFECECEC)
-private val Muted = Color(0xFF9B9B9B)
+private val Ink = Color(0xFF0D0D0D)
+private val Panel = Color(0xFF171717)
+private val PanelRaised = Color(0xFF242222)
+private val Violet = Color(0xFF87313A)
+private val Blue = Color(0xFFB9B5B5)
+private val MainText = Color(0xFFF0EEEE)
+private val Muted = Color(0xFF969090)
+private val AccentSoft = Color(0xFF5D252B)
+private val DividerTone = Color(0xFF30282A)
 
 data class ChatAttachment(
     val name: String,
@@ -406,6 +408,11 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+        androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
         setContent { NexusApp() }
     }
 }
@@ -442,8 +449,8 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 Row(
                     Modifier.fillMaxWidth()
                         .background(Panel)
-                        .windowInsetsPadding(WindowInsets.statusBars)
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     TextButton(
@@ -454,8 +461,8 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     }
                     Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
-                        Text("NEXUS", color = MainText, fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
-                        Text("AI MAX", color = Muted, fontSize = 10.sp)
+                        Text("NEXUS", color = MainText, fontWeight = FontWeight.Bold, fontSize = 17.sp, letterSpacing = 1.1.sp)
+                        Text("AI MAX", color = Violet, fontSize = 10.sp, letterSpacing = 1.7.sp, fontWeight = FontWeight.SemiBold)
                     }
                     TextButton(
                         onClick = { vm.createChat(); input = "" },
@@ -477,14 +484,14 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 }
             },
             bottomBar = {
-                Column(Modifier.fillMaxWidth().background(Panel).windowInsetsPadding(WindowInsets.navigationBars).padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Column(Modifier.fillMaxWidth().background(Panel).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)).padding(horizontal = 14.dp, vertical = 9.dp)) {
                     if (vm.pendingAttachments.isNotEmpty()) {
                         Column(Modifier.fillMaxWidth().padding(bottom = 7.dp)) {
                             vm.pendingAttachments.forEachIndexed { index, attachment ->
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(attachment.name, color = Blue, fontSize = 10.sp, modifier = Modifier.weight(1f), maxLines = 1)
                                     TextButton(onClick = { vm.removePendingAttachment(index) }, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp)) {
-                                        Text("Убрать", color = Color(0xFFFF8798), fontSize = 10.sp)
+                                        Text("Убрать", color = Color(0xFFC77B83), fontSize = 10.sp)
                                     }
                                 }
                             }
@@ -522,7 +529,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                             onClick = { vm.send(input); input = "" },
                             shape = RoundedCornerShape(16.dp),
                             contentPadding = PaddingValues(horizontal = 17.dp, vertical = 12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Violet, disabledContainerColor = Color(0xFF343044))
+                            colors = ButtonDefaults.buttonColors(containerColor = Violet, disabledContainerColor = Color(0xFF3A292B))
                         ) {
                             Text(if (vm.busy) "…" else "↑", fontSize = 20.sp, fontWeight = FontWeight.Bold)
                         }
@@ -538,8 +545,8 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
         ) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
                 vm.error?.let { message ->
-                    Surface(color = Color(0xFF3A202A), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
-                        Text(message, color = Color(0xFFFFA6B4), fontSize = 12.sp, modifier = Modifier.padding(12.dp))
+                    Surface(color = Color(0xFF321D20), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
+                        Text(message, color = Color(0xFFD69A9F), fontSize = 12.sp, modifier = Modifier.padding(12.dp))
                     }
                 }
                 val chat = vm.activeChat
@@ -552,10 +559,10 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     ) {
                         Box(
                             Modifier.size(54.dp).clip(RoundedCornerShape(18.dp))
-                                .background(Brush.linearGradient(listOf(Violet.copy(alpha = 0.25f), Blue.copy(alpha = 0.15f)))),
+                                .background(Brush.linearGradient(listOf(Violet.copy(alpha = 0.34f), AccentSoft.copy(alpha = 0.18f)))),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text("✳", color = Violet, fontSize = 28.sp)
+                            Text("N", color = MainText, fontSize = 27.sp, fontWeight = FontWeight.Black)
                         }
                         Spacer(Modifier.height(22.dp))
                         Text("ДУМАЙ ШИРЕ.", color = Muted, fontSize = 11.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Bold)
@@ -672,7 +679,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 }
                 vm.chats.forEach { chat ->
                     Surface(
-                        color = if (chat.id == vm.activeChatId) Color(0xFF343434) else PanelRaised,
+                        color = if (chat.id == vm.activeChatId) Color(0xFF35272A) else PanelRaised,
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                     ) {
