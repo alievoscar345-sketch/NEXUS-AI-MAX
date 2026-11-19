@@ -42,7 +42,18 @@ jobs:
       - name: Install Android packages
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
 
-      - name: Build signed release APK or debug fallback
+      - name: Build debug APK for safe migration
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXUS-AI-MAX-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build signed release APK
         shell: bash
         run: |
           if [[ -n "$NEXUS_KEYSTORE_BASE64" && -n "$NEXUS_KEYSTORE_PASSWORD" && -n "$NEXUS_KEY_ALIAS" && -n "$NEXUS_KEY_PASSWORD" ]]; then
@@ -54,16 +65,16 @@ jobs:
               gradle --no-daemon :app:assembleRelease
             echo "APK_VARIANT=release" >> "$GITHUB_ENV"
           else
-            echo "::warning::Release signing secrets are not configured. Building a debug APK; it may not update an APK signed with another key."
-            gradle --no-daemon :app:assembleDebug
+            echo "::warning::Release signing secrets are not configured. Release APK was not built."
             echo "APK_VARIANT=debug" >> "$GITHUB_ENV"
           fi
 
-      - name: Upload APK
+      - name: Upload release APK
+        if: env.APK_VARIANT == 'release'
         uses: actions/upload-artifact@v4
         with:
-          name: NEXUS-AI-MAX-${{ env.APK_VARIANT }}-apk
-          path: app/build/outputs/apk/**/*.apk
+          name: NEXUS-AI-MAX-release-apk
+          path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
 
