@@ -245,7 +245,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                             val textPart = buildString {
                                 append(line.content)
                                 textAttachments.forEach { file ->
-                                    append("\\n\\n[Прикреплённый файл: ")
+                                    append("\n\n[Прикреплённый файл: ")
                                     append(file.name)
                                     append("]\n")
                                     append(file.textContent)
@@ -360,7 +360,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 val textPart = buildString {
                     append(line.content)
                     textAttachments.forEach { file ->
-                        append("\\n\\n[Прикреплённый файл: ")
+                        append("\n\n[Прикреплённый файл: ")
                         append(file.name)
                         append("]\n")
                         append(file.textContent)
