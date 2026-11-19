@@ -75,8 +75,10 @@ data class ChatAttachment(
 data class ChatLine(
     val role: String,
     val content: String,
-    val attachments: List<ChatAttachment> = emptyList()
+    val attachments: List<ChatAttachment> = emptyList(),
+    val providerMessagesJson: String? = null
 )
+data class WebSearchAnswer(val text: String, val providerMessagesJson: String)
 data class ChatSession(
     val id: String,
     val title: String,
@@ -199,7 +201,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         error = message
     }
 
-    fun send(text: String) {
+    fun send(text: String, useWebSearch: Boolean = false) {
         if (busy || (text.isBlank() && pendingAttachments.isEmpty())) return
         val cfg = settings
         if (cfg.apiKey.isBlank() || cfg.model.isBlank()) {
@@ -222,10 +224,16 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         busy = true
         error = null
         var streamedAnswer = ""
+        var providerMessagesJson: String? = null
 
         viewModelScope.launch {
             try {
-                val answer = withContext(Dispatchers.IO) {
+                val answer = if (useWebSearch) {
+                    val result = withContext(Dispatchers.IO) { requestWithWebSearch(cfg, history) }
+                    providerMessagesJson = result.providerMessagesJson
+                    result.text
+                } else {
+                    withContext(Dispatchers.IO) {
                     val messages = JSONArray().put(
                         JSONObject().put("role", "system").put("content", SYSTEM_PROMPT)
                     )
@@ -315,7 +323,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 if (latest != null) updateChat(
                     chatId,
                     latest.copy(
-                        lines = latest.lines.dropLast(1) + ChatLine("assistant", answer),
+                        lines = latest.lines.dropLast(1) + ChatLine("assistant", answer, providerMessagesJson = providerMessagesJson),
                         updatedAt = System.currentTimeMillis()
                     )
                 )
@@ -331,6 +339,132 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 busy = false
             }
         }
+    }
+
+
+    private fun requestWithWebSearch(cfg: ApiSettings, history: List<ChatLine>): WebSearchAnswer {
+        val messages = JSONArray()
+        history.takeLast(24).forEach { line ->
+            if (line.role == "assistant" && !line.providerMessagesJson.isNullOrBlank()) {
+                val preserved = JSONArray(line.providerMessagesJson)
+                for (i in 0 until preserved.length()) {
+                    messages.put(preserved.getJSONObject(i))
+                }
+                return@forEach
+            }
+
+            val imageAttachments = line.attachments.filter { it.mimeType.startsWith("image/") }
+            val textAttachments = line.attachments.filter { it.textContent.isNotBlank() }
+            if (line.role == "user" && (imageAttachments.isNotEmpty() || textAttachments.isNotEmpty())) {
+                val parts = JSONArray()
+                val textPart = buildString {
+                    append(line.content)
+                    textAttachments.forEach { file ->
+                        append("\\n\\n[Прикреплённый файл: ")
+                        append(file.name)
+                        append("]\\n")
+                        append(file.textContent)
+                    }
+                }
+                if (textPart.isNotBlank()) {
+                    parts.put(JSONObject().put("type", "text").put("text", textPart))
+                }
+                imageAttachments.forEach { image ->
+                    val bytes = File(image.localPath).readBytes()
+                    val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                    parts.put(
+                        JSONObject().put("type", "image")
+                            .put("source", JSONObject()
+                                .put("type", "base64")
+                                .put("media_type", image.mimeType)
+                                .put("data", encoded))
+                    )
+                }
+                messages.put(JSONObject().put("role", "user").put("content", parts))
+            } else {
+                messages.put(JSONObject().put("role", line.role).put("content", line.content))
+            }
+        }
+
+        val tools = JSONArray().put(
+            JSONObject()
+                .put("type", "web_search_20250305")
+                .put("name", "web_search")
+                .put("max_uses", 2)
+        )
+        val preservedAssistantMessages = JSONArray()
+
+        for (attempt in 0 until 3) {
+            val body = JSONObject()
+                .put("model", cfg.model)
+                .put("max_tokens", 4096)
+                .put("system", SYSTEM_PROMPT)
+                .put("messages", messages)
+                .put("tools", tools)
+
+            val request = Request.Builder()
+                .url(cfg.baseUrl + "/messages")
+                .header("x-api-key", cfg.apiKey)
+                .header("anthropic-version", "2023-06-01")
+                .header("Content-Type", "application/json")
+                .post(body.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+
+            val payloadText = client.newCall(request).execute().use { response ->
+                val raw = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    throw IllegalStateException("Поиск API " + response.code + ": " + raw.take(350))
+                }
+                raw
+            }
+            val payload = JSONObject(payloadText)
+            val content = payload.optJSONArray("content")
+                ?: throw IllegalStateException("Anthropic API вернул ответ без content.")
+            val assistantMessage = JSONObject().put("role", "assistant").put("content", content)
+            preservedAssistantMessages.put(assistantMessage)
+            messages.put(assistantMessage)
+
+            val stopReason = payload.optString("stop_reason")
+            if (stopReason == "pause_turn") {
+                if (attempt == 2) throw IllegalStateException("Поиск занял слишком много шагов. Попробуй уточнить запрос.")
+                continue
+            }
+            if (stopReason == "tool_use") {
+                throw IllegalStateException("Провайдер вернул неподдерживаемый клиентский инструмент вместо серверного веб-поиска.")
+            }
+
+            val answer = StringBuilder()
+            val citations = linkedMapOf<String, String>()
+            for (i in 0 until content.length()) {
+                val block = content.optJSONObject(i) ?: continue
+                if (block.optString("type") != "text") continue
+                val text = block.optString("text")
+                if (text.isNotBlank()) {
+                    if (answer.isNotEmpty()) answer.append("\\n\\n")
+                    answer.append(text)
+                }
+                val citationArray = block.optJSONArray("citations") ?: continue
+                for (j in 0 until citationArray.length()) {
+                    val citation = citationArray.optJSONObject(j) ?: continue
+                    val sourceUrl = citation.optString("url")
+                    if (sourceUrl.isBlank() || citations.containsKey(sourceUrl)) continue
+                    val title = citation.optString("title").ifBlank { sourceUrl }
+                    citations[sourceUrl] = title
+                }
+            }
+            if (citations.isNotEmpty()) {
+                answer.append("\\n\\n**Источники**\\n")
+                citations.forEach { (sourceUrl, title) ->
+                    answer.append("- [")
+                        .append(title.replace("]", "\\\\]"))
+                        .append("](")
+                        .append(sourceUrl)
+                        .append(")\\n")
+                }
+            }
+            return WebSearchAnswer(answer.toString().trim(), preservedAssistantMessages.toString())
+        }
+        throw IllegalStateException("Не удалось завершить веб-поиск.")
     }
 
     private fun updateChatLive(id: String, answer: String) {
@@ -361,7 +495,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                             .put("textContent", item.textContent)
                     )
                 }
-                lineArray.put(JSONObject().put("role", line.role).put("content", line.content).put("attachments", attachments))
+                val lineObject = JSONObject().put("role", line.role).put("content", line.content).put("attachments", attachments)
+                line.providerMessagesJson?.let { lineObject.put("providerMessagesJson", it) }
+                lineArray.put(lineObject)
             }
             array.put(
                 JSONObject()
@@ -392,7 +528,12 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                             item.optString("textContent")
                         )
                     }.filter { it.textContent.isNotBlank() || (it.localPath.isNotBlank() && File(it.localPath).exists()) }
-                    ChatLine(line.optString("role"), line.optString("content"), attachments)
+                    ChatLine(
+                        line.optString("role"),
+                        line.optString("content"),
+                        attachments,
+                        line.optString("providerMessagesJson", "").takeIf { it.isNotBlank() }
+                    )
                 }
                 ChatSession(
                     obj.optString("id", UUID.randomUUID().toString()),
@@ -436,6 +577,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var url by remember { mutableStateOf(vm.settings.baseUrl) }
     var model by remember { mutableStateOf(vm.settings.model) }
     var key by remember { mutableStateOf("") }
+    var webSearchEnabled by remember { mutableStateOf(true) }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let { vm.addAttachment(it) }
     }
@@ -519,6 +661,16 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         }, contentPadding = PaddingValues(horizontal = 7.dp, vertical = 3.dp)) {
                             Text("+ Документ", color = Blue, fontSize = 11.sp)
                         }
+                        TextButton(
+                            onClick = { webSearchEnabled = !webSearchEnabled },
+                            contentPadding = PaddingValues(horizontal = 7.dp, vertical = 3.dp)
+                        ) {
+                            Text(
+                                if (webSearchEnabled) "Поиск: авто" else "Поиск: выкл",
+                                color = if (webSearchEnabled) Violet else Muted,
+                                fontSize = 11.sp
+                            )
+                        }
                     }
                     Row(
                         Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
@@ -557,7 +709,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         )
                         Button(
                             enabled = !vm.busy && (input.isNotBlank() || vm.pendingAttachments.isNotEmpty()),
-                            onClick = { vm.send(input); input = "" },
+                            onClick = { vm.send(input, webSearchEnabled); input = "" },
                             shape = RoundedCornerShape(16.dp),
                             contentPadding = PaddingValues(horizontal = 17.dp, vertical = 12.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = Violet, disabledContainerColor = Color(0xFF3A292B))
@@ -744,6 +896,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     OutlinedTextField(model, { model = it }, label = { Text("Model ID") }, singleLine = true)
                     OutlinedTextField(key, { key = it }, label = { Text("API key") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
                     Text("Ключ хранится только в памяти приложения и не сохраняется в истории или GitHub. После перезапуска его нужно ввести снова.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
+                    Text("Встроенный поиск Claude работает через AnyModel. AnyModel может списывать отдельную фиксированную плату за каждый поисковый запрос; NEXUS ограничивает поиск двумя запросами на ответ.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
                 }
             },
             confirmButton = {
