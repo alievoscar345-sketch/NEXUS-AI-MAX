@@ -124,7 +124,8 @@ data class OpenRouterModel(
     val contextLength: Int,
     val promptPrice: String,
     val completionPrice: String,
-    val isFree: Boolean
+    val isFree: Boolean,
+    val supportedParameters: Set<String> = emptySet()
 )
 
 class NexusViewModel(application: Application) : AndroidViewModel(application) {
@@ -202,7 +203,15 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                             val pricing = item.optJSONObject("pricing") ?: JSONObject()
                             val prompt = pricing.optString("prompt", "unknown")
                             val completion = pricing.optString("completion", "unknown")
-                            OpenRouterModel(id, item.optString("name", id), item.optString("description", ""), item.optInt("context_length", 0), prompt, completion, prompt.toDoubleOrNull() == 0.0 && completion.toDoubleOrNull() == 0.0)
+                            val supportedParametersJson = item.optJSONArray("supported_parameters")
+                            val supportedParameters = buildSet {
+                                if (supportedParametersJson != null) {
+                                    for (parameterIndex in 0 until supportedParametersJson.length()) {
+                                        supportedParametersJson.optString(parameterIndex).takeIf { it.isNotBlank() }?.let { add(it) }
+                                    }
+                                }
+                            }
+                            OpenRouterModel(id, item.optString("name", id), item.optString("description", ""), item.optInt("context_length", 0), prompt, completion, prompt.toDoubleOrNull() == 0.0 && completion.toDoubleOrNull() == 0.0, supportedParameters)
                         }.sortedWith(compareByDescending<OpenRouterModel> { it.isFree }.thenBy { it.name.lowercase() })
                     }
                 }
@@ -291,7 +300,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         error = message
     }
 
-    fun send(text: String, useWebSearch: Boolean = false, editLineIndex: Int? = null) {
+    fun send(text: String, useWebSearch: Boolean = false, editLineIndex: Int? = null, useReasoning: Boolean = false) {
         if (busy || (text.isBlank() && pendingAttachments.isEmpty())) return
         val cfg = settings
         val activeModel = if (cfg.provider == "OpenRouter") cfg.openRouterModel else cfg.model
@@ -301,8 +310,13 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         if (cfg.provider == "AnyModel" && cfg.baseUrl.isBlank()) { error = "Укажи Base URL провайдера."; return }
-        if (useWebSearch && cfg.provider == "OpenRouter") {
-            error = "Встроенный поиск сейчас подключён только к AnyModel / Claude. Отключи поиск или переключись на AnyModel."
+        if (useWebSearch && cfg.provider != "AnyModel") {
+            error = "Встроенный веб-поиск в этой версии доступен только через AnyModel / Claude."
+            return
+        }
+        val selectedOpenRouterCapabilities = openRouterModels.firstOrNull { it.id == activeModel }?.supportedParameters.orEmpty()
+        if (useReasoning && (cfg.provider != "OpenRouter" || "reasoning" !in selectedOpenRouterCapabilities)) {
+            error = "Эта модель или провайдер не подтвердили поддержку режима reasoning. Функция не была отправлена."
             return
         }
         if (activeChatId == null) createChat()
@@ -375,6 +389,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         .put("model", activeModel)
                         .put("messages", messages)
                         .put("stream", true)
+                    if (useReasoning && cfg.provider == "OpenRouter") {
+                        body.put("reasoning", JSONObject().put("effort", "high"))
+                    }
                     val request = Request.Builder()
                         .url(if (cfg.provider == "OpenRouter") "https://openrouter.ai/api/v1/chat/completions" else cfg.baseUrl + "/chat/completions")
                         .header("Authorization", "Bearer " + activeKey)
@@ -699,7 +716,18 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var selectedOpenRouterModel by remember { mutableStateOf(vm.settings.openRouterModel) }
     var freeModelsOnly by remember { mutableStateOf(false) }
     var modelSearch by remember { mutableStateOf("") }
-    var webSearchEnabled by remember { mutableStateOf(false) }
+    val activeFeatureModel = if (vm.settings.provider == "OpenRouter") vm.settings.openRouterModel else vm.settings.model
+    val featureModelKey = vm.settings.provider + ":" + activeFeatureModel
+    val selectedModelCapabilities = vm.openRouterModels.firstOrNull { it.id == activeFeatureModel }?.supportedParameters.orEmpty()
+    val supportsDeepReasoning = vm.settings.provider == "OpenRouter" && "reasoning" in selectedModelCapabilities
+    val supportsBuiltInSearch = vm.settings.provider == "AnyModel" && activeFeatureModel.contains("claude", ignoreCase = true)
+    var featureMenuExpanded by remember { mutableStateOf(false) }
+    var webSearchEnabled by remember(featureModelKey) { mutableStateOf(false) }
+    var reasoningEnabled by remember(featureModelKey) { mutableStateOf(false) }
+    var imageInputEnabled by remember(featureModelKey) { mutableStateOf(true) }
+    var fileAnalysisEnabled by remember(featureModelKey) { mutableStateOf(true) }
+    var voiceInputEnabled by remember { mutableStateOf(true) }
+    var speechOutputEnabled by remember { mutableStateOf(true) }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let { vm.addAttachment(it) }
     }
@@ -868,23 +896,58 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         }
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = 5.dp)) {
-                        TextButton(onClick = { imagePicker.launch("image/*") }, contentPadding = PaddingValues(horizontal = 7.dp, vertical = 3.dp)) {
-                            Text("+ Фото", color = Blue, fontSize = 11.sp)
-                        }
-                        TextButton(onClick = {
-                            documentPicker.launch(arrayOf("text/*", "application/json", "application/xml"))
-                        }, contentPadding = PaddingValues(horizontal = 7.dp, vertical = 3.dp)) {
-                            Text("+ Документ", color = Blue, fontSize = 11.sp)
-                        }
                         TextButton(
-                            onClick = { webSearchEnabled = !webSearchEnabled },
+                            enabled = imageInputEnabled,
+                            onClick = { imagePicker.launch("image/*") },
                             contentPadding = PaddingValues(horizontal = 7.dp, vertical = 3.dp)
                         ) {
-                            Text(
-                                if (webSearchEnabled) "Поиск: авто" else "Поиск: выкл",
-                                color = if (webSearchEnabled) Violet else Muted,
-                                fontSize = 11.sp
-                            )
+                            Text("+ Фото", color = if (imageInputEnabled) Blue else Muted, fontSize = 11.sp)
+                        }
+                        TextButton(
+                            enabled = fileAnalysisEnabled,
+                            onClick = { documentPicker.launch(arrayOf("text/*", "application/json", "application/xml")) },
+                            contentPadding = PaddingValues(horizontal = 7.dp, vertical = 3.dp)
+                        ) {
+                            Text("+ Документ", color = if (fileAnalysisEnabled) Blue else Muted, fontSize = 11.sp)
+                        }
+                        Box {
+                            TextButton(
+                                onClick = { featureMenuExpanded = true },
+                                contentPadding = PaddingValues(horizontal = 7.dp, vertical = 3.dp)
+                            ) {
+                                Text("Возможности  ⚙", color = AccentRed, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                            DropdownMenu(
+                                expanded = featureMenuExpanded,
+                                onDismissRequest = { featureMenuExpanded = false },
+                                modifier = Modifier.width(310.dp).background(Panel)
+                            ) {
+                                Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                                    Text("ВОЗМОЖНОСТИ МОДЕЛИ", color = MainText, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                    Text(activeFeatureModel.ifBlank { "Модель не выбрана" }, color = Muted, fontSize = 10.sp, maxLines = 2)
+                                    Spacer(Modifier.height(8.dp))
+                                    FeatureSwitchRow(
+                                        "Глубокое размышление",
+                                        if (supportsDeepReasoning) "Reasoning API подтверждён для этой модели" else "Провайдер не подтвердил поддержку reasoning",
+                                        reasoningEnabled,
+                                        supportsDeepReasoning
+                                    ) { reasoningEnabled = it }
+                                    FeatureSwitchRow(
+                                        "Веб-поиск",
+                                        if (supportsBuiltInSearch) "Поиск Claude через AnyModel; может тарифицироваться отдельно" else "В этой конфигурации веб-поиск недоступен",
+                                        webSearchEnabled,
+                                        supportsBuiltInSearch
+                                    ) { webSearchEnabled = it }
+                                    Divider(color = DividerTone, modifier = Modifier.padding(vertical = 5.dp))
+                                    Text("ИНСТРУМЕНТЫ ПРИЛОЖЕНИЯ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    FeatureSwitchRow("Понимание изображений", "Отправка прикреплённых изображений в API", imageInputEnabled, true) { imageInputEnabled = it }
+                                    FeatureSwitchRow("Анализ текстовых файлов", "TXT, MD, CSV, JSON и XML", fileAnalysisEnabled, true) { fileAnalysisEnabled = it }
+                                    FeatureSwitchRow("Голосовой ввод", "Распознавание речи Android", voiceInputEnabled, true) { voiceInputEnabled = it }
+                                    FeatureSwitchRow("Озвучивание ответов", "Синтез речи на устройстве", speechOutputEnabled, true) { speechOutputEnabled = it }
+                                    Spacer(Modifier.height(5.dp))
+                                    Text("Список функций зависит от API, модели и возможностей провайдера. Недоступные режимы не отправляются.", color = Muted, fontSize = 9.sp, lineHeight = 13.sp)
+                                }
+                            }
                         }
                     }
                     Row(
@@ -893,6 +956,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(
+                            enabled = voiceInputEnabled,
                             onClick = {
                                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -925,7 +989,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         )
                         Button(
                             enabled = !vm.busy && (input.isNotBlank() || vm.pendingAttachments.isNotEmpty()),
-                            onClick = { vm.send(input, webSearchEnabled); input = "" },
+                            onClick = { vm.send(input, webSearchEnabled, useReasoning = reasoningEnabled); input = "" },
                             shape = RoundedCornerShape(16.dp),
                             contentPadding = PaddingValues(horizontal = 17.dp, vertical = 12.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = Violet, disabledContainerColor = Color(0xFF3A292B))
@@ -1071,7 +1135,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                                 speechFile = null
                                                 activeSpeechId = ""
                                                 speaking = false
-                                            } else if (line.content.isNotBlank() && ttsReady) {
+                                            } else if (line.content.isNotBlank() && ttsReady && speechOutputEnabled) {
                                                 textToSpeech.language = Locale("ru")
                                                 textToSpeech.setSpeechRate(1.0f)
                                                 val file = File(context.cacheDir, "nexus_speech_${System.currentTimeMillis()}.wav")
@@ -1087,7 +1151,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                                     vm.showError("Не удалось подготовить озвучивание. Попробуй ещё раз.")
                                                 }
                                             } else if (!ttsReady) vm.showError("Синтез речи ещё не готов. Попробуй ещё раз.")
-                                        }, modifier = Modifier.size(34.dp)) {
+                                        }, enabled = speechOutputEnabled || speaking, modifier = Modifier.size(34.dp)) {
                                             Icon(if (speaking) Icons.Filled.Stop else Icons.Filled.VolumeUp, contentDescription = "Прослушать ответ", tint = AccentRed, modifier = Modifier.size(20.dp))
                                         }
                                         IconButton(
@@ -1386,7 +1450,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         val index = targetIndex
                         val revisedText = editMessageValue
                         editTargetIndex = null
-                        vm.send(revisedText, webSearchEnabled, index)
+                        vm.send(revisedText, webSearchEnabled, index, reasoningEnabled)
                     }
                 ) { Text("Сохранить и отправить", color = AccentRed) }
             },
@@ -1406,6 +1470,30 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 TextButton(onClick = { vm.renameChat(target.id, renameValue); renameTarget = null }) { Text("Сохранить", color = Violet) }
             },
             dismissButton = { TextButton(onClick = { renameTarget = null }) { Text("Отмена", color = Muted) } }
+        )
+    }
+}
+
+@Composable
+private fun FeatureSwitchRow(
+    title: String,
+    description: String,
+    checked: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f).padding(end = 8.dp)) {
+            Text(title, color = if (enabled) MainText else Muted, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            Text(description, color = Muted, fontSize = 9.sp, lineHeight = 12.sp)
+        }
+        Switch(
+            checked = checked && enabled,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled
         )
     }
 }
