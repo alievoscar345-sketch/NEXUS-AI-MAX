@@ -318,6 +318,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         streamedAnswer
                     }
                 }
+                }
                 if (answer.isBlank()) throw IllegalStateException("Модель вернула пустой ответ.")
                 val latest = chats.firstOrNull { it.id == chatId }
                 if (latest != null) updateChat(
