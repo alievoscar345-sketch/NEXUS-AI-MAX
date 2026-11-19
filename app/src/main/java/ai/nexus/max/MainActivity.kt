@@ -23,6 +23,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,7 +60,9 @@ import com.mikepenz.markdown.compose.elements.MarkdownHighlightedCodeBlock
 import com.mikepenz.markdown.compose.elements.MarkdownHighlightedCodeFence
 import org.intellij.markdown.ast.ASTNode
 
-private val Ink = Color(0xFF0D0D0D)
+private val Ink = Color(0xFF050505)
+private val BackgroundGlow = Color(0xFF26090E)
+private val AccentRed = Color(0xFFD6293E)
 private val Panel = Color(0xFF171717)
 private val PanelRaised = Color(0xFF242222)
 private val Violet = Color(0xFF87313A)
@@ -694,12 +698,6 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         Text("AI MAX", color = Violet, fontSize = 10.sp, letterSpacing = 1.7.sp, fontWeight = FontWeight.SemiBold)
                     }
                     TextButton(
-                        onClick = { vm.createChat(); input = "" },
-                        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 8.dp)
-                    ) {
-                        Text("+", color = MainText, fontSize = 25.sp)
-                    }
-                    TextButton(
                         onClick = {
                             url = vm.settings.baseUrl
                             model = vm.settings.model
@@ -716,7 +714,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 }
             },
             bottomBar = {
-                Column(Modifier.fillMaxWidth().background(Ink).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)).padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Column(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Ink, Color(0xFF120508), BackgroundGlow))).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)).padding(horizontal = 12.dp, vertical = 8.dp)) {
                     if (vm.pendingAttachments.isNotEmpty()) {
                         Column(Modifier.fillMaxWidth().padding(bottom = 7.dp)) {
                             vm.pendingAttachments.forEachIndexed { index, attachment ->
@@ -770,7 +768,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                             },
                             modifier = Modifier.size(42.dp)
                         ) {
-                            Text("🎙", fontSize = 18.sp, color = Violet)
+                            Icon(Icons.Filled.Mic, contentDescription = "Голосовой ввод", tint = AccentRed, modifier = Modifier.size(23.dp))
                         }
                         BasicTextField(
                             value = input,
@@ -804,7 +802,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 }
             }
         ) { padding ->
-            Column(Modifier.fillMaxSize().padding(padding)) {
+            Column(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Ink, Ink, Color(0xFF100508), BackgroundGlow))).padding(padding)) {
                 vm.error?.let { message ->
                     Surface(color = Color(0xFF321D20), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
                         Text(message, color = Color(0xFFD69A9F), fontSize = 12.sp, modifier = Modifier.padding(12.dp))
@@ -831,11 +829,6 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         Spacer(Modifier.height(12.dp))
                         Text("NEXUS готов к работе. Сформулируй задачу, задай вопрос или начни исследование.", color = Muted, fontSize = 14.sp, lineHeight = 21.sp)
                         Spacer(Modifier.height(25.dp))
-                        SuggestionCard("Исследовать тему", "Разбери вопрос на основе научных данных") { input = "Исследуй тему: " }
-                        Spacer(Modifier.height(9.dp))
-                        SuggestionCard("Составить план", "Преврати цель в последовательные действия") { input = "Помоги составить подробный план для цели: " }
-                        Spacer(Modifier.height(9.dp))
-                        SuggestionCard("Решить задачу", "Найди эффективное решение проблемы") { input = "Помоги решить задачу: " }
                     }
                 } else {
                     LazyColumn(
@@ -958,10 +951,17 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                 showHistory = false
                             }
                         ) {
-                            Row(Modifier.padding(horizontal = 14.dp, vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text("+", color = MainText, fontSize = 21.sp)
+                            Row(Modifier.padding(horizontal = 13.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    Modifier.size(30.dp).clip(CircleShape).background(AccentRed),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("+", color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Medium)
+                                }
                                 Spacer(Modifier.width(12.dp))
                                 Text("Новый чат", color = MainText, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                Spacer(Modifier.weight(1f))
+                                Text("↗", color = AccentRed, fontSize = 16.sp)
                             }
                         }
                         Spacer(Modifier.height(24.dp))
