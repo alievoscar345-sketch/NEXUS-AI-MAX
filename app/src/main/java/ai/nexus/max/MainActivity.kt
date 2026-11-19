@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
@@ -284,7 +285,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         error = message
     }
 
-    fun send(text: String, useWebSearch: Boolean = false) {
+    fun send(text: String, useWebSearch: Boolean = false, editLineIndex: Int? = null) {
         if (busy || (text.isBlank() && pendingAttachments.isEmpty())) return
         val cfg = settings
         val activeModel = if (cfg.provider == "OpenRouter") cfg.openRouterModel else cfg.model
@@ -301,10 +302,22 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         if (activeChatId == null) createChat()
         val chatId = activeChatId ?: return
         val oldChat = chats.firstOrNull { it.id == chatId } ?: return
-        val userLine = ChatLine("user", text.trim(), pendingAttachments)
-        pendingAttachments = emptyList()
-        val history = oldChat.lines + userLine
-        val newTitle = if (oldChat.lines.isEmpty()) text.trim().replace("\n", " ").take(36).ifBlank { "Новый диалог" } else oldChat.title
+        val history: List<ChatLine>
+        val newTitle: String
+        if (editLineIndex != null) {
+            if (editLineIndex !in oldChat.lines.indices || oldChat.lines[editLineIndex].role != "user") {
+                error = "Не удалось найти исходное сообщение для редактирования."
+                return
+            }
+            val editedLine = oldChat.lines[editLineIndex].copy(content = text.trim())
+            history = oldChat.lines.take(editLineIndex) + editedLine
+            newTitle = if (editLineIndex == 0) text.trim().replace("\n", " ").take(36).ifBlank { "Новый диалог" } else oldChat.title
+        } else {
+            val userLine = ChatLine("user", text.trim(), pendingAttachments)
+            pendingAttachments = emptyList()
+            history = oldChat.lines + userLine
+            newTitle = if (oldChat.lines.isEmpty()) text.trim().replace("\n", " ").take(36).ifBlank { "Новый диалог" } else oldChat.title
+        }
         val placeholder = ChatLine("assistant", "")
         updateChat(chatId, oldChat.copy(title = newTitle, updatedAt = System.currentTimeMillis(), lines = history + placeholder))
         busy = true
@@ -667,6 +680,8 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var showSettings by remember { mutableStateOf(false) }
     var topMenuExpanded by remember { mutableStateOf(false) }
     var showChatSearch by remember { mutableStateOf(false) }
+    var editTargetIndex by remember { mutableStateOf<Int?>(null) }
+    var editMessageValue by remember { mutableStateOf("") }
     var chatSearchQuery by remember { mutableStateOf("") }
     var renameTarget by remember { mutableStateOf<ChatSession?>(null) }
     var renameValue by remember { mutableStateOf("") }
@@ -892,7 +907,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 18.dp, bottom = 20.dp),
                         verticalArrangement = Arrangement.spacedBy(17.dp)
                     ) {
-                        items(lines) { line ->
+                        itemsIndexed(lines) { lineIndex, line ->
                             val isUser = line.role == "user"
                             Column(Modifier.fillMaxWidth(), horizontalAlignment = if (isUser) Alignment.End else Alignment.Start) {
                                 if (isUser) Spacer(Modifier.height(2.dp))
@@ -943,6 +958,22 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                                     }
                                                 )
                                             )
+                                        }
+                                    }
+                                }
+                                if (isUser) {
+                                    Row(Modifier.padding(end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        TextButton(
+                                            enabled = !vm.busy,
+                                            onClick = {
+                                                editTargetIndex = lineIndex
+                                                editMessageValue = line.content
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 5.dp, vertical = 1.dp)
+                                        ) {
+                                            Icon(Icons.Filled.Edit, contentDescription = null, tint = AccentRed, modifier = Modifier.size(14.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("Изменить", color = Muted, fontSize = 10.sp)
                                         }
                                     }
                                 }
@@ -1203,6 +1234,38 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 }) { Text("Сохранить", color = Violet) }
             },
             dismissButton = { TextButton(onClick = { showSettings = false }) { Text("Отмена", color = Muted) } }
+        )
+    }
+
+    editTargetIndex?.let { targetIndex ->
+        AlertDialog(
+            onDismissRequest = { editTargetIndex = null },
+            containerColor = Panel,
+            title = { Text("Изменить сообщение", color = MainText) },
+            text = {
+                OutlinedTextField(
+                    value = editMessageValue,
+                    onValueChange = { editMessageValue = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 3,
+                    maxLines = 8,
+                    label = { Text("Текст сообщения") }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = editMessageValue.isNotBlank() && !vm.busy,
+                    onClick = {
+                        val index = targetIndex
+                        val revisedText = editMessageValue
+                        editTargetIndex = null
+                        vm.send(revisedText, webSearchEnabled, index)
+                    }
+                ) { Text("Сохранить и отправить", color = AccentRed) }
+            },
+            dismissButton = {
+                TextButton(onClick = { editTargetIndex = null }) { Text("Отмена", color = Muted) }
+            }
         )
     }
 
