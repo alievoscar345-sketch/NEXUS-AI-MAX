@@ -1,6 +1,9 @@
 package ai.nexus.max
 
 import android.app.Application
+import android.app.Activity
+import android.content.Intent
+import android.speech.RecognizerIntent
 import android.os.Bundle
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -190,6 +193,10 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
 
     fun removePendingAttachment(index: Int) {
         pendingAttachments = pendingAttachments.filterIndexed { i, _ -> i != index }
+    }
+
+    fun showError(message: String) {
+        error = message
     }
 
     fun send(text: String) {
@@ -435,6 +442,12 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     val documentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { vm.addAttachment(it) }
     }
+    val speechLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val spoken = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
+            if (!spoken.isNullOrBlank()) input = listOf(input.trim(), spoken).filter { it.isNotBlank() }.joinToString(" ")
+        }
+    }
 
     MaterialTheme(colorScheme = darkColorScheme(
         primary = Violet,
@@ -509,9 +522,27 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     }
                     Row(
                         Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
-                            .background(PanelRaised).padding(start = 15.dp, end = 7.dp, top = 7.dp, bottom = 7.dp),
+                            .background(PanelRaised).padding(start = 8.dp, end = 7.dp, top = 7.dp, bottom = 7.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        IconButton(
+                            onClick = {
+                                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
+                                    putExtra(RecognizerIntent.EXTRA_PROMPT, "Говорите")
+                                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                                }
+                                try {
+                                    speechLauncher.launch(intent)
+                                } catch (_: Exception) {
+                                    vm.showError("На устройстве нет доступного сервиса распознавания речи.")
+                                }
+                            },
+                            modifier = Modifier.size(42.dp)
+                        ) {
+                            Text("🎙", fontSize = 18.sp, color = Violet)
+                        }
                         BasicTextField(
                             value = input,
                             onValueChange = { input = it },
