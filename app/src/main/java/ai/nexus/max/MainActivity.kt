@@ -20,6 +20,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -38,6 +40,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import com.mikepenz.markdown.m3.Markdown
 
 private val Ink = Color(0xFF090A10)
 private val Panel = Color(0xFF12141E)
@@ -247,6 +250,7 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NexusApp(vm: NexusViewModel = viewModel()) {
+    val clipboard = LocalClipboardManager.current
     var input by remember { mutableStateOf("") }
     var showHistory by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
@@ -384,7 +388,21 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                     shape = RoundedCornerShape(18.dp),
                                     modifier = Modifier.widthIn(max = 340.dp)
                                 ) {
-                                    Text(line.content, color = MainText, fontSize = 14.sp, lineHeight = 21.sp, modifier = Modifier.padding(horizontal = 15.dp, vertical = 13.dp))
+                                    if (isUser) {
+                                        Text(line.content, color = MainText, fontSize = 14.sp, lineHeight = 21.sp, modifier = Modifier.padding(horizontal = 15.dp, vertical = 13.dp))
+                                    } else {
+                                        Column(Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 13.dp)) {
+                                            Markdown(line.content)
+                                        }
+                                    }
+                                }
+                                if (!isUser) {
+                                    TextButton(
+                                        onClick = { clipboard.setText(AnnotatedString(line.content)) },
+                                        contentPadding = PaddingValues(horizontal = 5.dp, vertical = 2.dp)
+                                    ) {
+                                        Text("Копировать ответ", color = Muted, fontSize = 10.sp)
+                                    }
                                 }
                             }
                         }
