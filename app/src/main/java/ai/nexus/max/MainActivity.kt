@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -143,8 +144,8 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(url, { url = it }, label = { Text("Base URL") }, singleLine = true)
             OutlinedTextField(model, { model = it }, label = { Text("Model ID") }, singleLine = true)
-            OutlinedTextField(key, { key = it }, label = { Text("API key") }, singleLine = true)
-            Text("Ключ хранится только в памяти приложения и будет запрошен снова после перезапуска. Не публикуй его и не добавляй в GitHub.", fontSize = 11.sp, color = Color.Gray)
+            OutlinedTextField(key, { key = it }, label = { Text("API key") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
+            Text("Ключ скрыт на экране и хранится только в памяти приложения. После перезапуска его нужно ввести снова. Не отправляй ключ в чат и не публикуй в GitHub.", fontSize = 11.sp, color = Color.Gray)
         }
     }, confirmButton = {
         TextButton(onClick = { vm.updateSettings(url, model, key); showSettings = false }) { Text("Сохранить") }
