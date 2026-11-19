@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.Activity
 import android.content.Intent
 import android.speech.RecognizerIntent
+import android.speech.tts.TextToSpeech
 import android.os.Bundle
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -25,7 +26,14 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -53,6 +61,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.compose.components.markdownComponents
@@ -89,7 +98,8 @@ data class ChatSession(
     val id: String,
     val title: String,
     val updatedAt: Long,
-    val lines: List<ChatLine>
+    val lines: List<ChatLine>,
+    val isPinned: Boolean = false
 )
 data class ApiSettings(
     val baseUrl: String = "https://anymodel.org/v1",
@@ -201,7 +211,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
 
     fun createChat() {
         val chat = ChatSession(UUID.randomUUID().toString(), "Новый диалог", System.currentTimeMillis(), emptyList())
-        chats = listOf(chat) + chats
+        chats = (listOf(chat) + chats).sortedWith(compareByDescending<ChatSession> { it.isPinned }.thenByDescending { it.updatedAt })
         activeChatId = chat.id
         saveChats()
         error = null
@@ -217,6 +227,11 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         if (activeChatId == id) activeChatId = chats.firstOrNull()?.id
         if (chats.isEmpty()) createChat() else saveChats()
         error = null
+    }
+
+    fun togglePinChat(id: String) {
+        chats = chats.map { if (it.id == id) it.copy(isPinned = !it.isPinned) else it }.sortedWith(compareByDescending<ChatSession> { it.isPinned }.thenByDescending { it.updatedAt })
+        saveChats()
     }
 
     fun renameChat(id: String, title: String) {
@@ -550,7 +565,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun updateChat(id: String, chat: ChatSession) {
-        chats = chats.map { if (it.id == id) chat else it }.sortedByDescending { it.updatedAt }
+        chats = chats.map { if (it.id == id) chat else it }.sortedWith(compareByDescending<ChatSession> { it.isPinned }.thenByDescending { it.updatedAt })
         saveChats()
     }
 
@@ -577,6 +592,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     .put("id", chat.id)
                     .put("title", chat.title)
                     .put("updatedAt", chat.updatedAt)
+                    .put("isPinned", chat.isPinned)
                     .put("lines", lineArray)
             )
         }
@@ -612,9 +628,10 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     obj.optString("id", UUID.randomUUID().toString()),
                     obj.optString("title", "Диалог"),
                     obj.optLong("updatedAt", System.currentTimeMillis()),
-                    lines
+                    lines,
+                    obj.optBoolean("isPinned", false)
                 )
-            }.sortedByDescending { it.updatedAt }
+            }.sortedWith(compareByDescending<ChatSession> { it.isPinned }.thenByDescending { it.updatedAt })
         } catch (_: Exception) {
             emptyList()
         }
@@ -645,6 +662,9 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var input by remember { mutableStateOf("") }
     var showHistory by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var topMenuExpanded by remember { mutableStateOf(false) }
+    var showChatSearch by remember { mutableStateOf(false) }
+    var chatSearchQuery by remember { mutableStateOf("") }
     var renameTarget by remember { mutableStateOf<ChatSession?>(null) }
     var renameValue by remember { mutableStateOf("") }
     var url by remember { mutableStateOf(vm.settings.baseUrl) }
@@ -662,6 +682,14 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     val documentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { vm.addAttachment(it) }
     }
+    val context = LocalContext.current
+    var ttsReady by remember { mutableStateOf(false) }
+    val textToSpeech = remember(context) { TextToSpeech(context) { status ->
+        ttsReady = status == TextToSpeech.SUCCESS
+        if (status == TextToSpeech.SUCCESS) textToSpeech.language = Locale("ru")
+    } }
+    DisposableEffect(textToSpeech) { onDispose { textToSpeech.stop(); textToSpeech.shutdown() } }
+    var speaking by remember { mutableStateOf(false) }
     val speechLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             val spoken = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
@@ -697,19 +725,43 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         Text("NEXUS", color = MainText, fontWeight = FontWeight.Bold, fontSize = 17.sp, letterSpacing = 1.1.sp)
                         Text("AI MAX", color = Violet, fontSize = 10.sp, letterSpacing = 1.7.sp, fontWeight = FontWeight.SemiBold)
                     }
-                    TextButton(
-                        onClick = {
-                            url = vm.settings.baseUrl
-                            model = vm.settings.model
-                            key = vm.settings.apiKey
-                            selectedProvider = vm.settings.provider
-                            openRouterKey = vm.settings.openRouterApiKey
-                            selectedOpenRouterModel = vm.settings.openRouterModel
-                            showSettings = true
-                        },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
-                    ) {
-                        Text("⋯", color = MainText, fontSize = 24.sp)
+                    Box {
+                        IconButton(onClick = { topMenuExpanded = true }) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "Меню чата", tint = MainText)
+                        }
+                        DropdownMenu(expanded = topMenuExpanded, onDismissRequest = { topMenuExpanded = false }) {
+                            DropdownMenuItem(text = { Text(if (vm.activeChat?.isPinned == true) "Открепить чат" else "Закрепить чат") }, leadingIcon = { Icon(Icons.Filled.PushPin, null, tint = AccentRed) }, onClick = { vm.activeChatId?.let { vm.togglePinChat(it) }; topMenuExpanded = false })
+                            DropdownMenuItem(text = { Text("Поиск в чате") }, leadingIcon = { Icon(Icons.Filled.Search, null, tint = AccentRed) }, onClick = { chatSearchQuery = ""; showChatSearch = true; topMenuExpanded = false })
+                            DropdownMenuItem(text = { Text("Поделиться") }, leadingIcon = { Icon(Icons.Filled.Share, null, tint = AccentRed) }, onClick = {
+                                val chat = vm.activeChat
+                                if (chat != null) {
+                                    val transcript = buildString {
+                                        append(chat.title).append("\n\n")
+                                        chat.lines.forEach { line ->
+                                            append(if (line.role == "user") "Вы" else "NEXUS").append(":\n")
+                                            append(line.content).append("\n\n")
+                                        }
+                                    }
+                                    val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_SUBJECT, chat.title)
+                                        putExtra(Intent.EXTRA_TEXT, transcript)
+                                    }
+                                    context.startActivity(Intent.createChooser(sendIntent, "Поделиться чатом"))
+                                }
+                                topMenuExpanded = false
+                            })
+                            DropdownMenuItem(text = { Text("Настройки") }, onClick = {
+                                url = vm.settings.baseUrl
+                                model = vm.settings.model
+                                key = vm.settings.apiKey
+                                selectedProvider = vm.settings.provider
+                                openRouterKey = vm.settings.openRouterApiKey
+                                selectedOpenRouterModel = vm.settings.openRouterModel
+                                showSettings = true
+                                topMenuExpanded = false
+                            })
+                        }
                     }
                 }
             },
@@ -891,11 +943,19 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                     }
                                 }
                                 if (!isUser) {
-                                    TextButton(
-                                        onClick = { clipboard.setText(AnnotatedString(line.content)) },
-                                        contentPadding = PaddingValues(horizontal = 5.dp, vertical = 2.dp)
-                                    ) {
-                                        Text("Копировать ответ", color = Muted, fontSize = 10.sp)
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        IconButton(onClick = {
+                                            if (speaking) { textToSpeech.stop(); speaking = false }
+                                            else if (line.content.isNotBlank() && ttsReady) {
+                                                textToSpeech.speak(line.content, TextToSpeech.QUEUE_FLUSH, null, "nexus_message")
+                                                speaking = true
+                                            } else if (!ttsReady) vm.showError("Синтез речи ещё не готов. Попробуй ещё раз.")
+                                        }, modifier = Modifier.size(34.dp)) {
+                                            Icon(if (speaking) Icons.Filled.Stop else Icons.Filled.VolumeUp, contentDescription = "Прослушать ответ", tint = AccentRed, modifier = Modifier.size(20.dp))
+                                        }
+                                        TextButton(onClick = { clipboard.setText(AnnotatedString(line.content)) }, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 2.dp)) {
+                                            Text("Копировать ответ", color = Muted, fontSize = 10.sp)
+                                        }
                                     }
                                 }
                             }
@@ -981,7 +1041,10 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                                 vm.selectChat(chat.id)
                                                 showHistory = false
                                             }) {
-                                                Text(chat.title, color = MainText, fontSize = 13.sp, maxLines = 1)
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    if (chat.isPinned) Icon(Icons.Filled.PushPin, "Закреплён", tint = AccentRed, modifier = Modifier.size(13.dp))
+                                                    Text(chat.title, color = MainText, fontSize = 13.sp, maxLines = 1)
+                                                }
                                                 Text("${chat.lines.size} сообщений", color = Muted, fontSize = 10.sp)
                                             }
                                             var menuExpanded by remember(chat.id) { mutableStateOf(false) }
@@ -1038,6 +1101,33 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 Box(Modifier.fillMaxSize().padding(start = 316.dp).clickable { showHistory = false })
             }
         }
+    }
+
+    if (showChatSearch) {
+        val matches = vm.activeChat?.lines.orEmpty().withIndex().filter { chatSearchQuery.isNotBlank() && it.value.content.contains(chatSearchQuery, ignoreCase = true) }
+        AlertDialog(
+            onDismissRequest = { showChatSearch = false },
+            containerColor = Panel,
+            title = { Text("Поиск в чате", color = MainText) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(chatSearchQuery, { chatSearchQuery = it }, singleLine = true, label = { Text("Найти в переписке") }, modifier = Modifier.fillMaxWidth())
+                    if (chatSearchQuery.isNotBlank()) {
+                        Text("Найдено: ${matches.size}", color = Muted, fontSize = 11.sp)
+                        LazyColumn(Modifier.heightIn(max = 280.dp)) {
+                            items(matches) { match ->
+                                Column(Modifier.fillMaxWidth().clickable { clipboard.setText(AnnotatedString(match.value.content)); showChatSearch = false }.padding(vertical = 7.dp)) {
+                                    Text(if (match.value.role == "user") "Вы" else "NEXUS", color = AccentRed, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    Text(match.value.content.take(220), color = MainText, fontSize = 12.sp, maxLines = 4)
+                                }
+                                Divider(color = DividerTone)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showChatSearch = false }) { Text("Закрыть", color = AccentRed) } }
+        )
     }
 
     if (showSettings) {
