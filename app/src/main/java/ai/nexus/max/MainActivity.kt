@@ -578,7 +578,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var url by remember { mutableStateOf(vm.settings.baseUrl) }
     var model by remember { mutableStateOf(vm.settings.model) }
     var key by remember { mutableStateOf("") }
-    var webSearchEnabled by remember { mutableStateOf(true) }
+    var webSearchEnabled by remember { mutableStateOf(false) }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let { vm.addAttachment(it) }
     }
