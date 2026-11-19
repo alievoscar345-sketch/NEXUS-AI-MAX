@@ -150,9 +150,11 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         val userLine = ChatLine("user", text.trim())
         val history = oldChat.lines + userLine
         val newTitle = if (oldChat.lines.isEmpty()) text.trim().replace("\n", " ").take(36).ifBlank { "Новый диалог" } else oldChat.title
-        updateChat(chatId, oldChat.copy(title = newTitle, updatedAt = System.currentTimeMillis(), lines = history))
+        val placeholder = ChatLine("assistant", "")
+        updateChat(chatId, oldChat.copy(title = newTitle, updatedAt = System.currentTimeMillis(), lines = history + placeholder))
         busy = true
         error = null
+        var streamedAnswer = ""
 
         viewModelScope.launch {
             try {
@@ -167,29 +169,84 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         .put("model", cfg.model)
                         .put("messages", messages)
                         .put("temperature", 0.35)
+                        .put("stream", true)
                     val request = Request.Builder()
                         .url(cfg.baseUrl + "/chat/completions")
-                        .header("Authorization", "Bearer ${cfg.apiKey}")
+                        .header("Authorization", "Bearer " + cfg.apiKey)
                         .header("Content-Type", "application/json")
                         .post(body.toString().toRequestBody("application/json".toMediaType()))
                         .build()
                     client.newCall(request).execute().use { response ->
-                        val raw = response.body?.string().orEmpty()
-                        if (!response.isSuccessful) throw IllegalStateException("API ${response.code}: ${raw.take(350)}")
-                        JSONObject(raw).getJSONArray("choices").getJSONObject(0)
-                            .getJSONObject("message").getString("content")
+                        if (!response.isSuccessful) {
+                            val raw = response.body?.string().orEmpty()
+                            throw IllegalStateException("API " + response.code + ": " + raw.take(350))
+                        }
+                        val reader = response.body?.charStream()?.buffered()
+                            ?: throw IllegalStateException("Пустой ответ API")
+                        reader.use { stream ->
+                            while (true) {
+                                val rawLine = stream.readLine() ?: break
+                                if (!rawLine.startsWith("data:")) continue
+                                val payload = rawLine.removePrefix("data:").trim()
+                                if (payload == "[DONE]") break
+                                if (payload.isBlank()) continue
+                                val delta = try {
+                                    JSONObject(payload).optJSONArray("choices")
+                                        ?.optJSONObject(0)?.optJSONObject("delta")
+                                        ?.opt("content")
+                                } catch (_: Exception) { null }
+                                val chunk = when (delta) {
+                                    is String -> delta
+                                    is JSONArray -> {
+                                        val parts = StringBuilder()
+                                        for (i in 0 until delta.length()) {
+                                            val part = delta.optJSONObject(i)
+                                            if (part != null) parts.append(part.optString("text", ""))
+                                        }
+                                        parts.toString()
+                                    }
+                                    else -> ""
+                                }
+                                if (chunk.isNotEmpty()) {
+                                    streamedAnswer += chunk
+                                    withContext(Dispatchers.Main) {
+                                        updateChatLive(chatId, streamedAnswer)
+                                    }
+                                }
+                            }
+                        }
+                        streamedAnswer
                     }
                 }
+                if (answer.isBlank()) throw IllegalStateException("Модель вернула пустой ответ.")
                 val latest = chats.firstOrNull { it.id == chatId }
                 if (latest != null) updateChat(
                     chatId,
-                    latest.copy(lines = latest.lines + ChatLine("assistant", answer), updatedAt = System.currentTimeMillis())
+                    latest.copy(
+                        lines = latest.lines.dropLast(1) + ChatLine("assistant", answer),
+                        updatedAt = System.currentTimeMillis()
+                    )
                 )
             } catch (e: Exception) {
+                val latest = chats.firstOrNull { it.id == chatId }
+                if (latest != null) {
+                    val lines = latest.lines.dropLast(1)
+                    val finalLines = if (streamedAnswer.isBlank()) lines else lines + ChatLine("assistant", streamedAnswer)
+                    updateChat(chatId, latest.copy(lines = finalLines, updatedAt = System.currentTimeMillis()))
+                }
                 error = e.message ?: "Ошибка запроса"
             } finally {
                 busy = false
             }
+        }
+    }
+
+    private fun updateChatLive(id: String, answer: String) {
+        val current = chats.firstOrNull { it.id == id } ?: return
+        if (current.lines.isEmpty()) return
+        val updatedLines = current.lines.dropLast(1) + ChatLine("assistant", answer)
+        chats = chats.map {
+            if (it.id == id) current.copy(lines = updatedLines, updatedAt = System.currentTimeMillis()) else it
         }
     }
 
