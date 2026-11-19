@@ -20,6 +20,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -660,6 +661,8 @@ class MainActivity : ComponentActivity() {
 fun NexusApp(vm: NexusViewModel = viewModel()) {
     val clipboard = LocalClipboardManager.current
     var input by remember { mutableStateOf("") }
+    val chatListState = rememberLazyListState()
+    val uiScope = rememberCoroutineScope()
     var showHistory by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var topMenuExpanded by remember { mutableStateOf(false) }
@@ -884,6 +887,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     }
                 } else {
                     LazyColumn(
+                        state = chatListState,
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 18.dp, bottom = 20.dp),
                         verticalArrangement = Arrangement.spacedBy(17.dp)
@@ -1117,7 +1121,10 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         Text("Найдено: ${matches.size}", color = Muted, fontSize = 11.sp)
                         LazyColumn(Modifier.heightIn(max = 280.dp)) {
                             items(matches) { match ->
-                                Column(Modifier.fillMaxWidth().clickable { clipboard.setText(AnnotatedString(match.value.content)); showChatSearch = false }.padding(vertical = 7.dp)) {
+                                Column(Modifier.fillMaxWidth().clickable {
+                                    showChatSearch = false
+                                    uiScope.launch { chatListState.animateScrollToItem(match.index) }
+                                }.padding(vertical = 7.dp)) {
                                     Text(if (match.value.role == "user") "Вы" else "NEXUS", color = AccentRed, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                                     Text(match.value.content.take(220), color = MainText, fontSize = 12.sp, maxLines = 4)
                                 }
