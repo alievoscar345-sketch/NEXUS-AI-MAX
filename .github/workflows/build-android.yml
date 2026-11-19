@@ -90,3 +90,5 @@ jobs:
           files: |
             app/build/outputs/apk/release/*.apk
             app/build/outputs/apk/release/SHA256SUMS.txt
+
+# Trigger a fresh signing verification after configuring repository secrets.
