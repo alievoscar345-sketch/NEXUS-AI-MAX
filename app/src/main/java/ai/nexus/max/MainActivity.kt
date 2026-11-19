@@ -32,7 +32,7 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 data class ChatLine(val role: String, val content: String)
-data class ApiSettings(val baseUrl: String = "https://anymodel.org/v1", val model: String = "cc/claude-fable-5-2", val apiKey: String = "")
+data class ApiSettings(val baseUrl: String = "https://anymodel.org/v1", val model: String = "claude-fable-5-2", val apiKey: String = "")
 
 class NexusViewModel : ViewModel() {
     var settings by mutableStateOf(ApiSettings()); private set
@@ -97,7 +97,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var input by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
     var url by remember { mutableStateOf("https://anymodel.org/v1") }
-    var model by remember { mutableStateOf("cc/claude-fable-5-2") }
+    var model by remember { mutableStateOf("claude-fable-5-2") }
     var key by remember { mutableStateOf("") }
 
     MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFF9BB7FF), background = Color(0xFF0B1020), surface = Color(0xFF151D30))) {
