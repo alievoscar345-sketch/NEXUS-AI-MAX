@@ -5,6 +5,9 @@ import android.app.Activity
 import android.content.Intent
 import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import android.media.MediaPlayer
+import android.media.PlaybackParams
 import android.os.Bundle
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -35,6 +38,8 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Replay5
+import androidx.compose.material.icons.filled.Forward5
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
@@ -711,6 +716,63 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var speaking by remember { mutableStateOf(false) }
     var speechRate by remember { mutableFloatStateOf(1.0f) }
     var speechSpeedMenu by remember { mutableStateOf(false) }
+    var audioPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    var speechFile by remember { mutableStateOf<File?>(null) }
+    var activeSpeechId by remember { mutableStateOf("") }
+    val currentAudioPlayer by rememberUpdatedState(audioPlayer)
+    DisposableEffect(textToSpeech) {
+        textToSpeech.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String) {}
+            override fun onDone(utteranceId: String) {
+                if (utteranceId != activeSpeechId) return
+                val file = speechFile ?: return
+                val player = MediaPlayer()
+                try {
+                    player.setDataSource(file.absolutePath)
+                    player.setOnPreparedListener { media ->
+                        media.setPlaybackParams(PlaybackParams().setSpeed(speechRate))
+                        media.start()
+                        audioPlayer = media
+                        speaking = true
+                    }
+                    player.setOnCompletionListener { media ->
+                        speaking = false
+                        audioPlayer = null
+                        media.release()
+                        file.delete()
+                        speechFile = null
+                    }
+                    player.setOnErrorListener { media, _, _ ->
+                        speaking = false
+                        audioPlayer = null
+                        media.release()
+                        file.delete()
+                        speechFile = null
+                        true
+                    }
+                    player.prepareAsync()
+                } catch (_: Exception) {
+                    player.release()
+                    speaking = false
+                    file.delete()
+                    speechFile = null
+                }
+            }
+            override fun onError(utteranceId: String) {
+                if (utteranceId == activeSpeechId) {
+                    speaking = false
+                    speechFile?.delete()
+                    speechFile = null
+                }
+            }
+        })
+        onDispose {
+            currentAudioPlayer?.release()
+            textToSpeech.stop()
+            textToSpeech.shutdown()
+            speechFile?.delete()
+        }
+    }
     val speechLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             val spoken = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
@@ -987,16 +1049,48 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                 }
                                 if (!isUser) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
+                                        IconButton(
+                                            enabled = speaking && audioPlayer != null,
+                                            onClick = { audioPlayer?.let { it.seekTo((it.currentPosition - 5000).coerceAtLeast(0)) } },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(Icons.Filled.Replay5, contentDescription = "Назад на 5 секунд", tint = if (speaking && audioPlayer != null) AccentRed else Muted, modifier = Modifier.size(21.dp))
+                                        }
                                         IconButton(onClick = {
-                                            if (speaking) { textToSpeech.stop(); speaking = false }
-                                            else if (line.content.isNotBlank() && ttsReady) {
+                                            if (speaking || activeSpeechId.isNotEmpty()) {
+                                                textToSpeech.stop()
+                                                audioPlayer?.stop()
+                                                audioPlayer?.release()
+                                                audioPlayer = null
+                                                speechFile?.delete()
+                                                speechFile = null
+                                                activeSpeechId = ""
+                                                speaking = false
+                                            } else if (line.content.isNotBlank() && ttsReady) {
                                                 textToSpeech.language = Locale("ru")
-                                                textToSpeech.setSpeechRate(speechRate)
-                                                textToSpeech.speak(line.content, TextToSpeech.QUEUE_FLUSH, null, "nexus_message")
-                                                speaking = true
+                                                textToSpeech.setSpeechRate(1.0f)
+                                                val file = File(context.cacheDir, "nexus_speech_${System.currentTimeMillis()}.wav")
+                                                val utteranceId = "nexus_${System.currentTimeMillis()}"
+                                                speechFile = file
+                                                activeSpeechId = utteranceId
+                                                speaking = false
+                                                val result = textToSpeech.synthesizeToFile(line.content, Bundle(), file, utteranceId)
+                                                if (result != TextToSpeech.SUCCESS) {
+                                                    activeSpeechId = ""
+                                                    speechFile = null
+                                                    file.delete()
+                                                    vm.showError("Не удалось подготовить озвучивание. Попробуй ещё раз.")
+                                                }
                                             } else if (!ttsReady) vm.showError("Синтез речи ещё не готов. Попробуй ещё раз.")
                                         }, modifier = Modifier.size(34.dp)) {
                                             Icon(if (speaking) Icons.Filled.Stop else Icons.Filled.VolumeUp, contentDescription = "Прослушать ответ", tint = AccentRed, modifier = Modifier.size(20.dp))
+                                        }
+                                        IconButton(
+                                            enabled = speaking && audioPlayer != null,
+                                            onClick = { audioPlayer?.let { it.seekTo((it.currentPosition + 5000).coerceAtMost(it.duration)) } },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(Icons.Filled.Forward5, contentDescription = "Вперёд на 5 секунд", tint = if (speaking && audioPlayer != null) AccentRed else Muted, modifier = Modifier.size(21.dp))
                                         }
                                         Box {
                                             TextButton(onClick = { speechSpeedMenu = true }, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 2.dp)) {
@@ -1008,11 +1102,9 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                                         text = { Text(if (rate == 1.0f) "Обычная скорость · 1×" else "${rate}×", color = if (speechRate == rate) AccentRed else MainText) },
                                                         onClick = {
                                                             speechRate = rate
-                                                            textToSpeech.setSpeechRate(rate)
                                                             speechSpeedMenu = false
-                                                            if (speaking) {
-                                                                textToSpeech.stop()
-                                                                textToSpeech.speak(line.content, TextToSpeech.QUEUE_FLUSH, null, "nexus_message")
+                                                            audioPlayer?.let { player ->
+                                                                player.setPlaybackParams(PlaybackParams().setSpeed(rate))
                                                             }
                                                         }
                                                     )
