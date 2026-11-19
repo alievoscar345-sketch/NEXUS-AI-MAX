@@ -5,9 +5,10 @@ on:
   push:
     branches: [nexus-1.0-development]
     paths:
-      - 'NEXUS_AI_MAX_0.2.0_source.zip'
-      - 'NEXUS_MAX/**'
-      - 'AGENTS.md'
+      - 'app/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
       - '.github/workflows/build-android.yml'
 
 permissions:
@@ -35,46 +36,13 @@ jobs:
       - name: Install Android packages
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
 
-      - name: Extract project
-        run: unzip -q NEXUS_AI_MAX_0.2.0_source.zip
-
-      - name: Fix Kotlin visibility
-        run: |
-          sed -i 's/private data class ApiSettings/data class ApiSettings/' NEXUS_MAX/app/src/main/java/ai/nexus/max/MainActivity.kt
-          sed -i 's/private data class ChatLine/data class ChatLine/' NEXUS_MAX/app/src/main/java/ai/nexus/max/MainActivity.kt
-
-      - name: Fix Java and Kotlin targets
-        run: |
-          cat >> NEXUS_MAX/app/build.gradle.kts <<'EOF'
-          android {
-              compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
-              }
-          }
-          EOF
-
-      - name: Build APK
-        working-directory: NEXUS_MAX
+      - name: Build APK from tracked source
         run: gradle --no-daemon :app:assembleDebug
-
-      - name: Upload source snapshot for development
-        uses: actions/upload-artifact@v4
-        with:
-          name: NEXUS-source-snapshot
-          path: |
-            NEXUS_MAX/app/src/main/**
-            NEXUS_MAX/app/build.gradle.kts
-            NEXUS_MAX/build.gradle.kts
-            NEXUS_MAX/settings.gradle.kts
-            NEXUS_MAX/gradle.properties
-          if-no-files-found: error
-          retention-days: 7
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: NEXUS-AI-MAX-debug-apk
-          path: NEXUS_MAX/app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
