@@ -1,3 +1,4 @@
+// Build configuration for NEXUS AI MAX.
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
