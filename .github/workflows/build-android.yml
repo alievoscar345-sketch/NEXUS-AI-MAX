@@ -1,13 +1,13 @@
-
 name: Build NEXUS AI APK
-# Development branch builds publish a source snapshot for review.
 
 on:
   workflow_dispatch:
   push:
-    branches: [main, master, nexus-1.0-development]
+    branches: [nexus-1.0-development]
     paths:
       - 'NEXUS_AI_MAX_0.2.0_source.zip'
+      - 'NEXUS_MAX/**'
+      - 'AGENTS.md'
       - '.github/workflows/build-android.yml'
 
 permissions:
@@ -16,7 +16,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -31,22 +30,22 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v4.0.2
+      - uses: android-actions/setup-android@v4.0.2
 
       - name: Install Android packages
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
 
       - name: Extract project
         run: unzip -q NEXUS_AI_MAX_0.2.0_source.zip
+
       - name: Fix Kotlin visibility
         run: |
           sed -i 's/private data class ApiSettings/data class ApiSettings/' NEXUS_MAX/app/src/main/java/ai/nexus/max/MainActivity.kt
           sed -i 's/private data class ChatLine/data class ChatLine/' NEXUS_MAX/app/src/main/java/ai/nexus/max/MainActivity.kt
+
       - name: Fix Java and Kotlin targets
         run: |
           cat >> NEXUS_MAX/app/build.gradle.kts <<'EOF'
-
           android {
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -54,6 +53,7 @@ jobs:
               }
           }
           EOF
+
       - name: Build APK
         working-directory: NEXUS_MAX
         run: gradle --no-daemon :app:assembleDebug
@@ -78,4 +78,3 @@ jobs:
           path: NEXUS_MAX/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
-          
