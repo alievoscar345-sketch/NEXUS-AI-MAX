@@ -2,6 +2,11 @@ package ai.nexus.max
 
 import android.app.Application
 import android.os.Bundle
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.util.Base64
+import java.io.File
+import java.io.FileOutputStream
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -54,7 +59,17 @@ private val Blue = Color(0xFF62B5FF)
 private val MainText = Color(0xFFF2F1FA)
 private val Muted = Color(0xFF9294A7)
 
-data class ChatLine(val role: String, val content: String)
+data class ChatAttachment(
+    val name: String,
+    val mimeType: String,
+    val localPath: String = "",
+    val textContent: String = ""
+)
+data class ChatLine(
+    val role: String,
+    val content: String,
+    val attachments: List<ChatAttachment> = emptyList()
+)
 data class ChatSession(
     val id: String,
     val title: String,
@@ -78,6 +93,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         private set
 
     var chats by mutableStateOf(loadChats())
+        private set
+    var pendingAttachments by mutableStateOf<List<ChatAttachment>>(emptyList())
         private set
     var activeChatId by mutableStateOf(chats.firstOrNull()?.id)
         private set
@@ -133,8 +150,46 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         saveChats()
     }
 
+    fun addAttachment(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val resolver = getApplication<Application>().contentResolver
+                val mime = resolver.getType(uri) ?: "application/octet-stream"
+                val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getString(0) else null
+                } ?: "attachment"
+                val attachment = if (mime.startsWith("image/")) {
+                    val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw IllegalStateException("Не удалось прочитать изображение.")
+                    if (bytes.size > 8 * 1024 * 1024) throw IllegalStateException("Изображение слишком большое. Максимум 8 МБ.")
+                    val directory = File(getApplication<Application>().filesDir, "nexus_attachments").apply { mkdirs() }
+                    val file = File(directory, UUID.randomUUID().toString() + ".img")
+                    FileOutputStream(file).use { it.write(bytes) }
+                    ChatAttachment(name, mime, file.absolutePath, "")
+                } else if (mime.startsWith("text/") || mime == "application/json" || mime == "application/xml") {
+                    val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw IllegalStateException("Не удалось прочитать документ.")
+                    if (bytes.size > 1024 * 1024) throw IllegalStateException("Текстовый документ слишком большой. Максимум 1 МБ.")
+                    ChatAttachment(name, mime, "", bytes.toString(Charsets.UTF_8))
+                } else {
+                    throw IllegalArgumentException("Поддерживаются изображения и текстовые файлы TXT, MD, CSV, JSON, XML.")
+                }
+                withContext(Dispatchers.Main) {
+                    pendingAttachments = pendingAttachments + attachment
+                    error = null
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { error = e.message ?: "Не удалось добавить файл." }
+            }
+        }
+    }
+
+    fun removePendingAttachment(index: Int) {
+        pendingAttachments = pendingAttachments.filterIndexed { i, _ -> i != index }
+    }
+
     fun send(text: String) {
-        if (busy || text.isBlank()) return
+        if (busy || (text.isBlank() && pendingAttachments.isEmpty())) return
         val cfg = settings
         if (cfg.apiKey.isBlank() || cfg.model.isBlank()) {
             error = "Открой настройки API и введи ключ."
@@ -147,7 +202,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         if (activeChatId == null) createChat()
         val chatId = activeChatId ?: return
         val oldChat = chats.firstOrNull { it.id == chatId } ?: return
-        val userLine = ChatLine("user", text.trim())
+        val userLine = ChatLine("user", text.trim(), pendingAttachments)
+        pendingAttachments = emptyList()
         val history = oldChat.lines + userLine
         val newTitle = if (oldChat.lines.isEmpty()) text.trim().replace("\n", " ").take(36).ifBlank { "Новый диалог" } else oldChat.title
         val placeholder = ChatLine("assistant", "")
@@ -163,7 +219,33 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         JSONObject().put("role", "system").put("content", SYSTEM_PROMPT)
                     )
                     history.takeLast(24).forEach { line ->
-                        messages.put(JSONObject().put("role", line.role).put("content", line.content))
+                        val imageAttachments = line.attachments.filter { it.mimeType.startsWith("image/") }
+                        val textAttachments = line.attachments.filter { it.textContent.isNotBlank() }
+                        if (line.role == "user" && (imageAttachments.isNotEmpty() || textAttachments.isNotEmpty())) {
+                            val parts = JSONArray()
+                            val textPart = buildString {
+                                append(line.content)
+                                textAttachments.forEach { file ->
+                                    append("\\n\\n[Прикреплённый файл: ")
+                                    append(file.name)
+                                    append("]\\n")
+                                    append(file.textContent)
+                                }
+                            }
+                            if (textPart.isNotBlank()) parts.put(JSONObject().put("type", "text").put("text", textPart))
+                            imageAttachments.forEach { image ->
+                                val bytes = File(image.localPath).readBytes()
+                                val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                                val dataUrl = "data:" + image.mimeType + ";base64," + encoded
+                                parts.put(
+                                    JSONObject().put("type", "image_url")
+                                        .put("image_url", JSONObject().put("url", dataUrl))
+                                )
+                            }
+                            messages.put(JSONObject().put("role", line.role).put("content", parts))
+                        } else {
+                            messages.put(JSONObject().put("role", line.role).put("content", line.content))
+                        }
                     }
                     val body = JSONObject()
                         .put("model", cfg.model)
@@ -260,7 +342,16 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         chats.forEach { chat ->
             val lineArray = JSONArray()
             chat.lines.forEach { line ->
-                lineArray.put(JSONObject().put("role", line.role).put("content", line.content))
+                val attachments = JSONArray()
+                line.attachments.forEach { item ->
+                    attachments.put(
+                        JSONObject().put("name", item.name)
+                            .put("mimeType", item.mimeType)
+                            .put("localPath", item.localPath)
+                            .put("textContent", item.textContent)
+                    )
+                }
+                lineArray.put(JSONObject().put("role", line.role).put("content", line.content).put("attachments", attachments))
             }
             array.put(
                 JSONObject()
@@ -281,7 +372,17 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 val linesJson = obj.optJSONArray("lines") ?: JSONArray()
                 val lines = (0 until linesJson.length()).map { j ->
                     val line = linesJson.getJSONObject(j)
-                    ChatLine(line.optString("role"), line.optString("content"))
+                    val attachmentsJson = line.optJSONArray("attachments") ?: JSONArray()
+                    val attachments = (0 until attachmentsJson.length()).map { k ->
+                        val item = attachmentsJson.getJSONObject(k)
+                        ChatAttachment(
+                            item.optString("name"),
+                            item.optString("mimeType"),
+                            item.optString("localPath"),
+                            item.optString("textContent")
+                        )
+                    }.filter { it.textContent.isNotBlank() || (it.localPath.isNotBlank() && File(it.localPath).exists()) }
+                    ChatLine(line.optString("role"), line.optString("content"), attachments)
                 }
                 ChatSession(
                     obj.optString("id", UUID.randomUUID().toString()),
