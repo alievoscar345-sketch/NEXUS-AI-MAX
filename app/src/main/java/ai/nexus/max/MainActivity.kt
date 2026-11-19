@@ -686,7 +686,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var ttsReady by remember { mutableStateOf(false) }
     val textToSpeech = remember(context) { TextToSpeech(context) { status ->
         ttsReady = status == TextToSpeech.SUCCESS
-        if (status == TextToSpeech.SUCCESS) textToSpeech.language = Locale("ru")
+
     } }
     DisposableEffect(textToSpeech) { onDispose { textToSpeech.stop(); textToSpeech.shutdown() } }
     var speaking by remember { mutableStateOf(false) }
@@ -947,6 +947,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                         IconButton(onClick = {
                                             if (speaking) { textToSpeech.stop(); speaking = false }
                                             else if (line.content.isNotBlank() && ttsReady) {
+                                                textToSpeech.language = Locale("ru")
                                                 textToSpeech.speak(line.content, TextToSpeech.QUEUE_FLUSH, null, "nexus_message")
                                                 speaking = true
                                             } else if (!ttsReady) vm.showError("Синтез речи ещё не готов. Попробуй ещё раз.")
