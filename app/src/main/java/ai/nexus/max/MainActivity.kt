@@ -733,10 +733,12 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         media.setPlaybackParams(PlaybackParams().setSpeed(speechRate))
                         media.start()
                         audioPlayer = media
+                        activeSpeechId = ""
                         speaking = true
                     }
                     player.setOnCompletionListener { media ->
                         speaking = false
+                        activeSpeechId = ""
                         audioPlayer = null
                         media.release()
                         file.delete()
@@ -744,6 +746,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     }
                     player.setOnErrorListener { media, _, _ ->
                         speaking = false
+                        activeSpeechId = ""
                         audioPlayer = null
                         media.release()
                         file.delete()
@@ -754,6 +757,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 } catch (_: Exception) {
                     player.release()
                     speaking = false
+                    activeSpeechId = ""
                     file.delete()
                     speechFile = null
                 }
@@ -761,6 +765,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
             override fun onError(utteranceId: String) {
                 if (utteranceId == activeSpeechId) {
                     speaking = false
+                    activeSpeechId = ""
                     speechFile?.delete()
                     speechFile = null
                 }
