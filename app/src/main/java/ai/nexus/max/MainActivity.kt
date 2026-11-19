@@ -247,7 +247,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                                 textAttachments.forEach { file ->
                                     append("\\n\\n[Прикреплённый файл: ")
                                     append(file.name)
-                                    append("]\\n")
+                                    append("]\n")
                                     append(file.textContent)
                                 }
                             }
@@ -362,7 +362,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     textAttachments.forEach { file ->
                         append("\\n\\n[Прикреплённый файл: ")
                         append(file.name)
-                        append("]\\n")
+                        append("]\n")
                         append(file.textContent)
                     }
                 }
@@ -440,7 +440,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 if (block.optString("type") != "text") continue
                 val text = block.optString("text")
                 if (text.isNotBlank()) {
-                    if (answer.isNotEmpty()) answer.append("\\n\\n")
+                    if (answer.isNotEmpty()) answer.append("\n\n")
                     answer.append(text)
                 }
                 val citationArray = block.optJSONArray("citations") ?: continue
@@ -453,13 +453,13 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             if (citations.isNotEmpty()) {
-                answer.append("\\n\\n**Источники**\\n")
+                answer.append("\n\n**Источники**\n")
                 citations.forEach { (sourceUrl, title) ->
                     answer.append("- [")
-                        .append(title.replace("]", "\\\\]"))
+                        .append(title.replace("]", "\\]"))
                         .append("](")
                         .append(sourceUrl)
-                        .append(")\\n")
+                        .append(")\n")
                 }
             }
             return WebSearchAnswer(answer.toString().trim(), preservedAssistantMessages.toString())
