@@ -1,5 +1,6 @@
 
 name: Build NEXUS AI APK
+# Development branch builds publish a source snapshot for review.
 
 on:
   workflow_dispatch:
