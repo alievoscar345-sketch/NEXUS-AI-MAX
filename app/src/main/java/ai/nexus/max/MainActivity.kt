@@ -252,7 +252,6 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     val body = JSONObject()
                         .put("model", cfg.model)
                         .put("messages", messages)
-                        .put("temperature", 0.35)
                         .put("stream", true)
                     val request = Request.Builder()
                         .url(cfg.baseUrl + "/chat/completions")
