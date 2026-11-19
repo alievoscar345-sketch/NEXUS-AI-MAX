@@ -9,6 +9,8 @@ import java.io.File
 import java.io.FileOutputStream
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -421,6 +423,12 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var url by remember { mutableStateOf(vm.settings.baseUrl) }
     var model by remember { mutableStateOf(vm.settings.model) }
     var key by remember { mutableStateOf("") }
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri?.let { vm.addAttachment(it) }
+    }
+    val documentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { vm.addAttachment(it) }
+    }
 
     MaterialTheme(colorScheme = darkColorScheme(
         primary = Violet,
@@ -466,6 +474,28 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
             },
             bottomBar = {
                 Column(Modifier.fillMaxWidth().background(Panel).padding(horizontal = 12.dp, vertical = 10.dp)) {
+                    if (vm.pendingAttachments.isNotEmpty()) {
+                        Column(Modifier.fillMaxWidth().padding(bottom = 7.dp)) {
+                            vm.pendingAttachments.forEachIndexed { index, attachment ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(attachment.name, color = Blue, fontSize = 10.sp, modifier = Modifier.weight(1f), maxLines = 1)
+                                    TextButton(onClick = { vm.removePendingAttachment(index) }, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp)) {
+                                        Text("Убрать", color = Color(0xFFFF8798), fontSize = 10.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = 5.dp)) {
+                        TextButton(onClick = { imagePicker.launch("image/*") }, contentPadding = PaddingValues(horizontal = 7.dp, vertical = 3.dp)) {
+                            Text("+ Фото", color = Blue, fontSize = 11.sp)
+                        }
+                        TextButton(onClick = {
+                            documentPicker.launch(arrayOf("text/*", "application/json", "application/xml"))
+                        }, contentPadding = PaddingValues(horizontal = 7.dp, vertical = 3.dp)) {
+                            Text("+ Документ", color = Blue, fontSize = 11.sp)
+                        }
+                    }
                     Row(
                         Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
                             .background(PanelRaised).padding(start = 15.dp, end = 7.dp, top = 7.dp, bottom = 7.dp),
@@ -551,7 +581,14 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                     modifier = Modifier.widthIn(max = 340.dp)
                                 ) {
                                     if (isUser) {
-                                        Text(line.content, color = MainText, fontSize = 14.sp, lineHeight = 21.sp, modifier = Modifier.padding(horizontal = 15.dp, vertical = 13.dp))
+                                        Column(Modifier.padding(horizontal = 15.dp, vertical = 13.dp)) {
+                                if (line.content.isNotBlank()) {
+                                    Text(line.content, color = MainText, fontSize = 14.sp, lineHeight = 21.sp)
+                                }
+                                line.attachments.forEach { attachment ->
+                                    Text("Вложение: " + attachment.name, color = Blue, fontSize = 11.sp, modifier = Modifier.padding(top = 5.dp))
+                                }
+                            }
                                     } else {
                                         Column(Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 13.dp)) {
                                             Markdown(
