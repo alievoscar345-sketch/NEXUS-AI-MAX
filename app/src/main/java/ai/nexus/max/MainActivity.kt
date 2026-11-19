@@ -41,6 +41,10 @@ import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import com.mikepenz.markdown.m3.Markdown
+import com.mikepenz.markdown.compose.components.markdownComponents
+import com.mikepenz.markdown.compose.elements.MarkdownHighlightedCodeBlock
+import com.mikepenz.markdown.compose.elements.MarkdownHighlightedCodeFence
+import org.intellij.markdown.ast.ASTNode
 
 private val Ink = Color(0xFF090A10)
 private val Panel = Color(0xFF12141E)
@@ -392,7 +396,37 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                         Text(line.content, color = MainText, fontSize = 14.sp, lineHeight = 21.sp, modifier = Modifier.padding(horizontal = 15.dp, vertical = 13.dp))
                                     } else {
                                         Column(Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 13.dp)) {
-                                            Markdown(line.content)
+                                            Markdown(
+                                                line.content,
+                                                components = markdownComponents(
+                                                    codeFence = { model ->
+                                                        val code = extractMarkdownCode(model.content, model.node, true)
+                                                        Column(Modifier.fillMaxWidth()) {
+                                                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                                                Text("CODE", color = Muted, fontSize = 9.sp, modifier = Modifier.weight(1f))
+                                                                TextButton(
+                                                                    onClick = { clipboard.setText(AnnotatedString(code)) },
+                                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                                                ) { Text("Копировать код", color = Blue, fontSize = 10.sp) }
+                                                            }
+                                                            MarkdownHighlightedCodeFence(content = model.content, node = model.node)
+                                                        }
+                                                    },
+                                                    codeBlock = { model ->
+                                                        val code = extractMarkdownCode(model.content, model.node, false)
+                                                        Column(Modifier.fillMaxWidth()) {
+                                                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                                                Text("CODE", color = Muted, fontSize = 9.sp, modifier = Modifier.weight(1f))
+                                                                TextButton(
+                                                                    onClick = { clipboard.setText(AnnotatedString(code)) },
+                                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                                                ) { Text("Копировать код", color = Blue, fontSize = 10.sp) }
+                                                            }
+                                                            MarkdownHighlightedCodeBlock(content = model.content, node = model.node)
+                                                        }
+                                                    }
+                                                )
+                                            )
                                         }
                                     }
                                 }
@@ -511,4 +545,24 @@ private fun SuggestionCard(title: String, subtitle: String, onClick: () -> Unit)
             Text("↗", color = Violet, fontSize = 18.sp)
         }
     }
+}
+
+
+private fun extractMarkdownCode(content: String, node: ASTNode, fenced: Boolean): String {
+    if (node.children.isEmpty()) return ""
+    val start: Int
+    val end: Int
+    if (fenced) {
+        if (node.children.size < 3) return ""
+        start = node.children[2].startOffset
+        val hasLanguage = node.children.size > 3 &&
+            content.substring(node.children[1].startOffset, node.children[1].endOffset).isNotBlank()
+        val minimumIndex = if (hasLanguage) 3 else 2
+        end = node.children[(node.children.size - 2).coerceAtLeast(minimumIndex)].endOffset
+    } else {
+        start = node.children.first().startOffset
+        end = node.children.last().endOffset
+    }
+    if (start < 0 || end < start || end > content.length) return ""
+    return content.substring(start, end).replaceIndent()
 }
