@@ -359,8 +359,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         }
                         Spacer(Modifier.height(22.dp))
                         Text("ДУМАЙ ШИРЕ.", color = Muted, fontSize = 11.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Bold)
-                        Text("Твоя идея.
-Следующий уровень.", color = MainText, fontSize = 31.sp, lineHeight = 38.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Твоя идея.\\nСледующий уровень.", color = MainText, fontSize = 31.sp, lineHeight = 38.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(12.dp))
                         Text("NEXUS готов к работе. Сформулируй задачу, задай вопрос или начни исследование.", color = Muted, fontSize = 14.sp, lineHeight = 21.sp)
                         Spacer(Modifier.height(25.dp))
