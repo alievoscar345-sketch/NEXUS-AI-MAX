@@ -90,7 +90,19 @@ data class ChatSession(
 data class ApiSettings(
     val baseUrl: String = "https://anymodel.org/v1",
     val model: String = "claude-fable-5-2",
-    val apiKey: String = ""
+    val apiKey: String = "",
+    val provider: String = "AnyModel",
+    val openRouterModel: String = "",
+    val openRouterApiKey: String = ""
+)
+data class OpenRouterModel(
+    val id: String,
+    val name: String,
+    val description: String,
+    val contextLength: Int,
+    val promptPrice: String,
+    val completionPrice: String,
+    val isFree: Boolean
 )
 
 class NexusViewModel(application: Application) : AndroidViewModel(application) {
@@ -98,7 +110,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     var settings by mutableStateOf(
         ApiSettings(
             baseUrl = prefs.getString("base_url", "https://anymodel.org/v1") ?: "https://anymodel.org/v1",
-            model = prefs.getString("model_id", "claude-fable-5-2") ?: "claude-fable-5-2"
+            model = prefs.getString("model_id", "claude-fable-5-2") ?: "claude-fable-5-2",
+            provider = prefs.getString("provider", "AnyModel") ?: "AnyModel",
+            openRouterModel = prefs.getString("openrouter_model", "") ?: ""
         )
     )
         private set
@@ -112,6 +126,10 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     var busy by mutableStateOf(false)
         private set
     var error by mutableStateOf<String?>(null)
+        private set
+    var openRouterModels by mutableStateOf<List<OpenRouterModel>>(emptyList())
+        private set
+    var loadingOpenRouterModels by mutableStateOf(false)
         private set
 
     val activeChat: ChatSession?
@@ -129,9 +147,52 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     fun updateSettings(url: String, model: String, key: String) {
         val cleanUrl = url.trim().trimEnd('/')
         val cleanModel = model.trim()
-        settings = ApiSettings(cleanUrl, cleanModel, key.trim())
+        settings = settings.copy(baseUrl = cleanUrl, model = cleanModel, apiKey = key.trim())
         prefs.edit().putString("base_url", cleanUrl).putString("model_id", cleanModel).apply()
         error = null
+    }
+
+    fun updateProviderSettings(provider: String, openRouterModel: String, openRouterKey: String) {
+        settings = settings.copy(provider = provider, openRouterModel = openRouterModel.trim(), openRouterApiKey = openRouterKey.trim())
+        prefs.edit().putString("provider", provider).putString("openrouter_model", openRouterModel.trim()).apply()
+        error = null
+    }
+
+    fun loadOpenRouterModels(apiKey: String) {
+        if (apiKey.isBlank()) { error = "Введи OpenRouter API key перед загрузкой каталога."; return }
+        if (loadingOpenRouterModels) return
+        loadingOpenRouterModels = true
+        viewModelScope.launch {
+            try {
+                val loaded = withContext(Dispatchers.IO) {
+                    val request = Request.Builder()
+                        .url("https://openrouter.ai/api/v1/models?endpoints=%2Fapi%2Fv1%2Fchat%2Fcompletions&output_modalities=all")
+                        .header("Authorization", "Bearer " + apiKey.trim())
+                        .header("Accept", "application/json")
+                        .get().build()
+                    client.newCall(request).execute().use { response ->
+                        val raw = response.body?.string().orEmpty()
+                        if (!response.isSuccessful) throw IllegalStateException("OpenRouter models API " + response.code + ": " + raw.take(250))
+                        val data = JSONObject(raw).optJSONArray("data") ?: throw IllegalStateException("OpenRouter вернул каталог без списка data.")
+                        (0 until data.length()).mapNotNull { index ->
+                            val item = data.optJSONObject(index) ?: return@mapNotNull null
+                            val id = item.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                            val pricing = item.optJSONObject("pricing") ?: JSONObject()
+                            val prompt = pricing.optString("prompt", "unknown")
+                            val completion = pricing.optString("completion", "unknown")
+                            OpenRouterModel(id, item.optString("name", id), item.optString("description", ""), item.optInt("context_length", 0), prompt, completion, prompt.toDoubleOrNull() == 0.0 && completion.toDoubleOrNull() == 0.0)
+                        }.sortedWith(compareByDescending<OpenRouterModel> { it.isFree }.thenBy { it.name.lowercase() })
+                    }
+                }
+                openRouterModels = loaded
+                if (settings.openRouterModel.isBlank() && loaded.isNotEmpty()) {
+                    settings = settings.copy(openRouterModel = (loaded.firstOrNull { it.isFree } ?: loaded.first()).id)
+                }
+                error = if (loaded.isEmpty()) "OpenRouter вернул пустой каталог моделей." else null
+            } catch (e: Exception) {
+                error = e.message ?: "Не удалось загрузить модели OpenRouter."
+            } finally { loadingOpenRouterModels = false }
+        }
     }
 
     fun createChat() {
@@ -206,12 +267,15 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     fun send(text: String, useWebSearch: Boolean = false) {
         if (busy || (text.isBlank() && pendingAttachments.isEmpty())) return
         val cfg = settings
-        if (cfg.apiKey.isBlank() || cfg.model.isBlank()) {
-            error = "Открой настройки API и введи ключ."
+        val activeModel = if (cfg.provider == "OpenRouter") cfg.openRouterModel else cfg.model
+        val activeKey = if (cfg.provider == "OpenRouter") cfg.openRouterApiKey else cfg.apiKey
+        if (activeKey.isBlank() || activeModel.isBlank()) {
+            error = if (cfg.provider == "OpenRouter") "Открой настройки и введи OpenRouter API key, затем выбери модель." else "Открой настройки API и введи ключ."
             return
         }
-        if (cfg.baseUrl.isBlank()) {
-            error = "Укажи Base URL провайдера."
+        if (cfg.provider == "AnyModel" && cfg.baseUrl.isBlank()) { error = "Укажи Base URL провайдера."; return }
+        if (useWebSearch && cfg.provider == "OpenRouter") {
+            error = "Встроенный поиск сейчас подключён только к AnyModel / Claude. Отключи поиск или переключись на AnyModel."
             return
         }
         if (activeChatId == null) createChat()
@@ -269,12 +333,14 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                     val body = JSONObject()
-                        .put("model", cfg.model)
+                        .put("model", activeModel)
                         .put("messages", messages)
                         .put("stream", true)
                     val request = Request.Builder()
-                        .url(cfg.baseUrl + "/chat/completions")
-                        .header("Authorization", "Bearer " + cfg.apiKey)
+                        .url(if (cfg.provider == "OpenRouter") "https://openrouter.ai/api/v1/chat/completions" else cfg.baseUrl + "/chat/completions")
+                        .header("Authorization", "Bearer " + activeKey)
+                        .header("HTTP-Referer", "https://github.com/alievoscar345-sketch/NEXUS-AI-MAX")
+                        .header("X-OpenRouter-Title", "NEXUS AI MAX")
                         .header("Content-Type", "application/json")
                         .post(body.toString().toRequestBody("application/json".toMediaType()))
                         .build()
@@ -580,6 +646,11 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var url by remember { mutableStateOf(vm.settings.baseUrl) }
     var model by remember { mutableStateOf(vm.settings.model) }
     var key by remember { mutableStateOf("") }
+    var selectedProvider by remember { mutableStateOf(vm.settings.provider) }
+    var openRouterKey by remember { mutableStateOf("") }
+    var selectedOpenRouterModel by remember { mutableStateOf(vm.settings.openRouterModel) }
+    var freeModelsOnly by remember { mutableStateOf(false) }
+    var modelSearch by remember { mutableStateOf("") }
     var webSearchEnabled by remember { mutableStateOf(false) }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let { vm.addAttachment(it) }
@@ -633,6 +704,9 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                             url = vm.settings.baseUrl
                             model = vm.settings.model
                             key = vm.settings.apiKey
+                            selectedProvider = vm.settings.provider
+                            openRouterKey = vm.settings.openRouterApiKey
+                            selectedOpenRouterModel = vm.settings.openRouterModel
                             showSettings = true
                         },
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
@@ -945,6 +1019,9 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                 url = vm.settings.baseUrl
                                 model = vm.settings.model
                                 key = vm.settings.apiKey
+                                selectedProvider = vm.settings.provider
+                                openRouterKey = vm.settings.openRouterApiKey
+                                selectedOpenRouterModel = vm.settings.openRouterModel
                                 showSettings = true
                                 showHistory = false
                             },
@@ -970,15 +1047,62 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
             title = { Text("Подключение API", color = MainText) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                    OutlinedTextField(url, { url = it }, label = { Text("Base URL") }, singleLine = true)
-                    OutlinedTextField(model, { model = it }, label = { Text("Model ID") }, singleLine = true)
-                    OutlinedTextField(key, { key = it }, label = { Text("API key") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
-                    Text("Ключ хранится только в памяти приложения и не сохраняется в истории или GitHub. После перезапуска его нужно ввести снова.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
-                    Text("Встроенный поиск Claude работает через AnyModel. AnyModel может списывать отдельную фиксированную плату за каждый поисковый запрос; NEXUS ограничивает поиск двумя запросами на ответ.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
+                    Text("ПРОВАЙДЕР", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = selectedProvider == "AnyModel", onClick = { selectedProvider = "AnyModel" }, label = { Text("AnyModel") })
+                        FilterChip(selected = selectedProvider == "OpenRouter", onClick = { selectedProvider = "OpenRouter" }, label = { Text("OpenRouter") })
+                    }
+                    if (selectedProvider == "AnyModel") {
+                        OutlinedTextField(url, { url = it }, label = { Text("Base URL") }, singleLine = true)
+                        OutlinedTextField(model, { model = it }, label = { Text("Model ID") }, singleLine = true)
+                        OutlinedTextField(key, { key = it }, label = { Text("AnyModel API key") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
+                        Text("AnyModel остаётся прежним провайдером. Ключ хранится только в памяти и после перезапуска вводится заново.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
+                        Text("Встроенный поиск Claude работает только через AnyModel.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
+                    } else {
+                        OutlinedTextField(openRouterKey, { openRouterKey = it }, label = { Text("OpenRouter API key") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Button(onClick = { vm.loadOpenRouterModels(openRouterKey) }, enabled = !vm.loadingOpenRouterModels && openRouterKey.isNotBlank(), colors = ButtonDefaults.buttonColors(containerColor = Violet)) {
+                                Text(if (vm.loadingOpenRouterModels) "Загрузка…" else "Загрузить каталог")
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Text("${vm.openRouterModels.size} моделей", color = Muted, fontSize = 11.sp)
+                        }
+                        OutlinedTextField(modelSearch, { modelSearch = it }, label = { Text("Поиск модели") }, singleLine = true)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = freeModelsOnly, onCheckedChange = { freeModelsOnly = it })
+                            Text("Только бесплатные", color = MainText, fontSize = 12.sp)
+                        }
+                        val visibleModels = vm.openRouterModels.filter { (!freeModelsOnly || it.isFree) && (modelSearch.isBlank() || it.name.contains(modelSearch, true) || it.id.contains(modelSearch, true)) }
+                        if (visibleModels.isEmpty()) {
+                            Text(if (vm.openRouterModels.isEmpty()) "Нажми «Загрузить каталог», чтобы получить актуальный список из OpenRouter." else "Модели по этому фильтру не найдены.", color = Muted, fontSize = 11.sp)
+                        } else {
+                            Surface(color = PanelRaised, shape = RoundedCornerShape(12.dp)) {
+                                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 230.dp)) {
+                                    items(visibleModels, key = { it.id }) { item ->
+                                        Row(Modifier.fillMaxWidth().clickable { selectedOpenRouterModel = item.id }.padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            RadioButton(selected = (selectedOpenRouterModel.ifBlank { vm.settings.openRouterModel }) == item.id, onClick = { selectedOpenRouterModel = item.id })
+                                            Column(Modifier.weight(1f)) {
+                                                Text(item.name, color = MainText, fontSize = 12.sp, maxLines = 2)
+                                                Text(item.id, color = Muted, fontSize = 9.sp, maxLines = 2)
+                                                Text(if (item.isFree) "БЕСПЛАТНАЯ · контекст ${item.contextLength}" else "Платная · контекст ${item.contextLength}", color = if (item.isFree) Color(0xFF8FC6A0) else Muted, fontSize = 9.sp)
+                                            }
+                                        }
+                                        Divider(color = DividerTone)
+                                    }
+                                }
+                            }
+                        }
+                        Text("Бесплатность определяется по нулевой цене входных и выходных токенов в каталоге. У бесплатных моделей есть квоты и ограничения.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
+                        Text("Ключ хранится только в памяти приложения и будет потерян после перезапуска. Не используй этот режим для публичного распространения APK.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
+                    }
                 }
             },
             confirmButton = {
-                TextButton(onClick = { vm.updateSettings(url, model, key); showSettings = false }) { Text("Сохранить", color = Violet) }
+                TextButton(onClick = {
+                    vm.updateSettings(url, model, key)
+                    vm.updateProviderSettings(selectedProvider, selectedOpenRouterModel.ifBlank { vm.settings.openRouterModel }, openRouterKey)
+                    showSettings = false
+                }) { Text("Сохранить", color = Violet) }
             },
             dismissButton = { TextButton(onClick = { showSettings = false }) { Text("Отмена", color = Muted) } }
         )
