@@ -709,6 +709,8 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     } }
     DisposableEffect(textToSpeech) { onDispose { textToSpeech.stop(); textToSpeech.shutdown() } }
     var speaking by remember { mutableStateOf(false) }
+    var speechRate by remember { mutableFloatStateOf(1.0f) }
+    var speechSpeedMenu by remember { mutableStateOf(false) }
     val speechLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             val spoken = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
@@ -896,7 +898,12 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         }
                         Spacer(Modifier.height(22.dp))
                         Text("ДУМАЙ ШИРЕ.", color = Muted, fontSize = 11.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Bold)
-                        Text("Твоя идея.\\nСледующий уровень.", color = MainText, fontSize = 31.sp, lineHeight = 38.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Твоя идея.", color = MainText, fontSize = 31.sp, lineHeight = 36.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.8).sp)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.width(4.dp).height(31.dp).clip(RoundedCornerShape(3.dp)).background(AccentRed))
+                            Spacer(Modifier.width(10.dp))
+                            Text("Следующий уровень.", color = AccentRed, fontSize = 29.sp, lineHeight = 35.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.9).sp)
+                        }
                         Spacer(Modifier.height(12.dp))
                         Text("NEXUS готов к работе. Сформулируй задачу, задай вопрос или начни исследование.", color = Muted, fontSize = 14.sp, lineHeight = 21.sp)
                         Spacer(Modifier.height(25.dp))
@@ -984,11 +991,33 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                             if (speaking) { textToSpeech.stop(); speaking = false }
                                             else if (line.content.isNotBlank() && ttsReady) {
                                                 textToSpeech.language = Locale("ru")
+                                                textToSpeech.setSpeechRate(speechRate)
                                                 textToSpeech.speak(line.content, TextToSpeech.QUEUE_FLUSH, null, "nexus_message")
                                                 speaking = true
                                             } else if (!ttsReady) vm.showError("Синтез речи ещё не готов. Попробуй ещё раз.")
                                         }, modifier = Modifier.size(34.dp)) {
                                             Icon(if (speaking) Icons.Filled.Stop else Icons.Filled.VolumeUp, contentDescription = "Прослушать ответ", tint = AccentRed, modifier = Modifier.size(20.dp))
+                                        }
+                                        Box {
+                                            TextButton(onClick = { speechSpeedMenu = true }, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 2.dp)) {
+                                                Text(if (speechRate == 1.5f) "1.5×" else if (speechRate == 2.0f) "2×" else "1×", color = AccentRed, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                            }
+                                            DropdownMenu(expanded = speechSpeedMenu, onDismissRequest = { speechSpeedMenu = false }, modifier = Modifier.background(Panel)) {
+                                                listOf(1.0f, 1.5f, 2.0f).forEach { rate ->
+                                                    DropdownMenuItem(
+                                                        text = { Text(if (rate == 1.0f) "Обычная скорость · 1×" else "${rate}×", color = if (speechRate == rate) AccentRed else MainText) },
+                                                        onClick = {
+                                                            speechRate = rate
+                                                            textToSpeech.setSpeechRate(rate)
+                                                            speechSpeedMenu = false
+                                                            if (speaking) {
+                                                                textToSpeech.stop()
+                                                                textToSpeech.speak(line.content, TextToSpeech.QUEUE_FLUSH, null, "nexus_message")
+                                                            }
+                                                        }
+                                                    )
+                                                }
+                                            }
                                         }
                                         TextButton(onClick = { clipboard.setText(AnnotatedString(line.content)) }, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 2.dp)) {
                                             Text("Копировать ответ", color = Muted, fontSize = 10.sp)
