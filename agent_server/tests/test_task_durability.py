@@ -116,6 +116,7 @@ class DurableTaskTests(unittest.TestCase):
             base_url="https://anymodel.org/v1",
             model="claude-fable-5-2",
             api_key="provider-secret-key-value",
+            supports_vision=True,
         )
         key = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
         with patch.dict(os.environ, {"NEXUS_CREDENTIAL_ENCRYPTION_KEY": key}):
@@ -126,7 +127,7 @@ class DurableTaskTests(unittest.TestCase):
                                     ("tenant-a",)).fetchone()
             self.assertNotIn(b"provider-secret-key-value", bytes(row["encrypted_api_key"]))
             models = main.provider_models_for_owner("tenant-a")
-            self.assertTrue(any(m.id == "user-anymodel" and m.api_key == body.api_key for m in models))
+            self.assertTrue(any(m.id == "user-anymodel" and m.api_key == body.api_key and "vision" in m.capabilities for m in models))
             self.assertEqual(main.provider_models_for_owner("tenant-b"), [])
 
     def test_task_lists_are_owner_scoped(self):
@@ -139,6 +140,18 @@ class DurableTaskTests(unittest.TestCase):
         self.assertEqual(len(tenant_a["tasks"]), 1)
         self.assertEqual(len(tenant_b["tasks"]), 1)
         self.assertNotEqual(tenant_a["tasks"][0]["id"], tenant_b["tasks"][0]["id"])
+
+    def test_chat_validator_accepts_inline_image_and_rejects_remote_image_url(self):
+        valid = [{"role": "user", "content": [
+            {"type": "text", "text": "Describe this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}},
+        ]}]
+        self.assertTrue(main.validate_chat_messages(valid))
+        invalid = [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}},
+        ]}]
+        with self.assertRaises(main.HTTPException):
+            main.validate_chat_messages(invalid)
 
     def test_rejects_unlisted_provider_hosts(self):
         with self.assertRaises(main.HTTPException):
