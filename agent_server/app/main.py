@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
+from .model_gateway import ModelGateway
 
 DB_PATH = Path(os.getenv("NEXUS_AGENT_DB", "./data/nexus-agent.db"))
 WORKSPACE = Path(os.getenv("NEXUS_AGENT_WORKSPACE", "./data/workspace")).resolve()
@@ -55,21 +56,11 @@ class Approval(BaseModel):
     approved: bool
     note: str = Field(default="",max_length=1000)
 
-async def llm_json(system: str, user: str) -> dict[str,Any]:
-    if not LLM_KEY: raise RuntimeError("Set NEXUS_LLM_API_KEY on the server")
-    async with httpx.AsyncClient(timeout=90) as client:
-        r=await client.post(LLM_BASE+"/chat/completions",headers={"Authorization":"Bearer "+LLM_KEY},json={"model":LLM_MODEL,"temperature":0.2,"messages":[{"role":"system","content":system},{"role":"user","content":user}]})
-        r.raise_for_status()
-        payload=r.json()
-    value=payload["choices"][0]["message"]["content"]
-    if isinstance(value,list): value="".join(x.get("text","") for x in value if isinstance(x,dict))
-    value=str(value).strip()
-    if value.startswith(""):
-        pass
-    if value.startswith(chr(96)*3): value=value.split("\n",1)[-1].rsplit(chr(96)*3,1)[0].strip()
-    obj=json.loads(value)
-    if not isinstance(obj,dict): raise ValueError("Model returned invalid JSON object")
-    return obj
+_model_gateway = ModelGateway()
+
+async def llm_json(system: str, user: str, purpose: str = "general") -> dict[str,Any]:
+    parsed, _result = await _model_gateway.complete_json(system, user, purpose)
+    return parsed
 
 def safe_url(value: str) -> str:
     p=urlparse(value)
@@ -124,7 +115,7 @@ async def process(tid):
         event(tid,"status","Planning task")
         plan=await llm_json(
             'You are NEXUS Agent Planner. Return strict JSON only: {"summary":"...","steps":[{"title":"...","action":"web_search|fetch_url|save_artifact|draft_external_action","input":{}}]}. Use only listed actions. For publishing, messaging, purchases or account changes use draft_external_action. Never claim external actions succeeded.',
-            row["prompt"])
+            row["prompt"], purpose="planning")
         steps=plan.get("steps",[])
         if not isinstance(steps,list): raise ValueError("Planner did not return steps")
         steps=steps[:min(MAX_STEPS,8)]
@@ -139,7 +130,7 @@ async def process(tid):
             if result.get("status")=="awaiting_approval": return
         final=await llm_json(
             'Return strict JSON only: {"summary":"..."}. Summarize only supplied results. Explicitly identify blocked or unavailable actions; do not claim they succeeded.',
-            json.dumps({"goal":row["prompt"],"results":results},ensure_ascii=False)[:30000])
+            json.dumps({"goal":row["prompt"],"results":results},ensure_ascii=False)[:30000], purpose="evaluation")
         with db() as c: c.execute("UPDATE tasks SET status='completed',summary=?,results_json=?,updated_at=? WHERE id=?",(str(final.get("summary","Task finished"))[:12000],json.dumps(results,ensure_ascii=False),time.time(),tid))
         event(tid,"completed","Task completed")
     except Exception as exc:
