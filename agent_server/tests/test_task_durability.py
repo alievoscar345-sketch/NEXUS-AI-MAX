@@ -118,8 +118,18 @@ class DurableTaskTests(unittest.TestCase):
             api_key="provider-secret-key-value",
             supports_vision=True,
         )
+        self.assertNotIn("provider-secret-key-value", repr(body))
+        short_body = main.ProviderCredentialInput(
+            provider_id="shortkey",
+            base_url="https://anymodel.org/v1",
+            model="test-model",
+            api_key="short",
+        )
         key = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
         with patch.dict(os.environ, {"NEXUS_CREDENTIAL_ENCRYPTION_KEY": key}):
+            with self.assertRaises(main.HTTPException) as invalid_key:
+                asyncio.run(main.save_provider(short_body, owner_id="tenant-a"))
+            self.assertNotIn("short", str(invalid_key.exception.detail))
             result = asyncio.run(main.save_provider(body, owner_id="tenant-a"))
             self.assertEqual(result["status"], "saved")
             with main.db() as conn:
