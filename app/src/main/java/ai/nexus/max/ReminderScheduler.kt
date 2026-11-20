@@ -66,6 +66,13 @@ internal object ReminderParser {
     }
 }
 
+internal data class ScheduledReminder(
+    val id: String,
+    val task: String,
+    val triggerAtMillis: Long,
+    val zoneId: String
+)
+
 internal object ReminderScheduler {
     private const val PREFS = "nexus_reminders"
     private const val KEY = "scheduled_json"
@@ -83,6 +90,38 @@ internal object ReminderScheduler {
         updated.put(JSONObject().put("id", id).put("task", task).put("triggerAt", triggerAtMillis).put("zoneId", zoneId))
         prefs.edit().putString(KEY, updated.toString()).apply()
         scheduleAlarm(context, id, triggerAtMillis)
+    }
+
+    fun getScheduled(context: Context): List<ScheduledReminder> {
+        val array = JSONArray(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, "[]") ?: "[]")
+        return (0 until array.length()).mapNotNull { index ->
+            val item = array.optJSONObject(index) ?: return@mapNotNull null
+            val id = item.optString("id")
+            val task = item.optString("task")
+            val triggerAt = item.optLong("triggerAt", 0L)
+            val zone = item.optString("zoneId", ZoneId.systemDefault().id)
+            if (id.isBlank() || task.isBlank() || triggerAt <= 0L) null
+            else ScheduledReminder(id, task, triggerAt, zone)
+        }.sortedBy { it.triggerAtMillis }
+    }
+
+    fun cancel(context: Context, id: String) {
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val intent = Intent(context, ReminderAlarmReceiver::class.java).putExtra("reminder_id", id)
+        val pending = PendingIntent.getBroadcast(
+            context, id.hashCode(), intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        alarmManager.cancel(pending)
+        pending.cancel()
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val array = JSONArray(prefs.getString(KEY, "[]") ?: "[]")
+        val remaining = JSONArray()
+        for (i in 0 until array.length()) {
+            val item = array.optJSONObject(i) ?: continue
+            if (item.optString("id") != id) remaining.put(item)
+        }
+        prefs.edit().putString(KEY, remaining.toString()).apply()
     }
 
     fun scheduleAlarm(context: Context, id: String, triggerAtMillis: Long) {
