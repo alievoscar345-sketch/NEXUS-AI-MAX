@@ -806,8 +806,18 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     } catch (e: Exception) {
                         throw IllegalArgumentException("Не удалось извлечь текст из PDF. Проверь, что файл не повреждён и не защищён паролем. Для сканированных PDF пока не поддерживается OCR.", e)
                     }
-                    if (extracted.isBlank()) throw IllegalArgumentException("В PDF не найден текстовый слой. Вероятно, это скан; OCR пока не поддерживается.")
-                    ChatAttachment(name, "application/pdf", "", extracted)
+                    val finalText = if (extracted.isBlank()) {
+                        try {
+                            extractScannedPdfText(getApplication<Application>(), bytes)
+                        } catch (e: Exception) {
+                            throw IllegalArgumentException(
+                                "В PDF не найден текстовый слой, а OCR не удалось выполнить. Проверь подключение к интернету при первой загрузке языковых моделей. Причина: ${e.message ?: "неизвестная ошибка"}.",
+                                e
+                            )
+                        }
+                    } else extracted
+                    if (finalText.isBlank()) throw IllegalArgumentException("В PDF не удалось распознать текст. Проверь качество скана.")
+                    ChatAttachment(name, "application/pdf", "", finalText)
                 } else if (isDocx) {
                     val bytes = readUriLimited(resolver, uri, 10 * 1024 * 1024, "DOCX слишком большой. Максимум 10 МБ.", "Не удалось прочитать DOCX.")
                     val xmlBytes = ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
