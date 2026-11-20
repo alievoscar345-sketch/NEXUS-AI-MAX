@@ -12,8 +12,14 @@ import android.os.Bundle
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
+import android.util.Xml
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.util.zip.ZipInputStream
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.text.PDFTextStripper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -266,6 +272,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
                     if (cursor.moveToFirst()) cursor.getString(0) else null
                 } ?: "attachment"
+                val extension = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
+                val isPdf = mime == "application/pdf" || extension == "pdf"
+                val isDocx = mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || extension == "docx"
                 val attachment = if (mime.startsWith("image/")) {
                     val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
                         ?: throw IllegalStateException("Не удалось прочитать изображение.")
@@ -274,13 +283,65 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     val file = File(directory, UUID.randomUUID().toString() + ".img")
                     FileOutputStream(file).use { it.write(bytes) }
                     ChatAttachment(name, mime, file.absolutePath, "")
-                } else if (mime.startsWith("text/") || mime == "application/json" || mime == "application/xml") {
+                } else if (isPdf) {
+                    val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw IllegalStateException("Не удалось прочитать PDF.")
+                    if (bytes.size > 20 * 1024 * 1024) throw IllegalStateException("PDF слишком большой. Максимум 20 МБ.")
+                    val extracted = try {
+                        PDFBoxResourceLoader.init(getApplication<Application>())
+                        PDDocument.load(ByteArrayInputStream(bytes)).use { document ->
+                            if (document.numberOfPages > 300) throw IllegalStateException("В PDF больше 300 страниц. Раздели документ на части.")
+                            PDFTextStripper().getText(document).take(1_000_000)
+                        }
+                    } catch (e: Exception) {
+                        throw IllegalArgumentException("Не удалось извлечь текст из PDF. Проверь, что файл не повреждён и не защищён паролем. Для сканированных PDF пока не поддерживается OCR.", e)
+                    }
+                    if (extracted.isBlank()) throw IllegalArgumentException("В PDF не найден текстовый слой. Вероятно, это скан; OCR пока не поддерживается.")
+                    ChatAttachment(name, "application/pdf", "", extracted)
+                } else if (isDocx) {
+                    val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw IllegalStateException("Не удалось прочитать DOCX.")
+                    if (bytes.size > 10 * 1024 * 1024) throw IllegalStateException("DOCX слишком большой. Максимум 10 МБ.")
+                    val xmlBytes = ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
+                        var documentXml: ByteArray? = null
+                        while (true) {
+                            val entry = zip.nextEntry ?: break
+                            if (entry.name == "word/document.xml") {
+                                documentXml = zip.readBytes()
+                                break
+                            }
+                        }
+                        documentXml
+                    } ?: throw IllegalArgumentException("В DOCX не найден основной текст документа.")
+                    if (xmlBytes.size > 20 * 1024 * 1024) throw IllegalArgumentException("XML внутри DOCX слишком большой.")
+                    val extracted = buildString {
+                        val parser = Xml.newPullParser()
+                        parser.setInput(ByteArrayInputStream(xmlBytes), "UTF-8")
+                        var event = parser.eventType
+                        while (event != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
+                            when (event) {
+                                org.xmlpull.v1.XmlPullParser.TEXT -> append(parser.text)
+                                org.xmlpull.v1.XmlPullParser.START_TAG -> when (parser.name) {
+                                    "w:tab" -> append('\t')
+                                    "w:br" -> append('\n')
+                                }
+                                org.xmlpull.v1.XmlPullParser.END_TAG -> if (parser.name == "w:p") append('\n')
+                            }
+                            if (length > 1_000_000) break
+                            event = parser.next()
+                        }
+                    }.trim()
+                    if (extracted.isBlank()) throw IllegalArgumentException("В DOCX не найден текст.")
+                    ChatAttachment(name, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "", extracted)
+                } else if (mime.startsWith("text/") || mime == "application/json" || mime == "application/xml" ||
+                    extension in setOf("txt", "md", "csv", "json", "xml")
+                ) {
                     val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
                         ?: throw IllegalStateException("Не удалось прочитать документ.")
                     if (bytes.size > 1024 * 1024) throw IllegalStateException("Текстовый документ слишком большой. Максимум 1 МБ.")
                     ChatAttachment(name, mime, "", bytes.toString(Charsets.UTF_8))
                 } else {
-                    throw IllegalArgumentException("Поддерживаются изображения и текстовые файлы TXT, MD, CSV, JSON, XML.")
+                    throw IllegalArgumentException("Поддерживаются изображения, TXT, MD, CSV, JSON, XML, PDF и DOCX.")
                 }
                 withContext(Dispatchers.Main) {
                     pendingAttachments = pendingAttachments + attachment
@@ -1036,7 +1097,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         }
                         TextButton(
                             enabled = fileAnalysisEnabled,
-                            onClick = { documentPicker.launch(arrayOf("text/*", "application/json", "application/xml")) },
+                            onClick = { documentPicker.launch(arrayOf("text/*", "application/json", "application/xml", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")) },
                             contentPadding = PaddingValues(horizontal = 7.dp, vertical = 3.dp)
                         ) {
                             Text("+ Документ", color = if (fileAnalysisEnabled) Blue else Muted, fontSize = 11.sp)
@@ -1072,7 +1133,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                     Divider(color = DividerTone, modifier = Modifier.padding(vertical = 5.dp))
                                     Text("ИНСТРУМЕНТЫ ПРИЛОЖЕНИЯ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                                     FeatureSwitchRow("Понимание изображений", "Отправка прикреплённых изображений в API", imageInputEnabled, true) { imageInputEnabled = it }
-                                    FeatureSwitchRow("Анализ текстовых файлов", "TXT, MD, CSV, JSON и XML", fileAnalysisEnabled, true) { fileAnalysisEnabled = it }
+                                    FeatureSwitchRow("Анализ документов", "TXT, MD, CSV, JSON, XML, PDF и DOCX", fileAnalysisEnabled, true) { fileAnalysisEnabled = it }
                                     FeatureSwitchRow("Голосовой ввод", "Распознавание речи Android", voiceInputEnabled, true) { voiceInputEnabled = it }
                                     FeatureSwitchRow("Озвучивание ответов", "Синтез речи на устройстве", speechOutputEnabled, true) { speechOutputEnabled = it }
                                     Spacer(Modifier.height(5.dp))
