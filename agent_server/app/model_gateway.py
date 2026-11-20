@@ -64,7 +64,7 @@ def _clean_json_text(value: str) -> str:
     return value
 
 
-def load_models() -> list[ModelConfig]:
+def load_models(allow_empty: bool = False) -> list[ModelConfig]:
     """Load provider definitions from env; preserve the legacy single-provider setup."""
     raw = os.getenv("NEXUS_MODEL_PROVIDERS", "").strip()
     configs: list[ModelConfig] = []
@@ -117,7 +117,7 @@ def load_models() -> list[ModelConfig]:
         ))
 
     valid = [m for m in configs if m.enabled and m.id and m.base_url and m.model and m.api_key]
-    if not valid:
+    if not valid and not allow_empty:
         raise ModelGatewayError("No enabled model provider has a complete URL, model, and API key")
     return valid
 
