@@ -162,7 +162,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
 
     var chats by mutableStateOf(loadChats())
         private set
-    var reminders by mutableStateOf<List<ScheduledReminder>>(emptyList())
+    internal var reminders by mutableStateOf<List<ScheduledReminder>>(emptyList())
         private set
     var pendingAttachments by mutableStateOf<List<ChatAttachment>>(emptyList())
         private set
