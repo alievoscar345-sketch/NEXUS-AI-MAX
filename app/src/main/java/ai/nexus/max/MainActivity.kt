@@ -1,5 +1,6 @@
 package ai.nexus.max
 
+import android.Manifest
 import android.app.Application
 import android.app.Activity
 import android.content.Intent
@@ -10,6 +11,7 @@ import android.speech.tts.UtteranceProgressListener
 import android.media.MediaPlayer
 import android.media.PlaybackParams
 import android.os.Bundle
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
@@ -67,6 +69,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.Dispatchers
@@ -78,6 +83,9 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -190,6 +198,11 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             chats = sortChats(chats.map { if (it.id == REMINDERS_CHAT_ID) it.copy(title = "Напоминания", isSystem = true, isPinned = false) else it })
         }
+    }
+
+    fun refreshChatsFromDisk() {
+        chats = loadChats()
+        ensureRemindersChat()
     }
 
     fun markRemindersUnread() {
@@ -393,8 +406,33 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         error = message
     }
 
+    private fun createReminder(source: String, parsed: ParsedReminder) {
+        if (activeChatId == null) createChat()
+        val chatId = activeChatId ?: return
+        val current = chats.firstOrNull { it.id == chatId } ?: return
+        val id = UUID.randomUUID().toString()
+        ReminderScheduler.schedule(getApplication(), id, parsed.task, parsed.triggerAtMillis, parsed.zoneId)
+        val zone = ZoneId.of(parsed.zoneId)
+        val whenText = Instant.ofEpochMilli(parsed.triggerAtMillis).atZone(zone)
+            .format(DateTimeFormatter.ofPattern("dd.MM.yyyy, HH:mm", Locale("ru")))
+        val updated = current.copy(
+            title = if (current.lines.isEmpty()) source.trim().replace("\\n", " ").take(36).ifBlank { current.title } else current.title,
+            updatedAt = System.currentTimeMillis(),
+            lines = current.lines + ChatLine("user", source.trim()) + ChatLine("assistant", "Напоминание создано. Я сообщу: **${parsed.task}**\\n\\nВремя: **$whenText** (${parsed.zoneId}). Оно сохранено в системном чате «Напоминания».")
+        )
+        updateChat(chatId, updated)
+        error = null
+    }
+
     fun send(text: String, useWebSearch: Boolean = false, editLineIndex: Int? = null, useReasoning: Boolean = false) {
         if (busy || (text.isBlank() && pendingAttachments.isEmpty())) return
+        if (editLineIndex == null && pendingAttachments.isEmpty()) {
+            val reminder = try { ReminderParser.parse(text) } catch (_: Exception) { null }
+            if (reminder != null) {
+                createReminder(text, reminder)
+                return
+            }
+        }
         val cfg = settings
         val activeModel = if (cfg.provider == "OpenRouter") cfg.openRouterModel else cfg.model
         val activeKey = if (cfg.provider == "OpenRouter") cfg.openRouterApiKey else cfg.apiKey
@@ -909,6 +947,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7101)
+        }
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
         androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
             isAppearanceLightStatusBars = false
@@ -921,6 +962,12 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NexusApp(vm: NexusViewModel = viewModel()) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) vm.refreshChatsFromDisk() }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     val clipboard = LocalClipboardManager.current
     var input by remember { mutableStateOf("") }
     val chatListState = rememberLazyListState()
