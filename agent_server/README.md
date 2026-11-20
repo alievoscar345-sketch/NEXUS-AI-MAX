@@ -52,3 +52,20 @@ Add `benchmark_scores` (0..100), `cost_per_million_tokens`, `latency_ms`, `ranki
 A benchmark score is not a universal intelligence score. Maintain separate measurements by task category, account for benchmark freshness and contamination risk, and run NEXUS-specific evaluations before promoting a model. Never put provider API keys in the registry JSON or commit secrets.
 
 Retry controls: NEXUS_AGENT_STEP_MAX_ATTEMPTS (default 3, capped at 8) and NEXUS_AGENT_RETRY_BASE_SECONDS (default 10 seconds, exponential backoff capped at 15 minutes). Only transient network failures and selected HTTP statuses are retried. Permanent HTTP/authentication errors and validation failures are terminal.
+
+
+## User-managed provider credentials
+
+The backend supports encrypted per-owner provider credentials through:
+- `GET /v1/providers` — list provider metadata only; API keys are never returned.
+- `POST /v1/providers` — add or replace a credential using `provider_id`, `base_url`, `model`, and `api_key`.
+- `POST /v1/providers/{provider_id}/test` — make a minimal completion request to verify connectivity.
+- `DELETE /v1/providers/{provider_id}` — remove the stored credential.
+
+The supported provider hosts are allowlisted to reduce SSRF exposure: AnyModel, OpenRouter, OpenAI, Anthropic, Google Gemini OpenAI-compatible endpoint, DeepSeek, xAI, and Mistral. Custom hosts are intentionally rejected until a stricter egress policy exists.
+
+Provider API keys are encrypted in SQLite using AES-256-GCM with a fresh 96-bit nonce per write. Set `NEXUS_CREDENTIAL_ENCRYPTION_KEY` to a base64-encoded 32-byte random key (for example, generate it with `openssl rand -base64 32`). Keep this encryption key outside the database and repository, back it up separately, and never log it. If it is lost, stored provider credentials cannot be recovered. HTTPS is required for all provider calls.
+
+User-managed credentials are merged with server-configured built-in providers inside the Model Gateway, so task planning and evaluation can use either source. Credential metadata is owner-scoped; tasks, task reads, cancellations, and approvals are also filtered by owner. In this single-user prototype, the existing server bearer key maps to the fixed owner `personal`. A verified account/JWT authentication layer must replace that mapping before opening the service to multiple users; a client-supplied owner ID is never trusted.
+
+The provider credential API is not exposed to Android yet. Android settings integration and account authentication remain separate milestones. Provider connectivity testing sends a minimal prompt to the selected provider and may incur a small token charge.
