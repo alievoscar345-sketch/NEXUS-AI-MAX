@@ -319,13 +319,14 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         parser.setInput(ByteArrayInputStream(xmlBytes), "UTF-8")
                         var event = parser.eventType
                         while (event != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
+                            val tag = parser.name?.substringAfter(':')
                             when (event) {
                                 org.xmlpull.v1.XmlPullParser.TEXT -> append(parser.text)
-                                org.xmlpull.v1.XmlPullParser.START_TAG -> when (parser.name) {
-                                    "w:tab" -> append('\t')
-                                    "w:br" -> append('\n')
+                                org.xmlpull.v1.XmlPullParser.START_TAG -> when (tag) {
+                                    "tab" -> append('\t')
+                                    "br" -> append('\n')
                                 }
-                                org.xmlpull.v1.XmlPullParser.END_TAG -> if (parser.name == "w:p") append('\n')
+                                org.xmlpull.v1.XmlPullParser.END_TAG -> if (tag == "p") append('\n')
                             }
                             if (length > 1_000_000) break
                             event = parser.next()
