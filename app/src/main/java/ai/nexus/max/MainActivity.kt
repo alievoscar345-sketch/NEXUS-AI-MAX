@@ -128,6 +128,12 @@ data class RemoteProvider(
     val model: String,
     val supportsVision: Boolean = false
 )
+data class RemoteModel(
+    val providerId: String,
+    val model: String,
+    val source: String,
+    val capabilities: List<String>
+)
 data class ChatSession(
     val id: String,
     val title: String,
@@ -189,6 +195,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     var agentServerConfigured by mutableStateOf(SecureSecretStore.load(application).isNotBlank())
         private set
     var remoteProviders by mutableStateOf<List<RemoteProvider>>(emptyList())
+        private set
+    var remoteModels by mutableStateOf<List<RemoteModel>>(emptyList())
         private set
     var providerVaultBusy by mutableStateOf(false)
         private set
@@ -299,6 +307,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         SecureSecretStore.clear(getApplication())
         agentServerConfigured = false
         remoteProviders = emptyList()
+        remoteModels = emptyList()
         providerVaultMessage = "Токен доступа удалён с устройства."
     }
 
@@ -308,6 +317,39 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             throw IllegalStateException("Сначала укажи HTTPS-адрес NEXUS Agent Server и токен доступа.")
         }
         return token
+    }
+
+    fun loadRemoteModels() {
+        if (agentServerUrl.isBlank() || !agentServerConfigured) return
+        viewModelScope.launch {
+            try {
+                val loaded = withContext(Dispatchers.IO) {
+                    val request = Request.Builder()
+                        .url(agentServerUrl.trimEnd('/') + "/v1/models")
+                        .header("Authorization", "Bearer " + agentAuthorization())
+                        .get().build()
+                    client.newCall(request).execute().use { response ->
+                        val raw = response.body?.string().orEmpty()
+                        if (!response.isSuccessful) throw IllegalStateException("NEXUS models API returned HTTP " + response.code)
+                        val data = JSONObject(raw).optJSONArray("models") ?: JSONArray()
+                        (0 until data.length()).mapNotNull { index ->
+                            val item = data.optJSONObject(index) ?: return@mapNotNull null
+                            val id = item.optString("provider_id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                            val capabilitiesJson = item.optJSONArray("capabilities")
+                            val capabilities = buildList {
+                                if (capabilitiesJson != null) for (i in 0 until capabilitiesJson.length()) {
+                                    capabilitiesJson.optString(i).takeIf { it.isNotBlank() }?.let(::add)
+                                }
+                            }
+                            RemoteModel(id, item.optString("model"), item.optString("source"), capabilities)
+                        }
+                    }
+                }
+                remoteModels = loaded
+            } catch (e: Exception) {
+                providerVaultMessage = e.message ?: "Не удалось загрузить каталог моделей."
+            }
+        }
     }
 
     fun loadRemoteProviders() {
@@ -333,6 +375,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 remoteProviders = loaded
                 providerVaultMessage = "Подключений на сервере: " + loaded.size
+                loadRemoteModels()
             } catch (e: Exception) {
                 providerVaultMessage = e.message ?: "Не удалось загрузить подключения."
             } finally {
@@ -2047,7 +2090,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                             colors = ButtonDefaults.buttonColors(containerColor = Violet)
                         ) { Text("Подключить", fontSize = 11.sp) }
                         OutlinedButton(
-                            onClick = { vm.loadRemoteProviders() },
+                            onClick = { vm.loadRemoteProviders(); vm.loadRemoteModels() },
                             enabled = !vm.providerVaultBusy && vm.agentServerConfigured
                         ) { Text("Обновить список", color = MainText, fontSize = 11.sp) }
                         OutlinedButton(
@@ -2082,6 +2125,17 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                     }
                                 }
                             }
+                        }
+                    }
+                    if (vm.remoteModels.isNotEmpty()) {
+                        Text("ДОСТУПНЫЕ МОДЕЛИ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        vm.remoteModels.forEach { remoteModel ->
+                            Text(
+                                remoteModel.model + " · " + if (remoteModel.source == "built_in") "встроенная" else "свой ключ" +
+                                    if ("vision" in remoteModel.capabilities) " · vision" else "",
+                                color = MainText,
+                                fontSize = 10.sp
+                            )
                         }
                     }
                     Text("ДОБАВИТЬ ИЛИ ЗАМЕНИТЬ КЛЮЧ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
