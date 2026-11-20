@@ -202,6 +202,10 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshChatsFromDisk() {
         chats = loadChats()
+        if (activeChatId == REMINDERS_CHAT_ID) {
+            chats = chats.map { if (it.id == REMINDERS_CHAT_ID) it.copy(hasUnread = false) else it }
+            saveChats()
+        }
         ensureRemindersChat()
     }
 
@@ -415,10 +419,14 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         val zone = ZoneId.of(parsed.zoneId)
         val whenText = Instant.ofEpochMilli(parsed.triggerAtMillis).atZone(zone)
             .format(DateTimeFormatter.ofPattern("dd.MM.yyyy, HH:mm", Locale("ru")))
+        val alarmManager = getApplication<Application>().getSystemService(android.content.Context.ALARM_SERVICE) as android.app.AlarmManager
+        val timingNote = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) {
+            " Если доступ к точным будильникам не включён, Android может доставить уведомление с задержкой."
+        } else ""
         val updated = current.copy(
             title = if (current.lines.isEmpty()) source.trim().replace("\n", " ").take(36).ifBlank { current.title } else current.title,
             updatedAt = System.currentTimeMillis(),
-            lines = current.lines + ChatLine("user", source.trim()) + ChatLine("assistant", "Напоминание создано. Я сообщу: **${parsed.task}**\n\nВремя: **$whenText** (${parsed.zoneId}). Оно сохранено в системном чате «Напоминания».")
+            lines = current.lines + ChatLine("user", source.trim()) + ChatLine("assistant", "Напоминание создано. Я сообщу: **${parsed.task}**\n\nВремя: **$whenText** (${parsed.zoneId}). Оно сохранено в системном чате «Напоминания».$timingNote")
         )
         updateChat(chatId, updated)
         error = null
