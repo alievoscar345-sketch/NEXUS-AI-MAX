@@ -976,6 +976,14 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
+    val context = LocalContext.current
+    LaunchedEffect(Unit) {
+        val activity = context as? Activity
+        if (activity?.intent?.getBooleanExtra("open_reminders", false) == true) {
+            vm.selectChat("nexus-system-reminders")
+            activity.intent.removeExtra("open_reminders")
+        }
+    }
     val clipboard = LocalClipboardManager.current
     var input by remember { mutableStateOf("") }
     val chatListState = rememberLazyListState()
