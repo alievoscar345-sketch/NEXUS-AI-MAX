@@ -58,6 +58,9 @@ Retry controls: NEXUS_AGENT_STEP_MAX_ATTEMPTS (default 3, capped at 8) and NEXUS
 
 The backend supports encrypted per-owner provider credentials through:
 - `GET /v1/providers` — list provider metadata only; API keys are never returned.
+- `GET /v1/models` — list built-in and user-managed model IDs, sources, purposes, and declared capabilities without exposing credentials.
+- `POST /v1/chat/completions` — normalized standard chat endpoint; supports text and bounded inline image data URLs.
+- `supports_vision` may be enabled per provider only after confirming the selected model accepts image input.
 - `POST /v1/providers` — add or replace a credential using `provider_id`, `base_url`, `model`, and `api_key`.
 - `POST /v1/providers/{provider_id}/test` — make a minimal completion request to verify connectivity.
 - `DELETE /v1/providers/{provider_id}` — remove the stored credential.
