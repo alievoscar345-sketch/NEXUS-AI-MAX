@@ -1458,7 +1458,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     }
 
     MaterialTheme(colorScheme = darkColorScheme(
-        primary = Violet,
+        primary = ambientAccent,
         onPrimary = Color.White,
         background = Ink,
         surface = Panel,
@@ -1483,16 +1483,16 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
                         Text("NEXUS", color = MainText, fontWeight = FontWeight.Bold, fontSize = 17.sp, letterSpacing = 1.1.sp)
-                        Text("AI MAX", color = Violet, fontSize = 10.sp, letterSpacing = 1.7.sp, fontWeight = FontWeight.SemiBold)
+                        Text("AI MAX", color = ambientAccent, fontSize = 10.sp, letterSpacing = 1.7.sp, fontWeight = FontWeight.SemiBold)
                     }
                     Box {
                         IconButton(onClick = { topMenuExpanded = true }) {
                             Icon(Icons.Filled.MoreVert, contentDescription = "Меню чата", tint = MainText)
                         }
                         DropdownMenu(expanded = topMenuExpanded, onDismissRequest = { topMenuExpanded = false }) {
-                            DropdownMenuItem(text = { Text(if (vm.activeChat?.isPinned == true) "Открепить чат" else "Закрепить чат") }, leadingIcon = { Icon(Icons.Filled.PushPin, null, tint = AccentRed) }, onClick = { vm.activeChatId?.let { vm.togglePinChat(it) }; topMenuExpanded = false })
+                            DropdownMenuItem(text = { Text(if (vm.activeChat?.isPinned == true) "Открепить чат" else "Закрепить чат") }, leadingIcon = { Icon(Icons.Filled.PushPin, null, tint = ambientAccent) }, onClick = { vm.activeChatId?.let { vm.togglePinChat(it) }; topMenuExpanded = false })
 
-                            DropdownMenuItem(text = { Text("Поделиться") }, leadingIcon = { Icon(Icons.Filled.Share, null, tint = AccentRed) }, onClick = {
+                            DropdownMenuItem(text = { Text("Поделиться") }, leadingIcon = { Icon(Icons.Filled.Share, null, tint = ambientAccent) }, onClick = {
                                 val chat = vm.activeChat
                                 if (chat != null) {
                                     val transcript = buildString {
@@ -1643,7 +1643,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                             },
                             modifier = Modifier.size(38.dp)
                         ) {
-                            Icon(Icons.Filled.Mic, contentDescription = "Голосовой ввод", tint = AccentRed, modifier = Modifier.size(21.dp))
+                            Icon(Icons.Filled.Mic, contentDescription = "Голосовой ввод", tint = ambientAccent, modifier = Modifier.size(21.dp))
                         }
                         IconButton(
                             enabled = !vm.busy && (input.isNotBlank() || vm.pendingAttachments.isNotEmpty()),
@@ -1680,7 +1680,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("АКТИВНЫЕ НАПОМИНАНИЯ", color = MainText, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                             TextButton(onClick = { vm.refreshReminders() }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
-                                Text("Обновить", color = AccentRed, fontSize = 10.sp)
+                                Text("Обновить", color = ambientAccent, fontSize = 10.sp)
                             }
                         }
                         if (vm.reminders.isEmpty()) {
@@ -1703,7 +1703,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                             Text("Изменить", color = Blue, fontSize = 10.sp)
                                         }
                                         TextButton(onClick = { vm.cancelReminder(reminder.id) }, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp)) {
-                                            Text("Отменить", color = AccentRed, fontSize = 10.sp)
+                                            Text("Отменить", color = ambientAccent, fontSize = 10.sp)
                                         }
                                     }
                                 }
@@ -1728,7 +1728,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                             TextButton(onClick = {
                                                 if (vm.updateReminderTime(reminder.id, editReminderTime)) showEditReminder = false
                                                 else vm.showError("Неверная дата или время. Укажи будущую дату в формате ДД.ММ.ГГГГ ЧЧ:ММ.")
-                                            }) { Text("Сохранить", color = AccentRed) }
+                                            }) { Text("Сохранить", color = ambientAccent) }
                                         },
                                         dismissButton = { TextButton(onClick = { showEditReminder = false }) { Text("Отмена", color = Muted) } }
                                     )
@@ -1746,7 +1746,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     ) {
                         Box(
                             Modifier.size(54.dp).clip(RoundedCornerShape(18.dp))
-                                .background(Brush.linearGradient(listOf(Violet.copy(alpha = 0.34f), AccentSoft.copy(alpha = 0.18f)))),
+                                .background(Brush.linearGradient(listOf(ambientAccent.copy(alpha = 0.34f), AccentSoft.copy(alpha = 0.18f)))),
                             contentAlignment = Alignment.Center
                         ) {
                             Text("N", color = MainText, fontSize = 27.sp, fontWeight = FontWeight.Black)
@@ -1755,9 +1755,9 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         Text("ДУМАЙ ШИРЕ.", color = Muted, fontSize = 11.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Bold)
                         Text("Твоя идея.", color = MainText, fontSize = 31.sp, lineHeight = 36.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.8).sp)
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.width(4.dp).height(31.dp).clip(RoundedCornerShape(3.dp)).background(AccentRed))
+                            Box(Modifier.width(4.dp).height(31.dp).clip(RoundedCornerShape(3.dp)).background(ambientAccent))
                             Spacer(Modifier.width(10.dp))
-                            Text("Следующий уровень.", color = AccentRed, fontSize = 29.sp, lineHeight = 35.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.9).sp)
+                            Text("Следующий уровень.", color = ambientAccent, fontSize = 29.sp, lineHeight = 35.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.9).sp)
                         }
                         Spacer(Modifier.height(12.dp))
                         Text("NEXUS готов к работе. Сформулируй задачу, задай вопрос или начни исследование.", color = Muted, fontSize = 14.sp, lineHeight = 21.sp)
@@ -1834,7 +1834,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                             },
                                             contentPadding = PaddingValues(horizontal = 5.dp, vertical = 1.dp)
                                         ) {
-                                            Icon(Icons.Filled.Edit, contentDescription = null, tint = AccentRed, modifier = Modifier.size(14.dp))
+                                            Icon(Icons.Filled.Edit, contentDescription = null, tint = ambientAccent, modifier = Modifier.size(14.dp))
                                             Spacer(Modifier.width(4.dp))
                                             Text("Изменить", color = Muted, fontSize = 10.sp)
                                         }
@@ -1847,7 +1847,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                             onClick = { audioPlayer?.let { it.seekTo((it.currentPosition - 5000).coerceAtLeast(0)) } },
                                             modifier = Modifier.size(32.dp)
                                         ) {
-                                            Icon(Icons.Filled.Replay5, contentDescription = "Назад на 5 секунд", tint = if (speaking && audioPlayer != null) AccentRed else Muted, modifier = Modifier.size(21.dp))
+                                            Icon(Icons.Filled.Replay5, contentDescription = "Назад на 5 секунд", tint = if (speaking && audioPlayer != null) ambientAccent else Muted, modifier = Modifier.size(21.dp))
                                         }
                                         IconButton(onClick = {
                                             if (speaking || activeSpeechId.isNotEmpty()) {
@@ -1876,23 +1876,23 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                                 }
                                             } else if (!ttsReady) vm.showError("Синтез речи ещё не готов. Попробуй ещё раз.")
                                         }, enabled = speechOutputEnabled || speaking, modifier = Modifier.size(34.dp)) {
-                                            Icon(if (speaking) Icons.Filled.Stop else Icons.Filled.VolumeUp, contentDescription = "Прослушать ответ", tint = AccentRed, modifier = Modifier.size(20.dp))
+                                            Icon(if (speaking) Icons.Filled.Stop else Icons.Filled.VolumeUp, contentDescription = "Прослушать ответ", tint = ambientAccent, modifier = Modifier.size(20.dp))
                                         }
                                         IconButton(
                                             enabled = speaking && audioPlayer != null,
                                             onClick = { audioPlayer?.let { it.seekTo((it.currentPosition + 5000).coerceAtMost(it.duration)) } },
                                             modifier = Modifier.size(32.dp)
                                         ) {
-                                            Icon(Icons.Filled.Forward5, contentDescription = "Вперёд на 5 секунд", tint = if (speaking && audioPlayer != null) AccentRed else Muted, modifier = Modifier.size(21.dp))
+                                            Icon(Icons.Filled.Forward5, contentDescription = "Вперёд на 5 секунд", tint = if (speaking && audioPlayer != null) ambientAccent else Muted, modifier = Modifier.size(21.dp))
                                         }
                                         Box {
                                             TextButton(onClick = { speechSpeedMenu = true }, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 2.dp)) {
-                                                Text(if (speechRate == 1.5f) "1.5×" else if (speechRate == 2.0f) "2×" else "1×", color = AccentRed, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                                Text(if (speechRate == 1.5f) "1.5×" else if (speechRate == 2.0f) "2×" else "1×", color = ambientAccent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                             }
                                             DropdownMenu(expanded = speechSpeedMenu, onDismissRequest = { speechSpeedMenu = false }, modifier = Modifier.background(Panel)) {
                                                 listOf(1.0f, 1.5f, 2.0f).forEach { rate ->
                                                     DropdownMenuItem(
-                                                        text = { Text(if (rate == 1.0f) "Обычная скорость · 1×" else "${rate}×", color = if (speechRate == rate) AccentRed else MainText) },
+                                                        text = { Text(if (rate == 1.0f) "Обычная скорость · 1×" else "${rate}×", color = if (speechRate == rate) ambientAccent else MainText) },
                                                         onClick = {
                                                             speechRate = rate
                                                             speechPrefs.edit().putFloat("speech_rate", rate).apply()
@@ -1915,7 +1915,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         if (vm.busy) {
                             item {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    CircularProgressIndicator(modifier = Modifier.size(15.dp), color = Violet, strokeWidth = 2.dp)
+                                    CircularProgressIndicator(modifier = Modifier.size(15.dp), color = ambientAccent, strokeWidth = 2.dp)
                                     Spacer(Modifier.width(10.dp))
                                     Text("NEXUS формирует ответ…", color = Muted, fontSize = 12.sp)
                                 }
@@ -1947,7 +1947,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text("NEXUS", color = MainText, fontWeight = FontWeight.Bold, fontSize = 19.sp, letterSpacing = 1.2.sp)
-                                Text("AI MAX", color = Violet, fontSize = 10.sp, letterSpacing = 2.sp, fontWeight = FontWeight.Bold)
+                                Text("AI MAX", color = ambientAccent, fontSize = 10.sp, letterSpacing = 2.sp, fontWeight = FontWeight.Bold)
                             }
                             IconButton(onClick = { showHistory = false }) {
                                 Text("×", color = Muted, fontSize = 25.sp)
@@ -1981,7 +1981,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         ) {
                             Row(Modifier.padding(horizontal = 13.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Box(
-                                    Modifier.size(30.dp).clip(CircleShape).background(AccentRed),
+                                    Modifier.size(30.dp).clip(CircleShape).background(ambientAccent),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Text("+", color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Medium)
@@ -1989,7 +1989,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                 Spacer(Modifier.width(12.dp))
                                 Text("Новый чат", color = MainText, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                                 Spacer(Modifier.weight(1f))
-                                Text("↗", color = AccentRed, fontSize = 16.sp)
+                                Text("↗", color = ambientAccent, fontSize = 16.sp)
                             }
                         }
                         Spacer(Modifier.height(24.dp))
@@ -2010,11 +2010,11 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                                 showHistory = false
                                             }) {
                                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                                    if (chat.isPinned && !chat.isSystem) Icon(Icons.Filled.PushPin, "Закреплён", tint = AccentRed, modifier = Modifier.size(13.dp))
+                                                    if (chat.isPinned && !chat.isSystem) Icon(Icons.Filled.PushPin, "Закреплён", tint = ambientAccent, modifier = Modifier.size(13.dp))
                                                     Text(chat.title, color = MainText, fontSize = 13.sp, maxLines = 1)
                                                     if (chat.hasUnread) {
                                                         Spacer(Modifier.width(7.dp))
-                                                        Box(Modifier.size(8.dp).clip(CircleShape).background(AccentRed))
+                                                        Box(Modifier.size(8.dp).clip(CircleShape).background(ambientAccent))
                                                     }
                                                 }
                                                 Text("${chat.lines.size} сообщений", color = Muted, fontSize = 10.sp)
@@ -2096,7 +2096,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                     uiScope.launch { chatListState.animateScrollToItem(match.second) }
                                 }.padding(vertical = 7.dp)) {
                                     Text(match.first.title, color = Muted, fontSize = 10.sp, maxLines = 1)
-                                    Text(if (match.third.role == "user") "Вы" else "NEXUS", color = AccentRed, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    Text(if (match.third.role == "user") "Вы" else "NEXUS", color = ambientAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                                     Text(match.third.content.take(220), color = MainText, fontSize = 12.sp, maxLines = 4)
                                 }
                                 Divider(color = DividerTone)
@@ -2105,7 +2105,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { showChatSearch = false }) { Text("Закрыть", color = AccentRed) } }
+            confirmButton = { TextButton(onClick = { showChatSearch = false }) { Text("Закрыть", color = ambientAccent) } }
         )
     }
 
@@ -2141,7 +2141,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                 ) {
                                     Column(Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                         Box(Modifier.fillMaxWidth().height(25.dp).clip(RoundedCornerShape(7.dp)).background(
-                                            Brush.horizontalGradient(listOf(parseAmbientColor(preset.secondary, BackgroundGlow), parseAmbientColor(preset.primary, AccentRed), parseAmbientColor(preset.tertiary, AccentSoft)))
+                                            Brush.horizontalGradient(listOf(parseAmbientColor(preset.secondary, BackgroundGlow), parseAmbientColor(preset.primary, ambientAccent), parseAmbientColor(preset.tertiary, AccentSoft)))
                                         ))
                                         Text(preset.title, color = MainText, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                                     }
@@ -2241,7 +2241,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                 vm.loadRemoteProviders()
                             },
                             enabled = !vm.providerVaultBusy && agentServerUrl.startsWith("https://"),
-                            colors = ButtonDefaults.buttonColors(containerColor = Violet)
+                            colors = ButtonDefaults.buttonColors(containerColor = ambientAccent)
                         ) { Text("Подключить", fontSize = 11.sp) }
                         OutlinedButton(
                             onClick = { vm.loadRemoteProviders(); vm.loadRemoteModels() },
@@ -2250,7 +2250,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         OutlinedButton(
                             onClick = { vm.clearAgentServerToken(); agentServerToken = "" },
                             enabled = vm.agentServerConfigured
-                        ) { Text("Отключить", color = AccentRed, fontSize = 11.sp) }
+                        ) { Text("Отключить", color = ambientAccent, fontSize = 11.sp) }
                     }
                     Text(
                         if (vm.agentServerConfigured) "Токен сервера сохранён на устройстве." else "Сервер ещё не настроен.",
@@ -2275,7 +2275,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                         TextButton(
                                             onClick = { vm.deleteRemoteProvider(remote.providerId) },
                                             enabled = !vm.providerVaultBusy
-                                        ) { Text("Удалить", color = AccentRed, fontSize = 10.sp) }
+                                        ) { Text("Удалить", color = ambientAccent, fontSize = 10.sp) }
                                     }
                                 }
                             }
@@ -2311,7 +2311,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         },
                         enabled = !vm.providerVaultBusy && vm.agentServerConfigured && agentServerUrl.startsWith("https://") && vaultApiKey.isNotBlank(),
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = Violet)
+                        colors = ButtonDefaults.buttonColors(containerColor = ambientAccent)
                     ) { Text(if (vm.providerVaultBusy) "Выполняется…" else "Сохранить ключ на сервере") }
                     vm.providerVaultMessage?.let { Text(it, color = Muted, fontSize = 10.sp, lineHeight = 14.sp) }
                     Divider(color = DividerTone, modifier = Modifier.padding(vertical = 4.dp))
@@ -2345,7 +2345,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                 DropdownMenuItem(
                                     text = {
                                         Column {
-                                            Text(voice.name, color = if (voice.name == selectedVoiceName) AccentRed else MainText, fontSize = 12.sp)
+                                            Text(voice.name, color = if (voice.name == selectedVoiceName) ambientAccent else MainText, fontSize = 12.sp)
                                             Text(voice.locale.displayName + if (voice.isNetworkConnectionRequired) " · требуется интернет" else " · локальный", color = Muted, fontSize = 10.sp)
                                         }
                                     },
@@ -2386,7 +2386,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     } else {
                         OutlinedTextField(openRouterKey, { openRouterKey = it }, label = { Text("OpenRouter API key") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Button(onClick = { vm.loadOpenRouterModels(openRouterKey) }, enabled = !vm.loadingOpenRouterModels && openRouterKey.isNotBlank(), colors = ButtonDefaults.buttonColors(containerColor = Violet)) {
+                            Button(onClick = { vm.loadOpenRouterModels(openRouterKey) }, enabled = !vm.loadingOpenRouterModels && openRouterKey.isNotBlank(), colors = ButtonDefaults.buttonColors(containerColor = ambientAccent)) {
                                 Text(if (vm.loadingOpenRouterModels) "Загрузка…" else "Загрузить каталог")
                             }
                             Spacer(Modifier.width(8.dp))
@@ -2427,7 +2427,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     vm.updateSettings(url, model, key)
                     vm.updateProviderSettings(selectedProvider, selectedOpenRouterModel.ifBlank { vm.settings.openRouterModel }, openRouterKey)
                     showSettings = false
-                }) { Text("Сохранить", color = Violet) }
+                }) { Text("Сохранить", color = ambientAccent) }
             },
             dismissButton = { TextButton(onClick = { showSettings = false }) { Text("Отмена", color = Muted) } }
         )
@@ -2443,7 +2443,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 TextButton(onClick = {
                     pendingBackupImport = null
                     vm.importBackup(backupUri)
-                }) { Text("Заменить и импортировать", color = AccentRed) }
+                }) { Text("Заменить и импортировать", color = ambientAccent) }
             },
             dismissButton = {
                 TextButton(onClick = { pendingBackupImport = null }) { Text("Отмена", color = Muted) }
@@ -2475,7 +2475,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         editTargetIndex = null
                         vm.send(revisedText, webSearchEnabled, index, reasoningEnabled)
                     }
-                ) { Text("Сохранить и отправить", color = AccentRed) }
+                ) { Text("Сохранить и отправить", color = ambientAccent) }
             },
             dismissButton = {
                 TextButton(onClick = { editTargetIndex = null }) { Text("Отмена", color = Muted) }
@@ -2490,7 +2490,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
             title = { Text("Переименовать диалог", color = MainText) },
             text = { OutlinedTextField(renameValue, { renameValue = it }, singleLine = true, label = { Text("Название") }) },
             confirmButton = {
-                TextButton(onClick = { vm.renameChat(target.id, renameValue); renameTarget = null }) { Text("Сохранить", color = Violet) }
+                TextButton(onClick = { vm.renameChat(target.id, renameValue); renameTarget = null }) { Text("Сохранить", color = ambientAccent) }
             },
             dismissButton = { TextButton(onClick = { renameTarget = null }) { Text("Отмена", color = Muted) } }
         )
