@@ -31,6 +31,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -65,8 +66,10 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -245,6 +248,9 @@ private fun ChatAttachmentPreview(attachment: ChatAttachment, compact: Boolean =
     }
     val bitmap = bitmapState.value
     var showFullImage by remember(attachment.localPath) { mutableStateOf(false) }
+    var imageScale by remember(attachment.localPath) { mutableFloatStateOf(1f) }
+    var imageOffsetX by remember(attachment.localPath) { mutableFloatStateOf(0f) }
+    var imageOffsetY by remember(attachment.localPath) { mutableFloatStateOf(0f) }
     if (bitmap != null) {
         androidx.compose.foundation.Image(
             bitmap = bitmap,
@@ -282,13 +288,37 @@ private fun ChatAttachmentPreview(attachment: ChatAttachment, compact: Boolean =
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(max = 0.82f * androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp)
+                            .pointerInput(attachment.localPath) {
+                                detectTransformGestures { _, pan, zoom, _ ->
+                                    val nextScale = (imageScale * zoom).coerceIn(1f, 5f)
+                                    imageScale = nextScale
+                                    imageOffsetX = if (nextScale == 1f) 0f else imageOffsetX + pan.x
+                                    imageOffsetY = if (nextScale == 1f) 0f else imageOffsetY + pan.y
+                                }
+                            }
+                            .graphicsLayer {
+                                scaleX = imageScale
+                                scaleY = imageScale
+                                translationX = imageOffsetX
+                                translationY = imageOffsetY
+                            }
                     )
                     Text(
-                        "Нажми, чтобы закрыть",
+                        "Разведи пальцы для увеличения · Сведи для уменьшения",
                         color = Color.LightGray,
                         fontSize = 11.sp,
                         modifier = Modifier.padding(12.dp)
                     )
+                    TextButton(onClick = {
+                        imageScale = 1f
+                        imageOffsetX = 0f
+                        imageOffsetY = 0f
+                    }) {
+                        Text("Сбросить масштаб", color = Color.White)
+                    }
+                    TextButton(onClick = { showFullImage = false }) {
+                        Text("Закрыть", color = Color.White)
+                    }
                 }
             }
         }
