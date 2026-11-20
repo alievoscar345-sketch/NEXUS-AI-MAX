@@ -174,7 +174,7 @@ class ProviderCredentialInput(BaseModel):
 
 
 ALLOWED_PROVIDER_HOSTS = {
-    "anymodel.org", "openrouter.ai", "api.openai.com", "api.anthropic.com",
+    "anymodel.org", "openrouter.ai", "api.openai.com",
     "generativelanguage.googleapis.com", "api.deepseek.com", "api.x.ai", "api.mistral.ai",
 }
 
