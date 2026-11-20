@@ -59,7 +59,8 @@ object SecureSecretStore {
                 getOrCreateKey(),
                 GCMParameterSpec(128, Base64.decode(ivText, Base64.NO_WRAP))
             )
-            String(Base64.decode(valueText, Base64.NO_WRAP).let(cipher::doFinal), Charsets.UTF_8)
+            val plaintext = cipher.doFinal(Base64.decode(valueText, Base64.NO_WRAP))
+            String(plaintext, Charsets.UTF_8)
         } catch (_: Exception) {
             clear(context)
             ""
