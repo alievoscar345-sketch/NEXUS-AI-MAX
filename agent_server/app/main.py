@@ -191,8 +191,12 @@ ALLOWED_PROVIDER_HOSTS = {
 
 def validate_provider_base_url(value: str) -> str:
     parsed = urlparse(value)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise HTTPException(422, "Provider URL contains an invalid port") from exc
     if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
-            or parsed.port not in (None, 443) or parsed.query or parsed.fragment
+            or port not in (None, 443) or parsed.query or parsed.fragment
             or parsed.hostname.lower() not in ALLOWED_PROVIDER_HOSTS):
         raise HTTPException(422, "Provider URL must use HTTPS on a supported provider host")
     return value.rstrip("/")
