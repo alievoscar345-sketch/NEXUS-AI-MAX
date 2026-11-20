@@ -15,6 +15,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
+import android.graphics.BitmapFactory
 import android.util.Xml
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -64,6 +65,8 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -216,6 +219,45 @@ data class ChatLine(
     val attachments: List<ChatAttachment> = emptyList(),
     val providerMessagesJson: String? = null
 )
+
+@Composable
+private fun ChatAttachmentPreview(attachment: ChatAttachment, compact: Boolean = false) {
+    if (!attachment.mimeType.startsWith("image/") || attachment.localPath.isBlank()) {
+        Text("Вложение: " + attachment.name, color = Blue, fontSize = 11.sp, modifier = Modifier.padding(top = 5.dp))
+        return
+    }
+    val bitmapState = produceState<androidx.compose.ui.graphics.ImageBitmap?>(
+        initialValue = null,
+        key1 = attachment.localPath
+    ) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(attachment.localPath, bounds)
+                var sample = 1
+                while (bounds.outWidth / sample > 1200 || bounds.outHeight / sample > 1200) sample *= 2
+                BitmapFactory.decodeFile(
+                    attachment.localPath,
+                    BitmapFactory.Options().apply { inSampleSize = sample.coerceAtLeast(1) }
+                )?.asImageBitmap()
+            }.getOrNull()
+        }
+    }
+    val bitmap = bitmapState.value
+    if (bitmap != null) {
+        androidx.compose.foundation.Image(
+            bitmap = bitmap,
+            contentDescription = attachment.name,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .fillMaxWidth(if (compact) 0.42f else 1f)
+                .heightIn(max = if (compact) 64.dp else 240.dp)
+                .clip(RoundedCornerShape(12.dp))
+        )
+    } else {
+        Text(attachment.name, color = Blue, fontSize = 11.sp, modifier = Modifier.padding(top = 5.dp))
+    }
+}
 data class WebSearchAnswer(val text: String, val providerMessagesJson: String)
 data class RemoteProvider(
     val providerId: String,
@@ -1630,6 +1672,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         Column(Modifier.fillMaxWidth().padding(bottom = 7.dp)) {
                             vm.pendingAttachments.forEachIndexed { index, attachment ->
                                 Row(verticalAlignment = Alignment.CenterVertically) {
+                                    ChatAttachmentPreview(attachment, compact = true)
                                     Text(attachment.name, color = Blue, fontSize = 10.sp, modifier = Modifier.weight(1f), maxLines = 1)
                                     TextButton(onClick = { vm.removePendingAttachment(index) }, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp)) {
                                         Text("Убрать", color = Color(0xFFC77B83), fontSize = 10.sp)
@@ -1939,7 +1982,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                     Text(line.content, color = MainText, fontSize = 14.sp, lineHeight = 21.sp)
                                 }
                                 line.attachments.forEach { attachment ->
-                                    Text("Вложение: " + attachment.name, color = Blue, fontSize = 11.sp, modifier = Modifier.padding(top = 5.dp))
+                                    ChatAttachmentPreview(attachment)
                                 }
                             }
                                     } else {
