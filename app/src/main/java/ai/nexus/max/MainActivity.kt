@@ -219,10 +219,10 @@ private fun extractPdfTextByPage(document: PDDocument, maxChars: Int = 1_000_000
             stripper.endPage = pageNumber
             val pageText = stripper.getText(document).trim()
             if (pageText.isNotEmpty()) {
-                if (isNotEmpty()) append("\\n\\n")
+                if (isNotEmpty()) append("\n\n")
                 append("--- Страница ")
                 append(pageNumber)
-                append(" ---\\n")
+                append(" ---\n")
                 val remaining = maxChars - length
                 if (remaining > 0) append(pageText.take(remaining))
             }
