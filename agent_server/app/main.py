@@ -18,7 +18,8 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from .model_gateway import ModelGateway
+from .model_gateway import ModelConfig, ModelGateway, ModelGatewayError, load_models
+from .credentials import CredentialEncryptionError, decrypt_secret, encrypt_secret
 
 DB_PATH = Path(os.getenv("NEXUS_AGENT_DB", "./data/nexus-agent.db"))
 WORKSPACE = Path(os.getenv("NEXUS_AGENT_WORKSPACE", "./data/workspace")).resolve()
@@ -78,6 +79,7 @@ def init_db():
             "cancel_requested": "INTEGER NOT NULL DEFAULT 0",
             "max_steps": "INTEGER NOT NULL DEFAULT 8",
             "client_request_key": "TEXT NOT NULL DEFAULT ''",
+            "owner_id": "TEXT NOT NULL DEFAULT 'personal'",
         }
         existing = _columns(c, "tasks")
         for name, definition in migrations.items():
@@ -109,7 +111,17 @@ def init_db():
         if "idempotency_key" not in approval_cols:
             c.execute("ALTER TABLE approvals ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''")
         c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_idempotency ON approvals(idempotency_key) WHERE idempotency_key <> ''")
-        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_client_request_key ON tasks(client_request_key) WHERE client_request_key <> ''")
+        c.execute("DROP INDEX IF EXISTS idx_tasks_client_request_key")
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_owner_request_key ON tasks(owner_id,client_request_key) WHERE client_request_key <> ''")
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS provider_credentials(
+            owner_id TEXT NOT NULL, provider_id TEXT NOT NULL, base_url TEXT NOT NULL,
+            model TEXT NOT NULL, encrypted_api_key BLOB NOT NULL,
+            created_at REAL NOT NULL, updated_at REAL NOT NULL,
+            PRIMARY KEY(owner_id, provider_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_credentials_owner ON provider_credentials(owner_id,provider_id);
+        """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(status,next_attempt_at,created_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_steps_task ON task_steps(task_id,step_index)")
 
@@ -133,11 +145,13 @@ def serialize(row):
     }
 
 
-def auth(authorization: str | None = Header(default=None)):
+def auth(authorization: str | None = Header(default=None)) -> str:
     if not API_KEY:
         raise HTTPException(503, "Agent API is not configured")
     if authorization != "Bearer " + API_KEY:
         raise HTTPException(401, "Invalid agent API key")
+    # Single-user deployment identity. Replace with a verified JWT/account subject before onboarding users.
+    return "personal"
 
 
 class NewTask(BaseModel):
@@ -152,8 +166,53 @@ class Approval(BaseModel):
     note: str = Field(default="", max_length=1000)
 
 
-async def llm_json(system: str, user: str, purpose: str = "general", task_id: str | None = None) -> dict[str, Any]:
-    parsed, result = await _model_gateway.complete_json(system, user, purpose)
+class ProviderCredentialInput(BaseModel):
+    provider_id: str = Field(min_length=2, max_length=64, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+    base_url: str = Field(min_length=12, max_length=300)
+    model: str = Field(min_length=1, max_length=160)
+    api_key: str = Field(min_length=8, max_length=4096)
+
+
+ALLOWED_PROVIDER_HOSTS = {
+    "anymodel.org", "openrouter.ai", "api.openai.com", "api.anthropic.com",
+    "generativelanguage.googleapis.com", "api.deepseek.com", "api.x.ai", "api.mistral.ai",
+}
+
+
+def validate_provider_base_url(value: str) -> str:
+    parsed = urlparse(value)
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+            or parsed.port not in (None, 443) or parsed.query or parsed.fragment
+            or parsed.hostname.lower() not in ALLOWED_PROVIDER_HOSTS):
+        raise HTTPException(422, "Provider URL must use HTTPS on a supported provider host")
+    return value.rstrip("/")
+
+
+def provider_models_for_owner(owner_id: str) -> list[ModelConfig]:
+    models = load_models(allow_empty=True)
+    with db() as c:
+        rows = c.execute(
+            "SELECT provider_id,base_url,model,encrypted_api_key FROM provider_credentials WHERE owner_id=?",
+            (owner_id,),
+        ).fetchall()
+    for row in rows:
+        try:
+            key = decrypt_secret(bytes(row["encrypted_api_key"]))
+        except CredentialEncryptionError as exc:
+            raise ModelGatewayError("Stored provider credential could not be decrypted") from exc
+        models.append(ModelConfig(
+            id="user-" + row["provider_id"], base_url=row["base_url"], model=row["model"],
+            api_key=key, priority=50, purposes=("general", "planning", "evaluation"),
+        ))
+    return models
+
+
+async def llm_json(system: str, user: str, purpose: str = "general",
+                   task_id: str | None = None, owner_id: str = "personal") -> dict[str, Any]:
+    models = provider_models_for_owner(owner_id)
+    if not models:
+        raise ModelGatewayError("No model provider is configured for this account")
+    parsed, result = await ModelGateway(models=models).complete_json(system, user, purpose)
     if task_id:
         event(task_id, "model_call", json.dumps({
             "purpose": purpose, "provider": result.provider_id,
@@ -293,7 +352,7 @@ async def process(tid: str):
             event(tid, "status", "Planning task")
             plan = await llm_json(
                 'You are NEXUS Agent Planner. Return strict JSON only: {"summary":"...","steps":[{"title":"...","action":"web_search|fetch_url|save_artifact|draft_external_action","input":{}}]}. Use only listed actions. For publishing, messaging, purchases or account changes use draft_external_action. Never claim external actions succeeded.',
-                row["prompt"], purpose="planning", task_id=tid)
+                row["prompt"], purpose="planning", task_id=tid, owner_id=row["owner_id"])
             steps = plan.get("steps", [])
             if not isinstance(steps, list):
                 raise ValueError("Planner did not return steps")
@@ -334,7 +393,7 @@ async def process(tid: str):
                 final = await llm_json(
                     'Return strict JSON only: {"summary":"..."}. Summarize only supplied results. Explicitly identify blocked or unavailable actions; do not claim they succeeded.',
                     json.dumps({"goal": row["prompt"], "results": results}, ensure_ascii=False)[:30000],
-                    purpose="evaluation", task_id=tid)
+                    purpose="evaluation", task_id=tid, owner_id=row["owner_id"])
                 with db() as c:
                     c.execute("UPDATE tasks SET status='completed',summary=?,results_json=?,error='',next_attempt_at=NULL,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
                               (str(final.get("summary", "Task finished"))[:12000],
@@ -466,36 +525,87 @@ async def health():
     return {"status": "ok", "service": "nexus-agent-core", "version": "0.2.0"}
 
 
+@app.get("/v1/providers", dependencies=[Depends(auth)])
+async def list_providers(owner_id: str = Depends(auth)):
+    with db() as c:
+        rows = c.execute("""SELECT provider_id,base_url,model,created_at,updated_at
+            FROM provider_credentials WHERE owner_id=? ORDER BY provider_id""", (owner_id,)).fetchall()
+    return {"providers": [dict(row) for row in rows]}
+
+
+@app.post("/v1/providers", dependencies=[Depends(auth)])
+async def save_provider(body: ProviderCredentialInput, owner_id: str = Depends(auth)):
+    base_url = validate_provider_base_url(body.base_url)
+    try:
+        encrypted = encrypt_secret(body.api_key)
+    except CredentialEncryptionError as exc:
+        raise HTTPException(503, "Credential encryption is not configured") from exc
+    now = time.time()
+    with db() as c:
+        c.execute("""INSERT INTO provider_credentials(owner_id,provider_id,base_url,model,
+            encrypted_api_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(owner_id,provider_id) DO UPDATE SET base_url=excluded.base_url,
+            model=excluded.model,encrypted_api_key=excluded.encrypted_api_key,updated_at=excluded.updated_at""",
+            (owner_id, body.provider_id, base_url, body.model, encrypted, now, now))
+    return {"provider_id": body.provider_id, "status": "saved", "secret_returned": False}
+
+
+@app.delete("/v1/providers/{provider_id}", dependencies=[Depends(auth)])
+async def delete_provider(provider_id: str, owner_id: str = Depends(auth)):
+    with db() as c:
+        changed = c.execute("DELETE FROM provider_credentials WHERE owner_id=? AND provider_id=?",
+                            (owner_id, provider_id)).rowcount
+    if not changed:
+        raise HTTPException(404, "Provider not found")
+    return {"provider_id": provider_id, "status": "deleted"}
+
+
+@app.post("/v1/providers/{provider_id}/test", dependencies=[Depends(auth)])
+async def test_provider(provider_id: str, owner_id: str = Depends(auth)):
+    models = [m for m in provider_models_for_owner(owner_id) if m.id == "user-" + provider_id]
+    if not models:
+        raise HTTPException(404, "Provider not found")
+    started = time.monotonic()
+    try:
+        result = await ModelGateway(models=models).complete(
+            "You are a connection test. Reply with exactly: OK",
+            "Reply with exactly: OK", purpose="general")
+    except ModelGatewayError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {"provider_id": provider_id, "model": result.model,
+            "status": "connected", "latency_ms": round((time.monotonic() - started) * 1000)}
+
+
 @app.post("/v1/tasks", dependencies=[Depends(auth)])
-async def create_task(body: NewTask):
+async def create_task(body: NewTask, owner_id: str = Depends(auth)):
     tid = str(uuid.uuid4())
     now = time.time()
     with db() as c:
         if body.idempotency_key:
-            existing = c.execute("SELECT id,status FROM tasks WHERE client_request_key=?",
-                                 (body.idempotency_key,)).fetchone()
+            existing = c.execute("SELECT id,status FROM tasks WHERE owner_id=? AND client_request_key=?",
+                                 (owner_id, body.idempotency_key)).fetchone()
             if existing:
                 return {"id": existing["id"], "status": existing["status"], "deduplicated": True}
         c.execute("""INSERT INTO tasks(id,prompt,status,created_at,updated_at,max_attempts,
-            max_steps,client_request_key) VALUES(?,?,?,?,?,?,?,?)""",
+            max_steps,client_request_key,owner_id) VALUES(?,?,?,?,?,?,?,?,?)""",
             (tid, body.prompt, "queued", now, now, MAX_STEP_ATTEMPTS,
-             body.max_steps, body.idempotency_key or ""))
+             body.max_steps, body.idempotency_key or "", owner_id))
     event(tid, "created", "Task queued in durable cloud worker")
     return {"id": tid, "status": "queued"}
 
 
 @app.get("/v1/tasks", dependencies=[Depends(auth)])
-async def list_tasks(limit: int = 30):
+async def list_tasks(limit: int = 30, owner_id: str = Depends(auth)):
     with db() as c:
-        rows = c.execute("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?",
-                         (max(1, min(limit, 100)),)).fetchall()
+        rows = c.execute("SELECT * FROM tasks WHERE owner_id=? ORDER BY created_at DESC LIMIT ?",
+                         (owner_id, max(1, min(limit, 100)))).fetchall()
     return {"tasks": [serialize(r) for r in rows]}
 
 
 @app.get("/v1/tasks/{tid}", dependencies=[Depends(auth)])
-async def get_task(tid: str):
+async def get_task(tid: str, owner_id: str = Depends(auth)):
     with db() as c:
-        row = c.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+        row = c.execute("SELECT * FROM tasks WHERE id=? AND owner_id=?", (tid, owner_id)).fetchone()
         if not row:
             raise HTTPException(404, "Task not found")
         events = c.execute("SELECT created_at,kind,message FROM events WHERE task_id=? ORDER BY id",
@@ -509,9 +619,9 @@ async def get_task(tid: str):
 
 
 @app.post("/v1/tasks/{tid}/cancel", dependencies=[Depends(auth)])
-async def cancel_task(tid: str):
+async def cancel_task(tid: str, owner_id: str = Depends(auth)):
     with db() as c:
-        row = c.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()
+        row = c.execute("SELECT status FROM tasks WHERE id=? AND owner_id=?", (tid, owner_id)).fetchone()
         if not row:
             raise HTTPException(404, "Task not found")
         if row["status"] in {"completed", "failed", "cancelled"}:
@@ -524,16 +634,18 @@ async def cancel_task(tid: str):
 
 
 @app.get("/v1/approvals", dependencies=[Depends(auth)])
-async def list_approvals():
+async def list_approvals(owner_id: str = Depends(auth)):
     with db() as c:
-        rows = c.execute("SELECT * FROM approvals WHERE status='pending' ORDER BY created_at").fetchall()
+        rows = c.execute("""SELECT a.* FROM approvals a JOIN tasks t ON t.id=a.task_id
+            WHERE a.status='pending' AND t.owner_id=? ORDER BY a.created_at""", (owner_id,)).fetchall()
     return {"approvals": [dict(r) for r in rows]}
 
 
 @app.post("/v1/approvals/{approval_id}", dependencies=[Depends(auth)])
-async def decide_approval(approval_id: str, body: Approval):
+async def decide_approval(approval_id: str, body: Approval, owner_id: str = Depends(auth)):
     with db() as c:
-        row = c.execute("SELECT * FROM approvals WHERE id=?", (approval_id,)).fetchone()
+        row = c.execute("""SELECT a.* FROM approvals a JOIN tasks t ON t.id=a.task_id
+            WHERE a.id=? AND t.owner_id=?""", (approval_id, owner_id)).fetchone()
         if not row:
             raise HTTPException(404, "Approval not found")
         if row["status"] != "pending":
@@ -544,7 +656,6 @@ async def decide_approval(approval_id: str, body: Approval):
             WHERE task_id=? AND status='waiting_for_approval'""",
             (json.dumps({"status": status, "detail": "Approval recorded; no external connector is configured."}),
              time.time(), row["task_id"]))
-        # Approval records consent only. The generic backend deliberately does not perform external actions.
         c.execute("UPDATE tasks SET status='paused',lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
                   (time.time(), row["task_id"]))
     event(row["task_id"], "approval_decision", status + ": " + body.note)
