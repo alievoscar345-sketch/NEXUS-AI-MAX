@@ -99,8 +99,8 @@ class DurableTaskTests(unittest.TestCase):
 
     def test_create_task_deduplicates_client_request_key(self):
         body = main.NewTask(prompt="Research this subject", idempotency_key="client-key-0001")
-        first = asyncio.run(main.create_task(body))
-        second = asyncio.run(main.create_task(body))
+        first = asyncio.run(main.create_task(body, owner_id="personal"))
+        second = asyncio.run(main.create_task(body, owner_id="personal"))
         self.assertEqual(first["id"], second["id"])
         self.assertTrue(second["deduplicated"])
         with main.db() as conn:
