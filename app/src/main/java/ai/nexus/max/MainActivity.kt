@@ -1285,12 +1285,19 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     val ambientPrimary = parseAmbientColor(ambientPrimaryHex, AccentRed)
     val ambientSecondary = parseAmbientColor(ambientSecondaryHex, BackgroundGlow)
     val ambientTertiary = parseAmbientColor(ambientTertiaryHex, AccentSoft)
-    val ambientTransition = rememberInfiniteTransition(label = "ambient")
-    val ambientPhase by ambientTransition.animateFloat(
-        initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween((9000f / ambientSpeed.coerceIn(0.15f, 1f)).toInt(), easing = LinearEasing), RepeatMode.Restart),
-        label = "ambient-phase"
-    )
+    val ambientPhaseState = remember { Animatable(0f) }
+    LaunchedEffect(ambientMode, ambientReduceMotion, ambientSpeed) {
+        if (!ambientReduceMotion && ambientMode != "static") {
+            val halfCycleMs = (4500f / ambientSpeed.coerceIn(0.15f, 1f)).toInt()
+            while (true) {
+                ambientPhaseState.animateTo(1f, tween(halfCycleMs, easing = LinearEasing))
+                ambientPhaseState.animateTo(0f, tween(halfCycleMs, easing = LinearEasing))
+            }
+        } else {
+            ambientPhaseState.snapTo(0f)
+        }
+    }
+    val ambientPhase = ambientPhaseState.value
     val ambientAnimatedPrimary = when {
         ambientReduceMotion || ambientMode == "static" -> ambientPrimary
         ambientMode == "rgb" -> Color(android.graphics.Color.HSVToColor(floatArrayOf((ambientPhase * 360f) % 360f, 0.78f, 0.92f)))
