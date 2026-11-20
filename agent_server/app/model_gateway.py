@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -22,6 +22,12 @@ class ModelConfig:
     priority: int = 100
     purposes: tuple[str, ...] = ("general", "planning", "evaluation")
     enabled: bool = True
+    # Scores are normalized to 0..100 and should come from dated, named benchmarks.
+    benchmark_scores: dict[str, float] = field(default_factory=dict)
+    cost_per_million_tokens: float | None = None
+    latency_ms: float | None = None
+    ranking_source: str = ""
+    ranking_updated_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -30,6 +36,23 @@ class ModelResult:
     provider_id: str
     model: str
     usage: dict[str, Any]
+
+
+TASK_KEYWORDS = {
+    "coding": ("code", "coding", "program", "debug", "bug", "реализац", "код", "программ", "ошибк", "разработ"),
+    "research": ("research", "sources", "citation", "paper", "study", "исслед", "источник", "научн", "стать", "найди информацию"),
+    "math": ("math", "calculate", "equation", "proof", "математ", "посчитай", "вычисл", "уравнен", "доказательств"),
+    "vision": ("image", "photo", "picture", "screenshot", "изображен", "фото", "картин", "скриншот"),
+    "writing": ("rewrite", "write", "draft", "редактир", "напиши", "перепиши", "составь текст"),
+}
+
+
+def infer_task_type(text: str) -> str:
+    """Lightweight deterministic classifier; no extra model call or token cost."""
+    value = text.lower()
+    matches = [(sum(1 for word in words if word in value), task) for task, words in TASK_KEYWORDS.items()]
+    count, task = max(matches, default=(0, "general"))
+    return task if count else "general"
 
 
 def _clean_json_text(value: str) -> str:
@@ -57,6 +80,17 @@ def load_models() -> list[ModelConfig]:
             purposes = item.get("purposes", ["general", "planning", "evaluation"])
             if not isinstance(purposes, list):
                 purposes = ["general"]
+            scores = item.get("benchmark_scores", {})
+            if not isinstance(scores, dict):
+                scores = {}
+            try:
+                normalized_scores = {str(k): max(0.0, min(100.0, float(v))) for k, v in scores.items()}
+                cost = float(item["cost_per_million_tokens"]) if item.get("cost_per_million_tokens") is not None else None
+                latency = float(item["latency_ms"]) if item.get("latency_ms") is not None else None
+                if cost is not None and cost < 0 or latency is not None and latency < 0:
+                    raise ValueError("Cost and latency cannot be negative")
+            except (TypeError, ValueError) as exc:
+                raise ModelGatewayError("Invalid benchmark, cost, or latency metadata") from exc
             configs.append(ModelConfig(
                 id=str(item.get("id", "")).strip(),
                 base_url=str(item.get("base_url", "")).rstrip("/"),
@@ -65,6 +99,11 @@ def load_models() -> list[ModelConfig]:
                 priority=int(item.get("priority", 100)),
                 purposes=tuple(str(x) for x in purposes),
                 enabled=bool(item.get("enabled", True)),
+                benchmark_scores=normalized_scores,
+                cost_per_million_tokens=cost,
+                latency_ms=latency,
+                ranking_source=str(item.get("ranking_source", ""))[:200],
+                ranking_updated_at=str(item.get("ranking_updated_at", ""))[:40],
             ))
     else:
         configs.append(ModelConfig(
@@ -86,23 +125,51 @@ class ModelGateway:
         self.models = models
         self.transport = transport
 
-    def _select(self, purpose: str) -> list[ModelConfig]:
+    @staticmethod
+    def _quality(model: ModelConfig, task_type: str) -> float:
+        if task_type in model.benchmark_scores:
+            return model.benchmark_scores[task_type]
+        if "general" in model.benchmark_scores:
+            return model.benchmark_scores["general"]
+        return 50.0
+
+    def _select(self, purpose: str, task_type: str = "general") -> list[ModelConfig]:
         models = self.models if self.models is not None else load_models()
         eligible = [m for m in models if m.enabled and purpose in m.purposes]
         if not eligible:
             eligible = [m for m in models if m.enabled and "general" in m.purposes]
         if not eligible:
             raise ModelGatewayError(f"No configured model supports purpose: {purpose}")
+
         route = [x.strip() for x in os.getenv(f"NEXUS_MODEL_ROUTE_{purpose.upper()}", "").split(",") if x.strip()]
+        route_rank = {name: index for index, name in enumerate(route)}
+        known_costs = [m.cost_per_million_tokens for m in eligible if m.cost_per_million_tokens is not None]
+        known_latencies = [m.latency_ms for m in eligible if m.latency_ms is not None]
+        min_cost, max_cost = (min(known_costs), max(known_costs)) if known_costs else (None, None)
+        min_latency, max_latency = (min(known_latencies), max(known_latencies)) if known_latencies else (None, None)
+
+        def efficiency(value: float | None, low: float | None, high: float | None) -> float:
+            if value is None or low is None or high is None or high == low:
+                return 0.5
+            return 1.0 - (value - low) / (high - low)
+
+        def score(model: ModelConfig) -> tuple[float, float, int]:
+            quality = self._quality(model, task_type) / 100.0
+            cost = efficiency(model.cost_per_million_tokens, min_cost, max_cost)
+            speed = efficiency(model.latency_ms, min_latency, max_latency)
+            # Quality dominates; cost and speed decide among similarly capable models.
+            combined = 0.75 * quality + 0.15 * cost + 0.10 * speed
+            return (combined, -float(model.priority), -route_rank.get(model.id, len(route_rank)))
+
         if route:
-            rank = {name: index for index, name in enumerate(route)}
-            eligible.sort(key=lambda m: (rank.get(m.id, len(rank)), m.priority))
+            eligible.sort(key=lambda m: (route_rank.get(m.id, len(route_rank)), -score(m)[0], m.priority))
         else:
-            eligible.sort(key=lambda m: m.priority)
+            eligible.sort(key=lambda m: (-score(m)[0], m.priority))
         return eligible
 
     async def complete(self, system: str, user: str, purpose: str = "general") -> ModelResult:
-        candidates = self._select(purpose)
+        task_type = infer_task_type(user)
+        candidates = self._select(purpose, task_type)
         last_error: Exception | None = None
         for index, model in enumerate(candidates):
             try:
