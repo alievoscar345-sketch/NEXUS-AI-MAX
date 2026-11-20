@@ -1344,6 +1344,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var ambientIntensity by remember { mutableFloatStateOf(ambientPrefs.getFloat("intensity", 0.72f)) }
     var ambientHeight by remember { mutableFloatStateOf(ambientPrefs.getFloat("height", 0.52f)) }
     var ambientSpeed by remember { mutableFloatStateOf(ambientPrefs.getFloat("speed", 0.35f)) }
+    var ambientParticleCount by remember { mutableIntStateOf(ambientPrefs.getInt("particle_count", 24).coerceIn(8, 48)) }
     var ambientReduceMotion by remember { mutableStateOf(ambientPrefs.getBoolean("reduce_motion", false)) }
     var ambientCustomThemes by remember { mutableStateOf(loadAmbientCustomThemes(ambientPrefs.getString("custom_themes", "[]") ?: "[]")) }
     var ambientCustomThemeName by remember { mutableStateOf("") }
@@ -1767,6 +1768,34 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                 ),
                                 radius = radius * 0.86f, center = auroraB
                             )
+                        } else if (isAppResumed && ambientMode == "particles" && !ambientReduceMotion) {
+                            val w = size.width
+                            val h = size.height
+                            val phase = ambientPhase
+                            val baseRadius = 1.2f + ambientIntensity * 1.4f
+                            for (i in 0 until ambientParticleCount) {
+                                val seed = i.toFloat()
+                                val x = ((seed * 0.6180339f + 0.13f) % 1f) * w
+                                val drift = (phase * (0.12f + (i % 5) * 0.035f) + seed * 0.071f) % 1f
+                                val y = h * (1f - drift)
+                                val pulse = 0.35f + 0.65f * kotlin.math.abs(kotlin.math.sin(phase * 6.28318f + seed * 1.7f))
+                                val radius = baseRadius * (0.65f + (i % 4) * 0.18f)
+                                val tint = if (i % 3 == 0) ambientTertiary else ambientPrimary
+                                drawCircle(
+                                    brush = Brush.radialGradient(
+                                        colors = listOf(Color.Transparent, tint.copy(alpha = ambientIntensity * 0.34f * pulse), Color.Transparent),
+                                        center = Offset(x, y),
+                                        radius = radius * 3.2f
+                                    ),
+                                    radius = radius * 3.2f,
+                                    center = Offset(x, y)
+                                )
+                                drawCircle(
+                                    color = tint.copy(alpha = ambientIntensity * 0.72f * pulse),
+                                    radius = radius,
+                                    center = Offset(x, y)
+                                )
+                            }
                         }
                     }
                     .padding(padding)
@@ -2324,9 +2353,13 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     Divider(color = DividerTone)
                     Text("РЕЖИМ ЭФФЕКТА", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf("static" to "Статика", "rgb" to "RGB Flow", "aurora" to "Aurora").forEach { (id, label) ->
+                        listOf("static" to "Статика", "rgb" to "RGB Flow", "aurora" to "Aurora", "particles" to "Particle Glow").forEach { (id, label) ->
                             FilterChip(selected = ambientMode == id, onClick = { ambientMode = id }, label = { Text(label, fontSize = 10.sp) })
                         }
+                    }
+                    if (ambientMode == "particles") {
+                        Text("Количество частиц · $ambientParticleCount", color = MainText, fontSize = 11.sp)
+                        Slider(value = ambientParticleCount.toFloat(), onValueChange = { ambientParticleCount = it.toInt().coerceIn(8, 48) }, valueRange = 8f..48f, steps = 39)
                     }
                     Text("Интенсивность свечения · ${(ambientIntensity * 100).toInt()}%", color = MainText, fontSize = 11.sp)
                     Slider(value = ambientIntensity, onValueChange = { ambientIntensity = it }, valueRange = 0.1f..1f)
@@ -2355,6 +2388,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         .putFloat("intensity", ambientIntensity)
                         .putFloat("height", ambientHeight)
                         .putFloat("speed", ambientSpeed)
+                        .putInt("particle_count", ambientParticleCount)
                         .putBoolean("reduce_motion", ambientReduceMotion)
                         .apply()
                     showAmbientSettings = false
