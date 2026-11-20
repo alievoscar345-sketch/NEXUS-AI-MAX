@@ -1782,12 +1782,8 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                 val radius = baseRadius * (0.65f + (i % 4) * 0.18f)
                                 val tint = if (i % 3 == 0) ambientTertiary else ambientPrimary
                                 drawCircle(
-                                    brush = Brush.radialGradient(
-                                        colors = listOf(Color.Transparent, tint.copy(alpha = ambientIntensity * 0.34f * pulse), Color.Transparent),
-                                        center = Offset(x, y),
-                                        radius = radius * 3.2f
-                                    ),
-                                    radius = radius * 3.2f,
+                                    color = tint.copy(alpha = ambientIntensity * 0.16f * pulse),
+                                    radius = radius * 2.5f,
                                     center = Offset(x, y)
                                 )
                                 drawCircle(
