@@ -365,7 +365,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 providerVaultMessage = "Ключ сохранён на сервере в зашифрованном виде."
-                loadRemoteProviders()
+                remoteProviders = remoteProviders.filterNot { it.providerId == providerId.trim() } +
+                    RemoteProvider(providerId.trim(), baseUrl.trim().trimEnd('/'), modelId.trim())
             } catch (e: Exception) {
                 providerVaultMessage = e.message ?: "Не удалось сохранить ключ."
             } finally {
@@ -1198,6 +1199,12 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var key by remember { mutableStateOf("") }
     var selectedProvider by remember { mutableStateOf(vm.settings.provider) }
     var openRouterKey by remember { mutableStateOf("") }
+    var agentServerUrl by remember { mutableStateOf(vm.agentServerUrl) }
+    var agentServerToken by remember { mutableStateOf("") }
+    var vaultProviderId by remember { mutableStateOf("anymodel") }
+    var vaultBaseUrl by remember { mutableStateOf("https://anymodel.org/v1") }
+    var vaultModelId by remember { mutableStateOf("claude-fable-5-2") }
+    var vaultApiKey by remember { mutableStateOf("") }
     var selectedOpenRouterModel by remember { mutableStateOf(vm.settings.openRouterModel) }
     var freeModelsOnly by remember { mutableStateOf(false) }
     var modelSearch by remember { mutableStateOf("") }
@@ -1981,7 +1988,95 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
             containerColor = Panel,
             title = { Text("Подключение API", color = MainText) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                Column(
+                    Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(9.dp)
+                ) {
+                    Text("ХРАНИЛИЩЕ API-КЛЮЧЕЙ NEXUS", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text("Ключи провайдеров отправляются на NEXUS Agent Server по HTTPS и хранятся там в зашифрованном виде. Токен сервера защищён Android Keystore.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
+                    OutlinedTextField(
+                        value = agentServerUrl,
+                        onValueChange = { agentServerUrl = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("HTTPS URL NEXUS Agent Server") },
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = agentServerToken,
+                        onValueChange = { agentServerToken = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Токен доступа к серверу") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation()
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Button(
+                            onClick = {
+                                vm.updateAgentServer(agentServerUrl, agentServerToken)
+                                agentServerToken = ""
+                                vm.loadRemoteProviders()
+                            },
+                            enabled = !vm.providerVaultBusy && agentServerUrl.startsWith("https://"),
+                            colors = ButtonDefaults.buttonColors(containerColor = Violet)
+                        ) { Text("Подключить", fontSize = 11.sp) }
+                        OutlinedButton(
+                            onClick = { vm.loadRemoteProviders() },
+                            enabled = !vm.providerVaultBusy && vm.agentServerConfigured
+                        ) { Text("Обновить список", color = MainText, fontSize = 11.sp) }
+                        OutlinedButton(
+                            onClick = { vm.clearAgentServerToken(); agentServerToken = "" },
+                            enabled = vm.agentServerConfigured
+                        ) { Text("Отключить", color = AccentRed, fontSize = 11.sp) }
+                    }
+                    Text(
+                        if (vm.agentServerConfigured) "Токен сервера сохранён на устройстве." else "Сервер ещё не настроен.",
+                        color = if (vm.agentServerConfigured) Color(0xFF8FC6A0) else Muted,
+                        fontSize = 10.sp
+                    )
+                    Text("ПОДКЛЮЧЁННЫЕ ПРОВАЙДЕРЫ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    if (vm.remoteProviders.isEmpty()) {
+                        Text("Список пуст или сервер ещё не подключён.", color = Muted, fontSize = 10.sp)
+                    } else {
+                        vm.remoteProviders.forEach { remote ->
+                            Surface(color = PanelRaised, shape = RoundedCornerShape(10.dp)) {
+                                Column(Modifier.fillMaxWidth().padding(9.dp)) {
+                                    Text(remote.providerId, color = MainText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                    Text(remote.model + " · " + remote.baseUrl, color = Muted, fontSize = 9.sp)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        TextButton(
+                                            onClick = { vm.testRemoteProvider(remote.providerId) },
+                                            enabled = !vm.providerVaultBusy
+                                        ) { Text("Проверить", color = Blue, fontSize = 10.sp) }
+                                        TextButton(
+                                            onClick = { vm.deleteRemoteProvider(remote.providerId) },
+                                            enabled = !vm.providerVaultBusy
+                                        ) { Text("Удалить", color = AccentRed, fontSize = 10.sp) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Text("ДОБАВИТЬ ИЛИ ЗАМЕНИТЬ КЛЮЧ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    OutlinedTextField(vaultProviderId, { vaultProviderId = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Provider ID, например anymodel") }, singleLine = true)
+                    OutlinedTextField(vaultBaseUrl, { vaultBaseUrl = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Base URL") }, singleLine = true)
+                    OutlinedTextField(vaultModelId, { vaultModelId = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Model ID") }, singleLine = true)
+                    OutlinedTextField(vaultApiKey, { vaultApiKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("API-ключ провайдера") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
+                    Button(
+                        onClick = {
+                            vm.updateAgentServer(agentServerUrl, agentServerToken)
+                            agentServerToken = ""
+                            vm.saveRemoteProvider(vaultProviderId, vaultBaseUrl, vaultModelId, vaultApiKey)
+                            vaultApiKey = ""
+                        },
+                        enabled = !vm.providerVaultBusy && vm.agentServerConfigured && vaultApiKey.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = Violet)
+                    ) { Text(if (vm.providerVaultBusy) "Выполняется…" else "Сохранить ключ на сервере") }
+                    vm.providerVaultMessage?.let { Text(it, color = Muted, fontSize = 10.sp, lineHeight = 14.sp) }
+                    Divider(color = DividerTone, modifier = Modifier.padding(vertical = 4.dp))
+                    Text("ПРЯМОЕ ПОДКЛЮЧЕНИЕ ДЛЯ ТЕКУЩЕГО ЧАТА", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text("Этот старый режим пока отправляет запросы напрямую провайдеру. Перевод обычного чата на серверный Model Gateway будет отдельным этапом.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
+                    Divider(color = DividerTone, modifier = Modifier.padding(vertical = 4.dp))
                     Text("РЕЗЕРВНАЯ КОПИЯ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     Text("Экспорт сохраняет чаты и доступные вложения. API-ключи не экспортируются. Импорт заменяет текущую историю.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
