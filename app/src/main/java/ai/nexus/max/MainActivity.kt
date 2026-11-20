@@ -117,7 +117,9 @@ data class ChatSession(
     val title: String,
     val updatedAt: Long,
     val lines: List<ChatLine>,
-    val isPinned: Boolean = false
+    val isPinned: Boolean = false,
+    val isSystem: Boolean = false,
+    val hasUnread: Boolean = false
 )
 data class ApiSettings(
     val baseUrl: String = "https://anymodel.org/v1",
@@ -174,7 +176,25 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         .build()
 
     init {
-        if (chats.isEmpty()) createChat()
+        ensureRemindersChat()
+        if (chats.none { !it.isSystem }) createChat()
+    }
+
+    private fun sortChats(items: List<ChatSession>): List<ChatSession> =
+        items.sortedWith(compareByDescending<ChatSession> { it.isSystem }.thenByDescending { it.isPinned }.thenByDescending { it.updatedAt })
+
+    private fun ensureRemindersChat() {
+        if (chats.none { it.id == REMINDERS_CHAT_ID }) {
+            chats = sortChats(chats + ChatSession(REMINDERS_CHAT_ID, "Напоминания", System.currentTimeMillis(), emptyList(), isSystem = true))
+            saveChats()
+        } else {
+            chats = sortChats(chats.map { if (it.id == REMINDERS_CHAT_ID) it.copy(title = "Напоминания", isSystem = true, isPinned = false) else it })
+        }
+    }
+
+    fun markRemindersUnread() {
+        chats = sortChats(chats.map { if (it.id == REMINDERS_CHAT_ID) it.copy(hasUnread = true, updatedAt = System.currentTimeMillis()) else it })
+        saveChats()
     }
 
     fun updateSettings(url: String, model: String, key: String) {
@@ -238,7 +258,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
 
     fun createChat() {
         val chat = ChatSession(UUID.randomUUID().toString(), "Новый диалог", System.currentTimeMillis(), emptyList())
-        chats = (listOf(chat) + chats).sortedWith(compareByDescending<ChatSession> { it.isPinned }.thenByDescending { it.updatedAt })
+        chats = sortChats(listOf(chat) + chats)
         activeChatId = chat.id
         saveChats()
         error = null
@@ -246,10 +266,15 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectChat(id: String) {
         activeChatId = id
+        if (id == REMINDERS_CHAT_ID) {
+            chats = chats.map { if (it.id == REMINDERS_CHAT_ID) it.copy(hasUnread = false) else it }
+            saveChats()
+        }
         error = null
     }
 
     fun deleteChat(id: String) {
+        if (id == REMINDERS_CHAT_ID) return
         chats = chats.filterNot { it.id == id }
         if (activeChatId == id) activeChatId = chats.firstOrNull()?.id
         if (chats.isEmpty()) createChat() else saveChats()
@@ -257,7 +282,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun togglePinChat(id: String) {
-        chats = chats.map { if (it.id == id) it.copy(isPinned = !it.isPinned) else it }.sortedWith(compareByDescending<ChatSession> { it.isPinned }.thenByDescending { it.updatedAt })
+        if (id == REMINDERS_CHAT_ID) return
+        chats = sortChats(chats.map { if (it.id == id) it.copy(isPinned = !it.isPinned) else it })
         saveChats()
     }
 
@@ -668,7 +694,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun updateChat(id: String, chat: ChatSession) {
-        chats = chats.map { if (it.id == id) chat else it }.sortedWith(compareByDescending<ChatSession> { it.isPinned }.thenByDescending { it.updatedAt })
+        chats = sortChats(chats.map { if (it.id == id) chat else it })
         saveChats()
     }
 
@@ -696,6 +722,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     .put("title", chat.title)
                     .put("updatedAt", chat.updatedAt)
                     .put("isPinned", chat.isPinned)
+                    .put("isSystem", chat.isSystem)
+                    .put("hasUnread", chat.hasUnread)
                     .put("lines", lineArray)
             )
         }
@@ -736,6 +764,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         chatArray.put(
                             JSONObject().put("id", chat.id).put("title", chat.title)
                                 .put("updatedAt", chat.updatedAt).put("isPinned", chat.isPinned)
+                                .put("isSystem", chat.isSystem).put("hasUnread", chat.hasUnread)
                                 .put("lines", lineArray)
                         )
                     }
@@ -806,17 +835,20 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                                 chat.optString("title", "Диалог"),
                                 chat.optLong("updatedAt", System.currentTimeMillis()),
                                 lines,
-                                chat.optBoolean("isPinned", false)
+                                chat.optBoolean("isPinned", false),
+                                chat.optBoolean("isSystem", false),
+                                chat.optBoolean("hasUnread", false)
                             )
-                        }.sortedWith(compareByDescending<ChatSession> { it.isPinned }.thenByDescending { it.updatedAt })
+                        }.let { sortChats(it) }
                         result
                     } catch (e: Exception) {
                         createdFiles.forEach { it.delete() }
                         throw e
                     }
                 }
-                chats = restoredChats
-                activeChatId = chats.firstOrNull()?.id
+                chats = sortChats(restoredChats.filterNot { it.id == REMINDERS_CHAT_ID })
+                ensureRemindersChat()
+                activeChatId = chats.firstOrNull { !it.isSystem }?.id
                 saveChats()
                 if (chats.isEmpty()) createChat()
                 error = "Импорт завершён: восстановлено чатов — ${chats.size}. Текущая история заменена данными из копии."
@@ -856,15 +888,18 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     obj.optString("title", "Диалог"),
                     obj.optLong("updatedAt", System.currentTimeMillis()),
                     lines,
-                    obj.optBoolean("isPinned", false)
+                    obj.optBoolean("isPinned", false),
+                    obj.optBoolean("isSystem", false),
+                    obj.optBoolean("hasUnread", false)
                 )
-            }.sortedWith(compareByDescending<ChatSession> { it.isPinned }.thenByDescending { it.updatedAt })
+            }.let { sortChats(it) }
         } catch (_: Exception) {
             emptyList()
         }
     }
 
     companion object {
+        private const val REMINDERS_CHAT_ID = "nexus-system-reminders"
         private const val SYSTEM_PROMPT =
             "You are NEXUS AI MAX, a capable personal AI assistant. Respond in the user's language. Be rigorous, distinguish facts from uncertainty, and never claim to have browsed or executed an action unless a connected tool actually did so."
     }
@@ -1515,13 +1550,17 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                                 showHistory = false
                                             }) {
                                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                                    if (chat.isPinned) Icon(Icons.Filled.PushPin, "Закреплён", tint = AccentRed, modifier = Modifier.size(13.dp))
+                                                    if (chat.isPinned && !chat.isSystem) Icon(Icons.Filled.PushPin, "Закреплён", tint = AccentRed, modifier = Modifier.size(13.dp))
                                                     Text(chat.title, color = MainText, fontSize = 13.sp, maxLines = 1)
+                                                    if (chat.hasUnread) {
+                                                        Spacer(Modifier.width(7.dp))
+                                                        Box(Modifier.size(8.dp).clip(CircleShape).background(AccentRed))
+                                                    }
                                                 }
                                                 Text("${chat.lines.size} сообщений", color = Muted, fontSize = 10.sp)
                                             }
                                             var menuExpanded by remember(chat.id) { mutableStateOf(false) }
-                                            Box {
+                                            if (!chat.isSystem) Box {
                                                 IconButton(onClick = { menuExpanded = true }) {
                                                     Text("⋯", color = Muted, fontSize = 20.sp)
                                                 }
