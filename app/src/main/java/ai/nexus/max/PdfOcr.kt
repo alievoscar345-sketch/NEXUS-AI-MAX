@@ -50,7 +50,7 @@ private fun gitBlobSha1(file: File): String {
 
 private fun ensureOcrModel(tessdataDir: File, model: OcrModel) {
     val target = File(tessdataDir, "${model.language}.traineddata")
-    if (target.isFile && target.length() == model.size && gitBlobSha1(target) == model.gitBlobSha1) return
+    if (target.isFile && target.length() == model.size.toLong() && gitBlobSha1(target) == model.gitBlobSha1) return
     if (target.exists()) target.delete()
     val url = "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/$TESSDATA_COMMIT/${model.language}.traineddata"
     val request = Request.Builder().url(url).get().build()
