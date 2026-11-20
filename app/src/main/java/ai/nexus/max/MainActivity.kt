@@ -130,7 +130,8 @@ private data class AmbientCustomTheme(
     val intensity: Float,
     val height: Float,
     val speed: Float,
-    val reduceMotion: Boolean
+    val reduceMotion: Boolean,
+    val particleCount: Int = 24
 )
 private fun loadAmbientCustomThemes(raw: String): List<AmbientCustomTheme> = try {
     val array = JSONArray(raw)
@@ -143,11 +144,12 @@ private fun loadAmbientCustomThemes(raw: String): List<AmbientCustomTheme> = try
             item.optString("primary", "#D6293E"),
             item.optString("secondary", "#26090E"),
             item.optString("tertiary", "#6D1728"),
-            item.optString("mode", "static").takeIf { it in listOf("static", "rgb", "aurora") } ?: "static",
+            item.optString("mode", "static").takeIf { it in listOf("static", "rgb", "aurora", "particles") } ?: "static",
             item.optDouble("intensity", 0.72).toFloat().coerceIn(0.1f, 1f),
             item.optDouble("height", 0.52).toFloat().coerceIn(0.15f, 0.9f),
             item.optDouble("speed", 0.35).toFloat().coerceIn(0.15f, 1f),
-            item.optBoolean("reduceMotion", false)
+            item.optBoolean("reduceMotion", false),
+            item.optInt("particleCount", 24).coerceIn(8, 48)
         )
     }.take(12)
 } catch (_: Exception) { emptyList() }
@@ -165,6 +167,7 @@ private fun encodeAmbientCustomThemes(themes: List<AmbientCustomTheme>): String 
             put("height", theme.height.toDouble())
             put("speed", theme.speed.toDouble())
             put("reduceMotion", theme.reduceMotion)
+            put("particleCount", theme.particleCount)
         })
     }
     return array.toString()
@@ -2297,6 +2300,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                         ambientHeight = theme.height
                                         ambientSpeed = theme.speed
                                         ambientReduceMotion = theme.reduceMotion
+                                        ambientParticleCount = theme.particleCount
                                     },
                                     color = PanelRaised,
                                     shape = RoundedCornerShape(10.dp),
@@ -2336,7 +2340,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         onClick = {
                             val cleanName = ambientCustomThemeName.trim()
                             if (cleanName.isNotBlank()) {
-                                val saved = AmbientCustomTheme(cleanName, ambientPrimaryHex, ambientSecondaryHex, ambientTertiaryHex, ambientMode, ambientIntensity, ambientHeight, ambientSpeed, ambientReduceMotion)
+                                val saved = AmbientCustomTheme(cleanName, ambientPrimaryHex, ambientSecondaryHex, ambientTertiaryHex, ambientMode, ambientIntensity, ambientHeight, ambientSpeed, ambientReduceMotion, ambientParticleCount)
                                 ambientCustomThemes = (ambientCustomThemes.filterNot { it.name.equals(cleanName, ignoreCase = true) } + saved).takeLast(12)
                                 ambientPrefs.edit().putString("custom_themes", encodeAmbientCustomThemes(ambientCustomThemes)).apply()
                                 ambientCustomThemeName = ""
