@@ -1,0 +1,101 @@
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from app import main
+
+
+class DurableTaskTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp.name) / "tasks.sqlite3"
+        self.patch = patch.object(main, "DB_PATH", self.db_path)
+        self.patch.start()
+        main.init_db()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.temp.cleanup()
+
+    def test_migrates_legacy_task_schema(self):
+        with main.db() as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+        self.assertIn("lease_owner", columns)
+        self.assertIn("attempt_count", columns)
+        self.assertIn("max_steps", columns)
+        self.assertIn("client_request_key", columns)
+
+    def test_claims_queued_task_and_increments_attempt(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("task-a", "do a task", "queued", now, now),
+            )
+        claimed = main.claim_task()
+        self.assertEqual(claimed, "task-a")
+        with main.db() as conn:
+            row = conn.execute("SELECT status,attempt_count,lease_owner,lease_expires_at FROM tasks WHERE id=?",
+                               ("task-a",)).fetchone()
+        self.assertEqual(row["status"], "running")
+        self.assertEqual(row["attempt_count"], 1)
+        self.assertEqual(row["lease_owner"], main.WORKER_ID)
+        self.assertGreater(row["lease_expires_at"], now)
+
+    def test_persists_steps_and_stable_idempotency_key(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("task-b", "write file", "planning", now, now),
+            )
+        steps = [{"title": "Save", "action": "save_artifact",
+                  "input": {"filename": "report.md", "content": "hello"}}]
+        main._persist_plan("task-b", steps, 3)
+        with main.db() as conn:
+            first = conn.execute("SELECT * FROM task_steps WHERE task_id=?", ("task-b",)).fetchone()
+        main._persist_plan("task-b", steps, 3)
+        with main.db() as conn:
+            rows = conn.execute("SELECT * FROM task_steps WHERE task_id=?", ("task-b",)).fetchall()
+            task = conn.execute("SELECT status,plan_json FROM tasks WHERE id=?", ("task-b",)).fetchone()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(first["idempotency_key"], rows[0]["idempotency_key"])
+        self.assertEqual(task["status"], "running")
+
+    def test_recovers_interrupted_task_and_running_step(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("task-c", "continue work", "running", now, now, "dead-worker", now + 999),
+            )
+        main._persist_plan("task-c", [{"title": "Read", "action": "fetch_url",
+            "input": {"url": "https://example.com"}}], 3)
+        with main.db() as conn:
+            conn.execute("UPDATE task_steps SET status='running' WHERE task_id=?", ("task-c",))
+            conn.execute("UPDATE tasks SET status='running',lease_owner='dead-worker' WHERE id=?", ("task-c",))
+        main.recover_interrupted_tasks()
+        with main.db() as conn:
+            task = conn.execute("SELECT status,lease_owner FROM tasks WHERE id=?", ("task-c",)).fetchone()
+            step = conn.execute("SELECT status,error FROM task_steps WHERE task_id=?", ("task-c",)).fetchone()
+        self.assertEqual(task["status"], "retry_wait")
+        self.assertEqual(task["lease_owner"], "")
+        self.assertEqual(step["status"], "retry_wait")
+        self.assertIn("Recovered", step["error"])
+
+    def test_claim_respects_retry_schedule(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,next_attempt_at) "
+                "VALUES(?,?,?,?,?,?)",
+                ("task-d", "retry later", "retry_wait", now, now, now + 3600),
+            )
+        self.assertIsNone(main.claim_task())
+
+
+if __name__ == "__main__":
+    unittest.main()
