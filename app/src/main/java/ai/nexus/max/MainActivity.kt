@@ -1524,24 +1524,28 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     }
 
     if (showChatSearch) {
-        val matches = vm.activeChat?.lines.orEmpty().withIndex().filter { chatSearchQuery.isNotBlank() && it.value.content.contains(chatSearchQuery, ignoreCase = true) }
+        val matches = vm.chats.flatMap { chat ->
+            chat.lines.mapIndexed { index, line -> Triple(chat, index, line) }
+        }.filter { chatSearchQuery.isNotBlank() && it.third.content.contains(chatSearchQuery, ignoreCase = true) }
         AlertDialog(
             onDismissRequest = { showChatSearch = false },
             containerColor = Panel,
-            title = { Text("Поиск в чате", color = MainText) },
+            title = { Text("Поиск по истории", color = MainText) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(chatSearchQuery, { chatSearchQuery = it }, singleLine = true, label = { Text("Найти в переписке") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(chatSearchQuery, { chatSearchQuery = it }, singleLine = true, label = { Text("Найти во всех диалогах") }, modifier = Modifier.fillMaxWidth())
                     if (chatSearchQuery.isNotBlank()) {
                         Text("Найдено: ${matches.size}", color = Muted, fontSize = 11.sp)
-                        LazyColumn(Modifier.heightIn(max = 280.dp)) {
+                        LazyColumn(Modifier.heightIn(max = 320.dp)) {
                             items(matches) { match ->
                                 Column(Modifier.fillMaxWidth().clickable {
+                                    vm.selectChat(match.first.id)
                                     showChatSearch = false
-                                    uiScope.launch { chatListState.animateScrollToItem(match.index) }
+                                    uiScope.launch { chatListState.animateScrollToItem(match.second) }
                                 }.padding(vertical = 7.dp)) {
-                                    Text(if (match.value.role == "user") "Вы" else "NEXUS", color = AccentRed, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                    Text(match.value.content.take(220), color = MainText, fontSize = 12.sp, maxLines = 4)
+                                    Text(match.first.title, color = Muted, fontSize = 10.sp, maxLines = 1)
+                                    Text(if (match.third.role == "user") "Вы" else "NEXUS", color = AccentRed, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    Text(match.third.content.take(220), color = MainText, fontSize = 12.sp, maxLines = 4)
                                 }
                                 Divider(color = DividerTone)
                             }
