@@ -60,6 +60,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -1721,7 +1723,42 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 }
             }
         ) { padding ->
-            Column(Modifier.fillMaxSize().background(ambientBackground).padding(padding)) {
+            Column(
+                Modifier.fillMaxSize()
+                    .background(ambientBackground)
+                    .drawBehind {
+                        if (ambientMode == "aurora" && !ambientReduceMotion) {
+                            val w = size.width
+                            val h = size.height
+                            val angle = ambientPhase * (Math.PI.toFloat() * 2f)
+                            val radius = w * 0.72f
+                            val alpha = (ambientIntensity * 0.22f).coerceIn(0.02f, 0.22f)
+                            val auroraA = Offset(
+                                w * (0.28f + 0.22f * kotlin.math.sin(angle)),
+                                h * (0.66f + 0.10f * kotlin.math.cos(angle))
+                            )
+                            val auroraB = Offset(
+                                w * (0.76f + 0.18f * kotlin.math.cos(angle * 0.72f)),
+                                h * (0.78f + 0.08f * kotlin.math.sin(angle * 0.8f))
+                            )
+                            drawCircle(
+                                brush = Brush.radialGradient(
+                                    colors = listOf(Color.Transparent, ambientPrimary.copy(alpha = alpha), Color.Transparent),
+                                    center = auroraA, radius = radius
+                                ),
+                                radius = radius, center = auroraA
+                            )
+                            drawCircle(
+                                brush = Brush.radialGradient(
+                                    colors = listOf(Color.Transparent, ambientTertiary.copy(alpha = alpha * 0.82f), Color.Transparent),
+                                    center = auroraB, radius = radius * 0.86f
+                                ),
+                                radius = radius * 0.86f, center = auroraB
+                            )
+                        }
+                    }
+                    .padding(padding)
+            ) {
                 vm.error?.let { message ->
                     Surface(color = Color(0xFF321D20), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
                         Text(message, color = Color(0xFFD69A9F), fontSize = 12.sp, modifier = Modifier.padding(12.dp))
