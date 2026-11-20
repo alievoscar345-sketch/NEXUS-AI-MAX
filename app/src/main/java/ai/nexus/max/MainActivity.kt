@@ -200,8 +200,33 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun refreshReminders() {
+        reminders = ReminderScheduler.getScheduled(getApplication())
+    }
+
+    fun cancelReminder(id: String) {
+        ReminderScheduler.cancel(getApplication(), id)
+        refreshReminders()
+    }
+
+    fun updateReminderTime(id: String, dateTimeText: String): Boolean {
+        val reminder = reminders.firstOrNull { it.id == id } ?: return false
+        return try {
+            val zone = ZoneId.of(reminder.zoneId)
+            val local = java.time.LocalDateTime.parse(dateTimeText.trim(), DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm", Locale("ru")))
+            val millis = local.atZone(zone).toInstant().toEpochMilli()
+            if (millis <= System.currentTimeMillis()) return false
+            ReminderScheduler.schedule(getApplication(), reminder.id, reminder.task, millis, reminder.zoneId)
+            refreshReminders()
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     fun refreshChatsFromDisk() {
         chats = loadChats()
+        refreshReminders()
         if (activeChatId == REMINDERS_CHAT_ID) {
             chats = chats.map { if (it.id == REMINDERS_CHAT_ID) it.copy(hasUnread = false) else it }
             saveChats()
@@ -416,6 +441,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         val current = chats.firstOrNull { it.id == chatId } ?: return
         val id = UUID.randomUUID().toString()
         ReminderScheduler.schedule(getApplication(), id, parsed.task, parsed.triggerAtMillis, parsed.zoneId)
+        refreshReminders()
         val zone = ZoneId.of(parsed.zoneId)
         val whenText = Instant.ofEpochMilli(parsed.triggerAtMillis).atZone(zone)
             .format(DateTimeFormatter.ofPattern("dd.MM.yyyy, HH:mm", Locale("ru")))
@@ -1341,6 +1367,73 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 }
                 val chat = vm.activeChat
                 val lines = chat?.lines.orEmpty()
+                if (chat?.id == "nexus-system-reminders") {
+                    Column(
+                        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)
+                            .clip(RoundedCornerShape(16.dp)).background(Panel).padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("АКТИВНЫЕ НАПОМИНАНИЯ", color = MainText, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            TextButton(onClick = { vm.refreshReminders() }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+                                Text("Обновить", color = AccentRed, fontSize = 10.sp)
+                            }
+                        }
+                        if (vm.reminders.isEmpty()) {
+                            Text("Нет запланированных напоминаний. Напиши, например: «Напомни завтра в 20:00 изучить английский».", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+                        } else {
+                            vm.reminders.forEach { reminder ->
+                                val zone = try { ZoneId.of(reminder.zoneId) } catch (_: Exception) { ZoneId.systemDefault() }
+                                val dateLabel = Instant.ofEpochMilli(reminder.triggerAtMillis).atZone(zone)
+                                    .format(DateTimeFormatter.ofPattern("dd.MM.yyyy · HH:mm", Locale("ru")))
+                                var editReminderTime by remember(reminder.id, reminder.triggerAtMillis) {
+                                    mutableStateOf(Instant.ofEpochMilli(reminder.triggerAtMillis).atZone(zone)
+                                        .format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm", Locale("ru"))))
+                                }
+                                var showEditReminder by remember(reminder.id) { mutableStateOf(false) }
+                                Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                                    Text(reminder.task, color = MainText, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(dateLabel + " · " + reminder.zoneId, color = Muted, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                                        TextButton(onClick = { showEditReminder = true }, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp)) {
+                                            Text("Изменить", color = Blue, fontSize = 10.sp)
+                                        }
+                                        TextButton(onClick = { vm.cancelReminder(reminder.id) }, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp)) {
+                                            Text("Отменить", color = AccentRed, fontSize = 10.sp)
+                                        }
+                                    }
+                                }
+                                if (showEditReminder) {
+                                    AlertDialog(
+                                        onDismissRequest = { showEditReminder = false },
+                                        containerColor = Panel,
+                                        title = { Text("Изменить время", color = MainText) },
+                                        text = {
+                                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                Text(reminder.task, color = Muted, fontSize = 12.sp)
+                                                OutlinedTextField(
+                                                    value = editReminderTime,
+                                                    onValueChange = { editReminderTime = it },
+                                                    singleLine = true,
+                                                    label = { Text("ДД.ММ.ГГГГ ЧЧ:ММ") }
+                                                )
+                                                Text("Часовой пояс: " + reminder.zoneId, color = Muted, fontSize = 10.sp)
+                                            }
+                                        },
+                                        confirmButton = {
+                                            TextButton(onClick = {
+                                                if (vm.updateReminderTime(reminder.id, editReminderTime)) showEditReminder = false
+                                                else vm.showError("Неверная дата или время. Укажи будущую дату в формате ДД.ММ.ГГГГ ЧЧ:ММ.")
+                                            }) { Text("Сохранить", color = AccentRed) }
+                                        },
+                                        dismissButton = { TextButton(onClick = { showEditReminder = false }) { Text("Отмена", color = Muted) } }
+                                    )
+                                }
+                                Divider(color = DividerTone)
+                            }
+                        }
+                    }
+                }
                 if (lines.isEmpty()) {
                     Column(
                         Modifier.fillMaxSize().padding(horizontal = 25.dp),
