@@ -804,7 +804,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                             extractPdfTextByPage(document)
                         }
                     } catch (e: Exception) {
-                        throw IllegalArgumentException("Не удалось извлечь текст из PDF. Проверь, что файл не повреждён и не защищён паролем. Для сканированных PDF пока не поддерживается OCR.", e)
+                        throw IllegalArgumentException("Не удалось прочитать PDF. Проверь, что файл не повреждён, не защищён паролем и не превышает ограничения приложения.", e)
                     }
                     val finalText = if (extracted.isBlank()) {
                         try {
