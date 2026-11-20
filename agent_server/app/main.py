@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from .model_gateway import ModelConfig, ModelGateway, ModelGatewayError, load_models
 from .credentials import CredentialEncryptionError, decrypt_secret, encrypt_secret
@@ -175,7 +175,7 @@ class ProviderCredentialInput(BaseModel):
     provider_id: str = Field(min_length=2, max_length=64, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
     base_url: str = Field(min_length=12, max_length=300)
     model: str = Field(min_length=1, max_length=160)
-    api_key: str = Field(min_length=8, max_length=4096)
+    api_key: SecretStr
     supports_vision: bool = False
 
 
@@ -622,8 +622,11 @@ async def list_providers(owner_id: str = Depends(auth)):
 @app.post("/v1/providers", dependencies=[Depends(auth)])
 async def save_provider(body: ProviderCredentialInput, owner_id: str = Depends(auth)):
     base_url = validate_provider_base_url(body.base_url)
+    provider_key = body.api_key.get_secret_value()
+    if not 8 <= len(provider_key) <= 4096:
+        raise HTTPException(422, "Provider API key must be between 8 and 4096 characters")
     try:
-        encrypted = encrypt_secret(body.api_key)
+        encrypted = encrypt_secret(provider_key)
     except CredentialEncryptionError as exc:
         raise HTTPException(503, "Credential encryption is not configured") from exc
     now = time.time()
