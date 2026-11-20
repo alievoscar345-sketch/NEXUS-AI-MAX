@@ -168,6 +168,8 @@ class DurableTaskTests(unittest.TestCase):
     def test_rejects_unlisted_provider_hosts(self):
         with self.assertRaises(main.HTTPException):
             main.validate_provider_base_url("https://attacker.example/v1")
+        with self.assertRaises(main.HTTPException):
+            main.validate_provider_base_url("https://api.openai.com:invalid/v1")
 
     def test_approval_record_is_idempotent_for_retried_step(self):
         now = time.time()
