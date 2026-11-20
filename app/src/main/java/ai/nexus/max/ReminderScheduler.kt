@@ -58,6 +58,7 @@ internal object ReminderParser {
             .replace(Regex("""(?i)\b(сегодня|завтра|послезавтра)\b"""), "")
             .replace(Regex("""(?i)\b(?:в|на)\s*$"""), "")
             .replace(Regex("""(?i)^\s*(?:что|о\s+том,?\s+что)\s*"""), "")
+            .replace(Regex("""(?i)^\s*(?:в|на|что|о)\s+"""), "")
             .replace(Regex("""\s+"""), " ")
             .trim(' ', ',', '.', ':', ';', '-', '—')
         if (task.isBlank()) return null
