@@ -210,6 +210,26 @@ private fun readUriLimited(
     return readStreamLimited(input, maxBytes, errorMessage)
 }
 
+private fun extractPdfTextByPage(document: PDDocument, maxChars: Int = 1_000_000): String {
+    val stripper = PDFTextStripper().apply { sortByPosition = true }
+    return buildString {
+        for (pageNumber in 1..document.numberOfPages) {
+            if (length >= maxChars) break
+            stripper.startPage = pageNumber
+            stripper.endPage = pageNumber
+            val pageText = stripper.getText(document).trim()
+            if (pageText.isNotEmpty()) {
+                if (isNotEmpty()) append("\\n\\n")
+                append("--- Страница ")
+                append(pageNumber)
+                append(" ---\\n")
+                val remaining = maxChars - length
+                if (remaining > 0) append(pageText.take(remaining))
+            }
+        }
+    }.take(maxChars)
+}
+
 data class ChatAttachment(
     val name: String,
     val mimeType: String,
@@ -781,7 +801,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         PDFBoxResourceLoader.init(getApplication<Application>())
                         PDDocument.load(ByteArrayInputStream(bytes)).use { document ->
                             if (document.numberOfPages > 300) throw IllegalStateException("В PDF больше 300 страниц. Раздели документ на части.")
-                            PDFTextStripper().getText(document).take(1_000_000)
+                            extractPdfTextByPage(document)
                         }
                     } catch (e: Exception) {
                         throw IllegalArgumentException("Не удалось извлечь текст из PDF. Проверь, что файл не повреждён и не защищён паролем. Для сканированных PDF пока не поддерживается OCR.", e)
