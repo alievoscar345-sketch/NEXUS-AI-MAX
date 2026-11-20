@@ -125,7 +125,8 @@ data class WebSearchAnswer(val text: String, val providerMessagesJson: String)
 data class RemoteProvider(
     val providerId: String,
     val baseUrl: String,
-    val model: String
+    val model: String,
+    val supportsVision: Boolean = false
 )
 data class ChatSession(
     val id: String,
@@ -326,7 +327,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         (0 until data.length()).mapNotNull { index ->
                             val item = data.optJSONObject(index) ?: return@mapNotNull null
                             val id = item.optString("provider_id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                            RemoteProvider(id, item.optString("base_url"), item.optString("model"))
+                            RemoteProvider(id, item.optString("base_url"), item.optString("model"), item.optBoolean("supports_vision", false))
                         }
                     }
                 }
@@ -340,7 +341,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun saveRemoteProvider(providerId: String, baseUrl: String, modelId: String, providerKey: String) {
+    fun saveRemoteProvider(providerId: String, baseUrl: String, modelId: String, providerKey: String, supportsVision: Boolean) {
         if (providerVaultBusy) return
         if (providerId.isBlank() || baseUrl.isBlank() || modelId.isBlank() || providerKey.isBlank()) {
             providerVaultMessage = "Заполни ID, Base URL, Model ID и API-ключ."
@@ -355,6 +356,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         .put("base_url", baseUrl.trim())
                         .put("model", modelId.trim())
                         .put("api_key", providerKey.trim())
+                        .put("supports_vision", supportsVision)
                         .toString().toRequestBody("application/json".toMediaType())
                     val request = Request.Builder()
                         .url(agentServerUrl.trimEnd('/') + "/v1/providers")
@@ -366,7 +368,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 providerVaultMessage = "Ключ сохранён на сервере в зашифрованном виде."
                 remoteProviders = remoteProviders.filterNot { it.providerId == providerId.trim() } +
-                    RemoteProvider(providerId.trim(), baseUrl.trim().trimEnd('/'), modelId.trim())
+                    RemoteProvider(providerId.trim(), baseUrl.trim().trimEnd('/'), modelId.trim(), supportsVision)
             } catch (e: Exception) {
                 providerVaultMessage = e.message ?: "Не удалось сохранить ключ."
             } finally {
@@ -1205,6 +1207,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var vaultBaseUrl by remember { mutableStateOf("https://anymodel.org/v1") }
     var vaultModelId by remember { mutableStateOf("claude-fable-5-2") }
     var vaultApiKey by remember { mutableStateOf("") }
+    var vaultSupportsVision by remember { mutableStateOf(false) }
     var selectedOpenRouterModel by remember { mutableStateOf(vm.settings.openRouterModel) }
     var freeModelsOnly by remember { mutableStateOf(false) }
     var modelSearch by remember { mutableStateOf("") }
@@ -2042,6 +2045,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                 Column(Modifier.fillMaxWidth().padding(9.dp)) {
                                     Text(remote.providerId, color = MainText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                     Text(remote.model + " · " + remote.baseUrl, color = Muted, fontSize = 9.sp)
+                                    Text(if (remote.supportsVision) "Поддерживает изображения" else "Только текст", color = Muted, fontSize = 9.sp)
                                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                         TextButton(
                                             onClick = { vm.testRemoteProvider(remote.providerId) },
@@ -2061,11 +2065,15 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     OutlinedTextField(vaultBaseUrl, { vaultBaseUrl = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Base URL") }, singleLine = true)
                     OutlinedTextField(vaultModelId, { vaultModelId = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Model ID") }, singleLine = true)
                     OutlinedTextField(vaultApiKey, { vaultApiKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("API-ключ провайдера") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = vaultSupportsVision, onCheckedChange = { vaultSupportsVision = it })
+                        Text("Эта модель поддерживает изображения", color = MainText, fontSize = 11.sp)
+                    }
                     Button(
                         onClick = {
                             vm.updateAgentServer(agentServerUrl, agentServerToken)
                             agentServerToken = ""
-                            vm.saveRemoteProvider(vaultProviderId, vaultBaseUrl, vaultModelId, vaultApiKey)
+                            vm.saveRemoteProvider(vaultProviderId, vaultBaseUrl, vaultModelId, vaultApiKey, vaultSupportsVision)
                             vaultApiKey = ""
                         },
                         enabled = !vm.providerVaultBusy && vm.agentServerConfigured && agentServerUrl.startsWith("https://") && vaultApiKey.isNotBlank(),
