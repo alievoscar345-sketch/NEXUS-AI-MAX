@@ -2068,7 +2068,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                             vm.saveRemoteProvider(vaultProviderId, vaultBaseUrl, vaultModelId, vaultApiKey)
                             vaultApiKey = ""
                         },
-                        enabled = !vm.providerVaultBusy && vm.agentServerConfigured && vaultApiKey.isNotBlank(),
+                        enabled = !vm.providerVaultBusy && vm.agentServerConfigured && agentServerUrl.startsWith("https://") && vaultApiKey.isNotBlank(),
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(containerColor = Violet)
                     ) { Text(if (vm.providerVaultBusy) "Выполняется…" else "Сохранить ключ на сервере") }
