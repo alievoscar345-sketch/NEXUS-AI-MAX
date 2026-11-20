@@ -190,11 +190,11 @@ ALLOWED_PROVIDER_HOSTS = {
 
 
 def validate_provider_base_url(value: str) -> str:
-    parsed = urlparse(value)
     try:
+        parsed = urlparse(value)
         port = parsed.port
     except ValueError as exc:
-        raise HTTPException(422, "Provider URL contains an invalid port") from exc
+        raise HTTPException(422, "Provider URL is malformed") from exc
     if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
             or port not in (None, 443) or parsed.query or parsed.fragment
             or parsed.hostname.lower() not in ALLOWED_PROVIDER_HOSTS):
