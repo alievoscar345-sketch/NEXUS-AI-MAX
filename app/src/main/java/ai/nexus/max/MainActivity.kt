@@ -270,8 +270,7 @@ private fun ChatAttachmentPreview(attachment: ChatAttachment, compact: Boolean =
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.96f))
-                        .clickable { showFullImage = false },
+                        .background(Color.Black.copy(alpha = 0.96f)),
                     verticalArrangement = Arrangement.Center,
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
