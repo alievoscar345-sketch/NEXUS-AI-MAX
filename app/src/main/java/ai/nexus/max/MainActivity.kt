@@ -412,6 +412,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 providerVaultMessage = "Ключ сохранён на сервере в зашифрованном виде."
                 remoteProviders = remoteProviders.filterNot { it.providerId == providerId.trim() } +
                     RemoteProvider(providerId.trim(), baseUrl.trim().trimEnd('/'), modelId.trim(), supportsVision)
+                loadRemoteModels()
             } catch (e: Exception) {
                 providerVaultMessage = e.message ?: "Не удалось сохранить ключ."
             } finally {
