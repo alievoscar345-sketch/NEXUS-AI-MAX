@@ -2162,8 +2162,8 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     ) { Text(if (vm.providerVaultBusy) "Выполняется…" else "Сохранить ключ на сервере") }
                     vm.providerVaultMessage?.let { Text(it, color = Muted, fontSize = 10.sp, lineHeight = 14.sp) }
                     Divider(color = DividerTone, modifier = Modifier.padding(vertical = 4.dp))
-                    Text("ПРЯМОЕ ПОДКЛЮЧЕНИЕ ДЛЯ ТЕКУЩЕГО ЧАТА", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    Text("Этот старый режим пока отправляет запросы напрямую провайдеру. Перевод обычного чата на серверный Model Gateway будет отдельным этапом.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
+                    Text("РЕЗЕРВНЫЙ ПРЯМОЙ РЕЖИМ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text("Используется, если сервер не подключён, а также для web search и reasoning до переноса этих инструментов в облачный шлюз.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
                     Divider(color = DividerTone, modifier = Modifier.padding(vertical = 4.dp))
                     Text("РЕЗЕРВНАЯ КОПИЯ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     Text("Экспорт сохраняет чаты и доступные вложения. API-ключи не экспортируются. Импорт заменяет текущую историю.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
