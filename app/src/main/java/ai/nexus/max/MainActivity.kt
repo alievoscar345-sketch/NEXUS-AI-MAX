@@ -162,6 +162,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
 
     var chats by mutableStateOf(loadChats())
         private set
+    var reminders by mutableStateOf<List<ScheduledReminder>>(emptyList())
+        private set
     var pendingAttachments by mutableStateOf<List<ChatAttachment>>(emptyList())
         private set
     var activeChatId by mutableStateOf(chats.firstOrNull { !it.isSystem }?.id ?: chats.firstOrNull()?.id)
@@ -184,6 +186,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         .build()
 
     init {
+        refreshReminders()
         ensureRemindersChat()
         if (chats.none { !it.isSystem }) createChat()
     }
