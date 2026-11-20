@@ -536,6 +536,69 @@ async def health():
     return {"status": "ok", "service": "nexus-agent-core", "version": "0.2.0"}
 
 
+def validate_chat_messages(messages: list[dict[str, Any]]) -> bool:
+    if len(json.dumps(messages, ensure_ascii=False).encode("utf-8")) > 12 * 1024 * 1024:
+        raise HTTPException(413, "Chat payload exceeds the 12 MB limit")
+    requires_vision = False
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") not in {"system", "user", "assistant"}:
+            raise HTTPException(422, "Only system, user, and assistant messages are supported")
+        content = message.get("content")
+        if isinstance(content, str):
+            if len(content) > 200000:
+                raise HTTPException(413, "A chat message is too large")
+            continue
+        if not isinstance(content, list):
+            raise HTTPException(422, "Message content must be text or multimodal content parts")
+        for part in content:
+            if not isinstance(part, dict):
+                raise HTTPException(422, "Invalid multimodal content part")
+            if part.get("type") == "text":
+                if not isinstance(part.get("text"), str) or len(part["text"]) > 200000:
+                    raise HTTPException(422, "Invalid or oversized text content")
+            elif part.get("type") == "image_url":
+                image = part.get("image_url")
+                data_url = image.get("url") if isinstance(image, dict) else None
+                if not isinstance(data_url, str):
+                    raise HTTPException(422, "Image must be supplied as a data URL")
+                match = re.fullmatch(r"data:image/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/]+={0,2})", data_url)
+                if not match or len(match.group(2)) > 11 * 1024 * 1024:
+                    raise HTTPException(422, "Only base64 PNG, JPEG, WEBP, or GIF images up to 8 MB are supported")
+                try:
+                    decoded = base64.b64decode(match.group(2), validate=True)
+                except (ValueError, base64.binascii.Error) as exc:
+                    raise HTTPException(422, "Image data is not valid base64") from exc
+                if len(decoded) > 8 * 1024 * 1024:
+                    raise HTTPException(413, "An image exceeds the 8 MB limit")
+                requires_vision = True
+            else:
+                raise HTTPException(422, "Unsupported multimodal content part")
+    return requires_vision
+
+
+@app.post("/v1/chat/completions", dependencies=[Depends(auth)])
+async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(auth)):
+    requires_vision = validate_chat_messages(body.messages)
+    models = provider_models_for_owner(owner_id)
+    if not models:
+        raise HTTPException(503, "No model provider is configured for this account")
+    try:
+        result = await ModelGateway(models=models).complete_messages(body.messages, purpose="general")
+    except ModelGatewayError as exc:
+        status = 503 if "No configured model supports" in str(exc) else 502
+        raise HTTPException(status, str(exc)) from exc
+    return {
+        "id": "nexus-" + str(uuid.uuid4()),
+        "object": "chat.completion",
+        "model": result.model,
+        "provider": result.provider_id,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": result.content},
+                     "finish_reason": "stop"}],
+        "usage": result.usage,
+        "vision": requires_vision,
+    }
+
+
 @app.get("/v1/providers", dependencies=[Depends(auth)])
 async def list_providers(owner_id: str = Depends(auth)):
     with db() as c:
