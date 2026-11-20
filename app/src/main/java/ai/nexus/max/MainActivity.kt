@@ -500,7 +500,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                                 if (chunk.isNotEmpty()) {
                                     streamedAnswer += chunk
                                     withContext(Dispatchers.Main) {
-                                        updateChatLive(chatId, streamedAnswer)                                    }
+                                        updateChatLive(chatId, streamedAnswer)
+                                    }
                                 }
                             }
                         }
@@ -1000,7 +1001,8 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         speechFile = null
                         true
                     }
-                    player.prepareAsync()                } catch (_: Exception) {
+                    player.prepareAsync()
+                } catch (_: Exception) {
                     player.release()
                     speaking = false
                     activeSpeechId = ""
@@ -1513,7 +1515,8 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                                     Text("⋯", color = Muted, fontSize = 20.sp)
                                                 }
                                                 DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                                                    DropdownMenuItem(                                                        text = { Text("Переименовать", color = MainText) },
+                                                    DropdownMenuItem(
+                                                        text = { Text("Переименовать", color = MainText) },
                                                         onClick = {
                                                             renameTarget = chat
                                                             renameValue = chat.title
