@@ -22,11 +22,11 @@ The development branch contains:
 Important limitations of the current server:
 - It is a prototype, not a production multi-user service.
 - The worker is single-process and SQLite-backed; run one replica only.
-- It does not yet recover interrupted in-progress steps reliably.
-- The model endpoint is configured as one provider/model; there is no model registry, router, provider failover, or cost ledger.
+- Interrupted task/step recovery is implemented for the currently supported read-only and deterministic artifact actions; this is not distributed recovery and does not make external side effects resumable.
+- The Model Gateway now has a configurable provider registry, deterministic purpose/task routing, capability-aware selection, and transient-error fallback. Benchmark scores remain operator-supplied; there is no live global leaderboard integration or full cost ledger.
 - It does not yet execute arbitrary code, operate a browser, or connect to Avito.
 - Approval records are not yet a complete resumable human-in-the-loop workflow.
-- The Android app does not yet expose the cloud task API as an integrated chat capability.
+- Android now has provider-vault settings and can route standard text/image chat through the cloud Model Gateway when configured. The durable long-running task API is not yet integrated into chat as resumable task cards.
 
 ## Target architecture
 
