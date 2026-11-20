@@ -38,6 +38,9 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.PushPin
@@ -497,8 +500,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                                 if (chunk.isNotEmpty()) {
                                     streamedAnswer += chunk
                                     withContext(Dispatchers.Main) {
-                                        updateChatLive(chatId, streamedAnswer)
-                                    }
+                                        updateChatLive(chatId, streamedAnswer)                                    }
                                 }
                             }
                         }
@@ -909,6 +911,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     val supportsDeepReasoning = vm.settings.provider == "OpenRouter" && "reasoning" in selectedModelCapabilities
     val supportsBuiltInSearch = vm.settings.provider == "AnyModel" && activeFeatureModel.contains("claude", ignoreCase = true)
     var featureMenuExpanded by remember { mutableStateOf(false) }
+    var attachmentMenuExpanded by remember { mutableStateOf(false) }
     var webSearchEnabled by remember(featureModelKey) { mutableStateOf(false) }
     var reasoningEnabled by remember(featureModelKey) { mutableStateOf(false) }
     var imageInputEnabled by remember(featureModelKey) { mutableStateOf(true) }
@@ -997,8 +1000,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         speechFile = null
                         true
                     }
-                    player.prepareAsync()
-                } catch (_: Exception) {
+                    player.prepareAsync()                } catch (_: Exception) {
                     player.release()
                     speaking = false
                     activeSpeechId = ""
@@ -1112,20 +1114,6 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         }
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = 5.dp)) {
-                        TextButton(
-                            enabled = imageInputEnabled,
-                            onClick = { imagePicker.launch("image/*") },
-                            contentPadding = PaddingValues(horizontal = 7.dp, vertical = 3.dp)
-                        ) {
-                            Text("+ Фото", color = if (imageInputEnabled) Blue else Muted, fontSize = 11.sp)
-                        }
-                        TextButton(
-                            enabled = fileAnalysisEnabled,
-                            onClick = { documentPicker.launch(arrayOf("text/*", "application/json", "application/xml", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")) },
-                            contentPadding = PaddingValues(horizontal = 7.dp, vertical = 3.dp)
-                        ) {
-                            Text("+ Документ", color = if (fileAnalysisEnabled) Blue else Muted, fontSize = 11.sp)
-                        }
                         Box {
                             TextButton(
                                 onClick = { featureMenuExpanded = true },
@@ -1168,9 +1156,51 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     }
                     Row(
                         Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp))
-                            .background(PanelRaised).padding(start = 7.dp, end = 7.dp, top = 7.dp, bottom = 7.dp),
+                            .background(PanelRaised).padding(start = 5.dp, end = 6.dp, top = 5.dp, bottom = 5.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Box {
+                            IconButton(onClick = { attachmentMenuExpanded = true }, modifier = Modifier.size(40.dp)) {
+                                Icon(Icons.Filled.Add, contentDescription = "Добавить вложение или поиск", tint = Blue, modifier = Modifier.size(25.dp))
+                            }
+                            DropdownMenu(
+                                expanded = attachmentMenuExpanded,
+                                onDismissRequest = { attachmentMenuExpanded = false },
+                                modifier = Modifier.background(Panel)
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Фото", color = if (imageInputEnabled) MainText else Muted) },
+                                    leadingIcon = { Icon(Icons.Filled.Image, null, tint = Blue) },
+                                    enabled = imageInputEnabled,
+                                    onClick = { attachmentMenuExpanded = false; imagePicker.launch("image/*") }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Файл или документ", color = if (fileAnalysisEnabled) MainText else Muted) },
+                                    leadingIcon = { Icon(Icons.Filled.AttachFile, null, tint = Blue) },
+                                    enabled = fileAnalysisEnabled,
+                                    onClick = { attachmentMenuExpanded = false; documentPicker.launch(arrayOf("text/*", "application/json", "application/xml", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")) }
+                                )
+                                Divider(color = DividerTone)
+                                DropdownMenuItem(
+                                    text = { Text("Поиск по истории", color = MainText) },
+                                    leadingIcon = { Icon(Icons.Filled.Search, null, tint = AccentRed) },
+                                    onClick = { attachmentMenuExpanded = false; chatSearchQuery = ""; showChatSearch = true }
+                                )
+                            }
+                        }
+                        BasicTextField(
+                            value = input,
+                            onValueChange = { input = it },
+                            modifier = Modifier.weight(1f).padding(vertical = 10.dp),
+                            textStyle = androidx.compose.ui.text.TextStyle(color = MainText, fontSize = 15.sp, lineHeight = 21.sp),
+                            maxLines = 6,
+                            decorationBox = { inner ->
+                                Box {
+                                    if (input.isEmpty()) Text("Напишите сообщение…", color = Muted, fontSize = 14.sp)
+                                    inner()
+                                }
+                            }
+                        )
                         IconButton(
                             enabled = voiceInputEnabled,
                             onClick = {
@@ -1186,31 +1216,17 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                     vm.showError("На устройстве нет доступного сервиса распознавания речи.")
                                 }
                             },
-                            modifier = Modifier.size(42.dp)
+                            modifier = Modifier.size(38.dp)
                         ) {
-                            Icon(Icons.Filled.Mic, contentDescription = "Голосовой ввод", tint = AccentRed, modifier = Modifier.size(23.dp))
+                            Icon(Icons.Filled.Mic, contentDescription = "Голосовой ввод", tint = AccentRed, modifier = Modifier.size(21.dp))
                         }
-                        BasicTextField(
-                            value = input,
-                            onValueChange = { input = it },
-                            modifier = Modifier.weight(1f).padding(vertical = 10.dp),
-                            textStyle = androidx.compose.ui.text.TextStyle(color = MainText, fontSize = 15.sp, lineHeight = 21.sp),
-                            maxLines = 6,
-                            decorationBox = { inner ->
-                                Box {
-                                    if (input.isEmpty()) Text("Напишите сообщение…", color = Muted, fontSize = 14.sp)
-                                    inner()
-                                }
-                            }
-                        )
-                        Button(
+                        IconButton(
                             enabled = !vm.busy && (input.isNotBlank() || vm.pendingAttachments.isNotEmpty()),
                             onClick = { vm.send(input, webSearchEnabled, useReasoning = reasoningEnabled); input = "" },
-                            shape = RoundedCornerShape(16.dp),
-                            contentPadding = PaddingValues(horizontal = 17.dp, vertical = 12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Violet, disabledContainerColor = Color(0xFF3A292B))
+                            modifier = Modifier.size(38.dp)
+                                .background(if (!vm.busy && (input.isNotBlank() || vm.pendingAttachments.isNotEmpty())) Violet else Color(0xFF3A292B), CircleShape)
                         ) {
-                            Text(if (vm.busy) "…" else "↑", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                            Text(if (vm.busy) "…" else "↑", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                     Text(
@@ -1497,8 +1513,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                                     Text("⋯", color = Muted, fontSize = 20.sp)
                                                 }
                                                 DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                                                    DropdownMenuItem(
-                                                        text = { Text("Переименовать", color = MainText) },
+                                                    DropdownMenuItem(                                                        text = { Text("Переименовать", color = MainText) },
                                                         onClick = {
                                                             renameTarget = chat
                                                             renameValue = chat.title
