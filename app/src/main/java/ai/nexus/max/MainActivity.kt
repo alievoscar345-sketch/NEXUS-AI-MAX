@@ -1031,7 +1031,6 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     val backupImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         pendingBackupImport = uri
     }
-    val context = LocalContext.current
     val speechPrefs = remember(context) { context.getSharedPreferences("nexus_speech", 0) }
     var ttsReady by remember { mutableStateOf(false) }
     var availableTtsVoices by remember { mutableStateOf<List<Voice>>(emptyList()) }
