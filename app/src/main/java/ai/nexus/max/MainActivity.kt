@@ -1298,9 +1298,13 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
         else -> ambientPrimary
     }
     val ambientGlow = ambientSecondary.copy(alpha = (ambientIntensity * 0.92f).coerceIn(0f, 1f))
+    val glowStart = (1f - ambientHeight.coerceIn(0.15f, 0.9f)).coerceIn(0.05f, 0.85f)
+    val glowMid = (glowStart + (1f - glowStart) * 0.52f).coerceIn(glowStart + 0.01f, 0.99f)
     val ambientBackground = Brush.verticalGradient(
         colorStops = arrayOf(
-            0f to Ink, (1f - ambientHeight.coerceIn(0.15f, 0.9f)) to Ink,
+            0f to Ink,
+            glowStart to Ink,
+            glowMid to ambientAnimatedPrimary.copy(alpha = (ambientIntensity * 0.28f).coerceIn(0.03f, 0.28f)),
             1f to ambientGlow
         )
     )
@@ -1526,7 +1530,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 }
             },
             bottomBar = {
-                Column(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Ink, ambientGlow, ambientGlow))).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)).padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Column(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Ink, ambientAnimatedPrimary.copy(alpha = ambientIntensity * 0.12f), ambientGlow))).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)).padding(horizontal = 12.dp, vertical = 8.dp)) {
                     if (vm.pendingAttachments.isNotEmpty()) {
                         Column(Modifier.fillMaxWidth().padding(bottom = 7.dp)) {
                             vm.pendingAttachments.forEachIndexed { index, attachment ->
