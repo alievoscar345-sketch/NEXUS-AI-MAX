@@ -159,7 +159,7 @@ internal object ReminderScheduler {
         }
         if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         val openApp = PendingIntent.getActivity(
-            context, 9001, Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            context, 9001, Intent(context, MainActivity::class.java).putExtra("open_reminders", true).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         manager.notify(task.hashCode(), NotificationCompat.Builder(context, CHANNEL_ID)
