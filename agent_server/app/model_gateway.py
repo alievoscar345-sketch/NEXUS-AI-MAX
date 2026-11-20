@@ -22,6 +22,7 @@ class ModelConfig:
     priority: int = 100
     purposes: tuple[str, ...] = ("general", "planning", "evaluation")
     enabled: bool = True
+    capabilities: tuple[str, ...] = ()
     # Scores are normalized to 0..100 and should come from dated, named benchmarks.
     benchmark_scores: dict[str, float] = field(default_factory=dict)
     cost_per_million_tokens: float | None = None
@@ -82,6 +83,9 @@ def load_models(allow_empty: bool = False) -> list[ModelConfig]:
             purposes = item.get("purposes", ["general", "planning", "evaluation"])
             if not isinstance(purposes, list):
                 purposes = ["general"]
+            capabilities = item.get("capabilities", [])
+            if not isinstance(capabilities, list):
+                capabilities = []
             scores = item.get("benchmark_scores", {})
             if not isinstance(scores, dict):
                 scores = {}
@@ -101,6 +105,7 @@ def load_models(allow_empty: bool = False) -> list[ModelConfig]:
                 priority=int(item.get("priority", 100)),
                 purposes=tuple(str(x) for x in purposes),
                 enabled=bool(item.get("enabled", True)),
+                capabilities=tuple(str(x) for x in capabilities),
                 benchmark_scores=normalized_scores,
                 cost_per_million_tokens=cost,
                 latency_ms=latency,
@@ -135,13 +140,17 @@ class ModelGateway:
             return model.benchmark_scores["general"]
         return 50.0
 
-    def _select(self, purpose: str, task_type: str = "general") -> list[ModelConfig]:
+    def _select(self, purpose: str, task_type: str = "general",
+                required_capability: str | None = None) -> list[ModelConfig]:
         models = self.models if self.models is not None else load_models()
         eligible = [m for m in models if m.enabled and purpose in m.purposes]
         if not eligible:
             eligible = [m for m in models if m.enabled and "general" in m.purposes]
+        if required_capability:
+            eligible = [m for m in eligible if required_capability in m.capabilities]
         if not eligible:
-            raise ModelGatewayError(f"No configured model supports purpose: {purpose}")
+            detail = f" with capability {required_capability}" if required_capability else ""
+            raise ModelGatewayError(f"No configured model supports purpose: {purpose}{detail}")
 
         route = [x.strip() for x in os.getenv(f"NEXUS_MODEL_ROUTE_{purpose.upper()}", "").split(",") if x.strip()]
         route_rank = {name: index for index, name in enumerate(route)}
@@ -169,23 +178,37 @@ class ModelGateway:
             eligible.sort(key=lambda m: (-score(m)[0], m.priority))
         return eligible
 
-    async def complete(self, system: str, user: str, purpose: str = "general") -> ModelResult:
-        task_type = infer_task_type(user)
-        candidates = self._select(purpose, task_type)
+    async def complete_messages(self, messages: list[dict[str, Any]],
+                                purpose: str = "general") -> ModelResult:
+        text_parts: list[str] = []
+        requires_vision = False
+        for message in messages:
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, str):
+                text_parts.append(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") == "text" and isinstance(part.get("text"), str):
+                        text_parts.append(part["text"])
+                    elif part.get("type") == "image_url":
+                        requires_vision = True
+        task_type = "vision" if requires_vision else infer_task_type("\n".join(text_parts))
+        candidates = self._select(
+            purpose, task_type, required_capability="vision" if requires_vision else None
+        )
         last_error: Exception | None = None
         for index, model in enumerate(candidates):
             try:
-                async with httpx.AsyncClient(timeout=90, transport=self.transport) as client:
+                async with httpx.AsyncClient(timeout=120, transport=self.transport) as client:
                     response = await client.post(
                         model.base_url + "/chat/completions",
                         headers={"Authorization": "Bearer " + model.api_key},
                         json={
                             "model": model.model,
                             "temperature": 0.2,
-                            "messages": [
-                                {"role": "system", "content": system},
-                                {"role": "user", "content": user},
-                            ],
+                            "messages": messages,
                         },
                     )
                     response.raise_for_status()
@@ -224,6 +247,12 @@ class ModelGateway:
         if isinstance(last_error, httpx.HTTPStatusError):
             detail = f"provider returned HTTP {last_error.response.status_code}"
         raise ModelGatewayError(f"All eligible model providers failed ({detail})") from last_error
+
+    async def complete(self, system: str, user: str, purpose: str = "general") -> ModelResult:
+        return await self.complete_messages(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            purpose=purpose,
+        )
 
     async def complete_json(self, system: str, user: str, purpose: str = "general") -> tuple[dict[str, Any], ModelResult]:
         result = await self.complete(system, user, purpose)
