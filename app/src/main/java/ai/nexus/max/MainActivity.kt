@@ -1067,7 +1067,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         }
                         DropdownMenu(expanded = topMenuExpanded, onDismissRequest = { topMenuExpanded = false }) {
                             DropdownMenuItem(text = { Text(if (vm.activeChat?.isPinned == true) "Открепить чат" else "Закрепить чат") }, leadingIcon = { Icon(Icons.Filled.PushPin, null, tint = AccentRed) }, onClick = { vm.activeChatId?.let { vm.togglePinChat(it) }; topMenuExpanded = false })
-                            DropdownMenuItem(text = { Text("Поиск в чате") }, leadingIcon = { Icon(Icons.Filled.Search, null, tint = AccentRed) }, onClick = { chatSearchQuery = ""; showChatSearch = true; topMenuExpanded = false })
+
                             DropdownMenuItem(text = { Text("Поделиться") }, leadingIcon = { Icon(Icons.Filled.Share, null, tint = AccentRed) }, onClick = {
                                 val chat = vm.activeChat
                                 if (chat != null) {
@@ -1182,12 +1182,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                     enabled = fileAnalysisEnabled,
                                     onClick = { attachmentMenuExpanded = false; documentPicker.launch(arrayOf("text/*", "application/json", "application/xml", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")) }
                                 )
-                                Divider(color = DividerTone)
-                                DropdownMenuItem(
-                                    text = { Text("Поиск по истории", color = MainText) },
-                                    leadingIcon = { Icon(Icons.Filled.Search, null, tint = AccentRed) },
-                                    onClick = { attachmentMenuExpanded = false; chatSearchQuery = ""; showChatSearch = true }
-                                )
+
                             }
                         }
                         BasicTextField(
@@ -1464,6 +1459,22 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                             }
                         }
                         Spacer(Modifier.height(18.dp))
+                        Surface(
+                            color = PanelRaised,
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                chatSearchQuery = ""
+                                showHistory = false
+                                showChatSearch = true
+                            }
+                        ) {
+                            Row(Modifier.padding(horizontal = 13.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Filled.Search, contentDescription = null, tint = Muted)
+                                Spacer(Modifier.width(12.dp))
+                                Text("Поиск по всей истории", color = MainText, fontSize = 13.sp)
+                            }
+                        }
+                        Spacer(Modifier.height(9.dp))
                         Surface(
                             color = PanelRaised,
                             shape = RoundedCornerShape(14.dp),
