@@ -129,6 +129,8 @@ class DurableTaskTests(unittest.TestCase):
             models = main.provider_models_for_owner("tenant-a")
             self.assertTrue(any(m.id == "user-anymodel" and m.api_key == body.api_key and "vision" in m.capabilities for m in models))
             self.assertEqual(main.provider_models_for_owner("tenant-b"), [])
+            catalog = asyncio.run(main.list_available_models(owner_id="tenant-a"))
+            self.assertTrue(any(item["source"] == "user" and "api_key" not in item for item in catalog["models"]))
 
     def test_task_lists_are_owner_scoped(self):
         first = main.NewTask(prompt="Task for tenant A")
