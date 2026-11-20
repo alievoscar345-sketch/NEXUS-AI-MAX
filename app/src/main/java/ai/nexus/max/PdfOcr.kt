@@ -113,7 +113,7 @@ internal fun extractScannedPdfText(context: Context, pdfBytes: ByteArray): Strin
                         for (index in 0 until renderer.pageCount) {
                             if (length >= MAX_OCR_CHARS) break
                             renderer.openPage(index).use { page ->
-                                val scale = minOf(2200f / page.width, 2200f / page.height, 3f).coerceAtLeast(1f)
+                                val scale = minOf(2200f / page.width, 2200f / page.height, 3f)
                                 val width = (page.width * scale).toInt().coerceAtMost(2200)
                                 val height = (page.height * scale).toInt().coerceAtMost(2200)
                                 val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
