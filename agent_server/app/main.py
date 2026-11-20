@@ -58,8 +58,16 @@ class Approval(BaseModel):
 
 _model_gateway = ModelGateway()
 
-async def llm_json(system: str, user: str, purpose: str = "general") -> dict[str,Any]:
-    parsed, _result = await _model_gateway.complete_json(system, user, purpose)
+async def llm_json(system: str, user: str, purpose: str = "general", task_id: str | None = None) -> dict[str,Any]:
+    parsed, result = await _model_gateway.complete_json(system, user, purpose)
+    if task_id:
+        usage = result.usage
+        event(task_id, "model_call", json.dumps({
+            "purpose": purpose,
+            "provider": result.provider_id,
+            "model": result.model,
+            "usage": usage,
+        }, ensure_ascii=False)[:1500])
     return parsed
 
 def safe_url(value: str) -> str:
@@ -115,7 +123,7 @@ async def process(tid):
         event(tid,"status","Planning task")
         plan=await llm_json(
             'You are NEXUS Agent Planner. Return strict JSON only: {"summary":"...","steps":[{"title":"...","action":"web_search|fetch_url|save_artifact|draft_external_action","input":{}}]}. Use only listed actions. For publishing, messaging, purchases or account changes use draft_external_action. Never claim external actions succeeded.',
-            row["prompt"], purpose="planning")
+            row["prompt"], purpose="planning", task_id=tid)
         steps=plan.get("steps",[])
         if not isinstance(steps,list): raise ValueError("Planner did not return steps")
         steps=steps[:min(MAX_STEPS,8)]
@@ -130,7 +138,7 @@ async def process(tid):
             if result.get("status")=="awaiting_approval": return
         final=await llm_json(
             'Return strict JSON only: {"summary":"..."}. Summarize only supplied results. Explicitly identify blocked or unavailable actions; do not claim they succeeded.',
-            json.dumps({"goal":row["prompt"],"results":results},ensure_ascii=False)[:30000], purpose="evaluation")
+            json.dumps({"goal":row["prompt"],"results":results},ensure_ascii=False)[:30000], purpose="evaluation", task_id=tid)
         with db() as c: c.execute("UPDATE tasks SET status='completed',summary=?,results_json=?,updated_at=? WHERE id=?",(str(final.get("summary","Task finished"))[:12000],json.dumps(results,ensure_ascii=False),time.time(),tid))
         event(tid,"completed","Task completed")
     except Exception as exc:
