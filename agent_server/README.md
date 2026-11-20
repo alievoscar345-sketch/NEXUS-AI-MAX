@@ -62,7 +62,7 @@ The backend supports encrypted per-owner provider credentials through:
 - `POST /v1/providers/{provider_id}/test` — make a minimal completion request to verify connectivity.
 - `DELETE /v1/providers/{provider_id}` — remove the stored credential.
 
-The supported provider hosts are allowlisted to reduce SSRF exposure: AnyModel, OpenRouter, OpenAI, Anthropic, Google Gemini OpenAI-compatible endpoint, DeepSeek, xAI, and Mistral. Custom hosts are intentionally rejected until a stricter egress policy exists.
+The supported provider hosts are allowlisted to reduce SSRF exposure: AnyModel, OpenRouter, OpenAI, Google Gemini OpenAI-compatible endpoint, DeepSeek, xAI, and Mistral. Direct Anthropic Messages API is not yet supported by this OpenAI-compatible gateway; Claude models can currently be reached through compatible gateways such as AnyModel or OpenRouter. Custom hosts are intentionally rejected until a stricter egress policy exists.
 
 Provider API keys are encrypted in SQLite using AES-256-GCM with a fresh 96-bit nonce per write. Set `NEXUS_CREDENTIAL_ENCRYPTION_KEY` to a base64-encoded 32-byte random key (for example, generate it with `openssl rand -base64 32`). Keep this encryption key outside the database and repository, back it up separately, and never log it. If it is lost, stored provider credentials cannot be recovered. HTTPS is required for all provider calls.
 
