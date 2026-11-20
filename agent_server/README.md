@@ -33,3 +33,11 @@ Every /v1 route requires Authorization: Bearer with NEXUS_AGENT_API_KEY.
 
 ## Operations and security
 Use persistent disk, HTTPS, strong API key, provider spend limits, backups, and host resource limits. The worker is single-process and SQLite-backed; use one service replica until shared queue/database and distributed locking exist. The service is not an arbitrary shell sandbox and must not be exposed to untrusted users.
+
+## Benchmark-aware model selection
+
+The gateway now infers a coarse task category (coding, research, math, vision, writing, or general) without an extra model call. It ranks eligible providers using configured category benchmark scores, then cost and latency metadata. Quality has the dominant weight; cost and latency help choose between similarly capable candidates. Existing explicit purpose-route environment variables remain manual overrides, and provider priority remains the deterministic tie-breaker.
+
+Add `benchmark_scores` (0..100), `cost_per_million_tokens`, `latency_ms`, `ranking_source`, and `ranking_updated_at` to each provider entry in `NEXUS_MODEL_PROVIDERS`. Scores must be traceable to named, dated public benchmarks or NEXUS internal evaluations. The gateway does not currently fetch leaderboard data live, validate benchmark methodology, or automatically refresh model rankings. Missing metadata falls back to neutral scoring and then configured priority; it must not be interpreted as evidence that a model is objectively better. Vision routing metadata is preparatory: image payload handling is not implemented yet.
+
+A benchmark score is not a universal intelligence score. Maintain separate measurements by task category, account for benchmark freshness and contamination risk, and run NEXUS-specific evaluations before promoting a model. Never put provider API keys in the registry JSON or commit secrets.
