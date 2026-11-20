@@ -55,6 +55,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+    implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
     implementation("com.mikepenz:multiplatform-markdown-renderer:0.32.0")
     implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.32.0")
     implementation("com.mikepenz:multiplatform-markdown-renderer-code:0.32.0")
