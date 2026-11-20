@@ -416,9 +416,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         val whenText = Instant.ofEpochMilli(parsed.triggerAtMillis).atZone(zone)
             .format(DateTimeFormatter.ofPattern("dd.MM.yyyy, HH:mm", Locale("ru")))
         val updated = current.copy(
-            title = if (current.lines.isEmpty()) source.trim().replace("\\n", " ").take(36).ifBlank { current.title } else current.title,
+            title = if (current.lines.isEmpty()) source.trim().replace("\n", " ").take(36).ifBlank { current.title } else current.title,
             updatedAt = System.currentTimeMillis(),
-            lines = current.lines + ChatLine("user", source.trim()) + ChatLine("assistant", "Напоминание создано. Я сообщу: **${parsed.task}**\\n\\nВремя: **$whenText** (${parsed.zoneId}). Оно сохранено в системном чате «Напоминания».")
+            lines = current.lines + ChatLine("user", source.trim()) + ChatLine("assistant", "Напоминание создано. Я сообщу: **${parsed.task}**\n\nВремя: **$whenText** (${parsed.zoneId}). Оно сохранено в системном чате «Напоминания».")
         )
         updateChat(chatId, updated)
         error = null
