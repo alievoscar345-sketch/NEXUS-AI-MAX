@@ -287,7 +287,7 @@ private fun ChatAttachmentPreview(attachment: ChatAttachment, compact: Boolean =
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 0.82f * androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp)
+                            .heightIn(max = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp * 0.82f)
                             .pointerInput(attachment.localPath) {
                                 detectTransformGestures { _, pan, zoom, _ ->
                                     val nextScale = (imageScale * zoom).coerceIn(1f, 5f)
