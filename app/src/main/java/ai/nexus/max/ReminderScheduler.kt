@@ -102,12 +102,15 @@ internal object ReminderScheduler {
     fun restoreAlarms(context: Context) {
         val array = JSONArray(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, "[]") ?: "[]")
         val now = System.currentTimeMillis()
+        val overdueIds = mutableListOf<String>()
         for (i in 0 until array.length()) {
             val item = array.optJSONObject(i) ?: continue
             val id = item.optString("id")
             val time = item.optLong("triggerAt")
-            if (id.isNotBlank() && time > now) scheduleAlarm(context, id, time)
+            if (id.isBlank()) continue
+            if (time > now) scheduleAlarm(context, id, time) else overdueIds.add(id)
         }
+        overdueIds.forEach { deliver(context, it) }
     }
 
     fun deliver(context: Context, id: String) {
