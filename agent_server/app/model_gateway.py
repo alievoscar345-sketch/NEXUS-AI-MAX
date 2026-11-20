@@ -50,8 +50,10 @@ TASK_KEYWORDS = {
 def infer_task_type(text: str) -> str:
     """Lightweight deterministic classifier; no extra model call or token cost."""
     value = text.lower()
-    matches = [(sum(1 for word in words if word in value), task) for task, words in TASK_KEYWORDS.items()]
-    count, task = max(matches, default=(0, "general"))
+    # Resolve ties toward the more operationally specific category (e.g. "write Python code").
+    tie_break = {"coding": 5, "math": 4, "research": 3, "vision": 2, "writing": 1}
+    matches = [(sum(1 for word in words if word in value), tie_break[task], task) for task, words in TASK_KEYWORDS.items()]
+    count, _, task = max(matches, default=(0, 0, "general"))
     return task if count else "general"
 
 
