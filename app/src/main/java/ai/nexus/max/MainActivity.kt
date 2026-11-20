@@ -643,11 +643,12 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         val cfg = settings
         val activeModel = if (cfg.provider == "OpenRouter") cfg.openRouterModel else cfg.model
         val activeKey = if (cfg.provider == "OpenRouter") cfg.openRouterApiKey else cfg.apiKey
-        if (activeKey.isBlank() || activeModel.isBlank()) {
+        val useCloudGateway = agentServerConfigured && agentServerUrl.isNotBlank() && !useWebSearch && !useReasoning
+        if (!useCloudGateway && (activeKey.isBlank() || activeModel.isBlank())) {
             error = if (cfg.provider == "OpenRouter") "Открой настройки и введи OpenRouter API key, затем выбери модель." else "Открой настройки API и введи ключ."
             return
         }
-        if (cfg.provider == "AnyModel" && cfg.baseUrl.isBlank()) { error = "Укажи Base URL провайдера."; return }
+        if (!useCloudGateway && cfg.provider == "AnyModel" && cfg.baseUrl.isBlank()) { error = "Укажи Base URL провайдера."; return }
         if (useWebSearch && cfg.provider != "AnyModel") {
             error = "Встроенный веб-поиск в этой версии доступен только через AnyModel / Claude."
             return
@@ -724,18 +725,30 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                     val body = JSONObject()
-                        .put("model", activeModel)
+                        .put("model", if (useCloudGateway) "auto" else activeModel)
                         .put("messages", messages)
-                        .put("stream", true)
+                        .put("stream", !useCloudGateway)
                     if (useReasoning && cfg.provider == "OpenRouter") {
                         body.put("reasoning", JSONObject().put("effort", "high"))
                     }
-                    val request = Request.Builder()
-                        .url(if (cfg.provider == "OpenRouter") "https://openrouter.ai/api/v1/chat/completions" else cfg.baseUrl + "/chat/completions")
-                        .header("Authorization", "Bearer " + activeKey)
-                        .header("HTTP-Referer", "https://github.com/alievoscar345-sketch/NEXUS-AI-MAX")
-                        .header("X-OpenRouter-Title", "NEXUS AI MAX")
+                    val accessToken = if (useCloudGateway) SecureSecretStore.load(getApplication()) else activeKey
+                    if (useCloudGateway && accessToken.isBlank()) {
+                        throw IllegalStateException("Токен NEXUS Agent Server не найден. Повторно подключи сервер в настройках.")
+                    }
+                    val requestBuilder = Request.Builder()
+                        .url(
+                            if (useCloudGateway) agentServerUrl.trimEnd('/') + "/v1/chat/completions"
+                            else if (cfg.provider == "OpenRouter") "https://openrouter.ai/api/v1/chat/completions"
+                            else cfg.baseUrl + "/chat/completions"
+                        )
+                        .header("Authorization", "Bearer " + accessToken)
                         .header("Content-Type", "application/json")
+                    if (!useCloudGateway && cfg.provider == "OpenRouter") {
+                        requestBuilder
+                            .header("HTTP-Referer", "https://github.com/alievoscar345-sketch/NEXUS-AI-MAX")
+                            .header("X-OpenRouter-Title", "NEXUS AI MAX")
+                    }
+                    val request = requestBuilder
                         .post(body.toString().toRequestBody("application/json".toMediaType()))
                         .build()
                     client.newCall(request).execute().use { response ->
@@ -743,41 +756,52 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                             val raw = response.body?.string().orEmpty()
                             throw IllegalStateException("API " + response.code + ": " + raw.take(350))
                         }
-                        val reader = response.body?.charStream()?.buffered()
-                            ?: throw IllegalStateException("Пустой ответ API")
-                        reader.use { stream ->
-                            while (true) {
-                                val rawLine = stream.readLine() ?: break
-                                if (!rawLine.startsWith("data:")) continue
-                                val payload = rawLine.removePrefix("data:").trim()
-                                if (payload == "[DONE]") break
-                                if (payload.isBlank()) continue
-                                val delta = try {
-                                    JSONObject(payload).optJSONArray("choices")
-                                        ?.optJSONObject(0)?.optJSONObject("delta")
-                                        ?.opt("content")
-                                } catch (_: Exception) { null }
-                                val chunk = when (delta) {
-                                    is String -> delta
-                                    is JSONArray -> {
-                                        val parts = StringBuilder()
-                                        for (i in 0 until delta.length()) {
-                                            val part = delta.optJSONObject(i)
-                                            if (part != null) parts.append(part.optString("text", ""))
+                        if (useCloudGateway) {
+                            val raw = response.body?.string().orEmpty()
+                            val content = JSONObject(raw).optJSONArray("choices")
+                                ?.optJSONObject(0)?.optJSONObject("message")
+                                ?.optString("content").orEmpty()
+                            if (content.isBlank()) throw IllegalStateException("NEXUS Model Gateway вернул пустой ответ.")
+                            streamedAnswer = content
+                            withContext(Dispatchers.Main) { updateChatLive(chatId, streamedAnswer) }
+                            streamedAnswer
+                        } else {
+                            val reader = response.body?.charStream()?.buffered()
+                                ?: throw IllegalStateException("Пустой ответ API")
+                            reader.use { stream ->
+                                while (true) {
+                                    val rawLine = stream.readLine() ?: break
+                                    if (!rawLine.startsWith("data:")) continue
+                                    val payload = rawLine.removePrefix("data:").trim()
+                                    if (payload == "[DONE]") break
+                                    if (payload.isBlank()) continue
+                                    val delta = try {
+                                        JSONObject(payload).optJSONArray("choices")
+                                            ?.optJSONObject(0)?.optJSONObject("delta")
+                                            ?.opt("content")
+                                    } catch (_: Exception) { null }
+                                    val chunk = when (delta) {
+                                        is String -> delta
+                                        is JSONArray -> {
+                                            val parts = StringBuilder()
+                                            for (i in 0 until delta.length()) {
+                                                val part = delta.optJSONObject(i)
+                                                if (part != null) parts.append(part.optString("text", ""))
+                                            }
+                                            parts.toString()
                                         }
-                                        parts.toString()
+                                        else -> ""
                                     }
-                                    else -> ""
-                                }
-                                if (chunk.isNotEmpty()) {
-                                    streamedAnswer += chunk
-                                    withContext(Dispatchers.Main) {
-                                        updateChatLive(chatId, streamedAnswer)
+                                    if (chunk.isNotEmpty()) {
+                                        streamedAnswer += chunk
+                                        withContext(Dispatchers.Main) {
+                                            updateChatLive(chatId, streamedAnswer)
+                                        }
                                     }
                                 }
                             }
+                            streamedAnswer
                         }
-                        streamedAnswer
                     }
                 }
                 }
