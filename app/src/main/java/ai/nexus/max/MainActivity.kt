@@ -119,6 +119,55 @@ private val AmbientPresets = listOf(
     AmbientPreset("solar", "Solar", "#E8A832", "#211507", "#80511A"),
     AmbientPreset("aurora", "Aurora", "#45D6B2", "#071C24", "#6849A8")
 )
+private data class AmbientCustomTheme(
+    val name: String,
+    val primary: String,
+    val secondary: String,
+    val tertiary: String,
+    val mode: String,
+    val intensity: Float,
+    val height: Float,
+    val speed: Float,
+    val reduceMotion: Boolean
+)
+private fun loadAmbientCustomThemes(raw: String): List<AmbientCustomTheme> = try {
+    val array = JSONArray(raw)
+    (0 until array.length()).mapNotNull { index ->
+        val item = array.optJSONObject(index) ?: return@mapNotNull null
+        val name = item.optString("name").trim()
+        if (name.isBlank()) return@mapNotNull null
+        AmbientCustomTheme(
+            name,
+            item.optString("primary", "#D6293E"),
+            item.optString("secondary", "#26090E"),
+            item.optString("tertiary", "#6D1728"),
+            item.optString("mode", "static").takeIf { it in listOf("static", "rgb", "aurora") } ?: "static",
+            item.optDouble("intensity", 0.72).toFloat().coerceIn(0.1f, 1f),
+            item.optDouble("height", 0.52).toFloat().coerceIn(0.15f, 0.9f),
+            item.optDouble("speed", 0.35).toFloat().coerceIn(0.15f, 1f),
+            item.optBoolean("reduceMotion", false)
+        )
+    }.take(12)
+} catch (_: Exception) { emptyList() }
+
+private fun encodeAmbientCustomThemes(themes: List<AmbientCustomTheme>): String {
+    val array = JSONArray()
+    themes.take(12).forEach { theme ->
+        array.put(JSONObject().apply {
+            put("name", theme.name)
+            put("primary", theme.primary)
+            put("secondary", theme.secondary)
+            put("tertiary", theme.tertiary)
+            put("mode", theme.mode)
+            put("intensity", theme.intensity.toDouble())
+            put("height", theme.height.toDouble())
+            put("speed", theme.speed.toDouble())
+            put("reduceMotion", theme.reduceMotion)
+        })
+    }
+    return array.toString()
+}
+
 private fun parseAmbientColor(value: String, fallback: Color): Color = try {
     Color(android.graphics.Color.parseColor(if (value.startsWith("#")) value else "#$value"))
 } catch (_: Exception) { fallback }
@@ -1282,6 +1331,8 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var ambientHeight by remember { mutableFloatStateOf(ambientPrefs.getFloat("height", 0.52f)) }
     var ambientSpeed by remember { mutableFloatStateOf(ambientPrefs.getFloat("speed", 0.35f)) }
     var ambientReduceMotion by remember { mutableStateOf(ambientPrefs.getBoolean("reduce_motion", false)) }
+    var ambientCustomThemes by remember { mutableStateOf(loadAmbientCustomThemes(ambientPrefs.getString("custom_themes", "[]") ?: "[]")) }
+    var ambientCustomThemeName by remember { mutableStateOf("") }
     val ambientPrimary = parseAmbientColor(ambientPrimaryHex, AccentRed)
     val ambientSecondary = parseAmbientColor(ambientSecondaryHex, BackgroundGlow)
     val ambientTertiary = parseAmbientColor(ambientTertiaryHex, AccentSoft)
@@ -2157,6 +2208,38 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                             if (pair.size == 1) Spacer(Modifier.weight(1f))
                         }
                     }
+                    if (ambientCustomThemes.isNotEmpty()) {
+                        Text("МОИ ТЕМЫ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        ambientCustomThemes.forEachIndexed { index, theme ->
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Surface(
+                                    modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).clickable {
+                                        ambientPreset = "custom:${theme.name}"
+                                        ambientPrimaryHex = theme.primary
+                                        ambientSecondaryHex = theme.secondary
+                                        ambientTertiaryHex = theme.tertiary
+                                        ambientMode = theme.mode
+                                        ambientIntensity = theme.intensity
+                                        ambientHeight = theme.height
+                                        ambientSpeed = theme.speed
+                                        ambientReduceMotion = theme.reduceMotion
+                                    },
+                                    color = PanelRaised,
+                                    shape = RoundedCornerShape(10.dp),
+                                    border = androidx.compose.foundation.BorderStroke(0.5.dp, DividerTone)
+                                ) {
+                                    Row(Modifier.padding(9.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Box(Modifier.size(27.dp).clip(CircleShape).background(Brush.horizontalGradient(listOf(parseAmbientColor(theme.secondary, BackgroundGlow), parseAmbientColor(theme.primary, AccentRed), parseAmbientColor(theme.tertiary, AccentSoft)))))
+                                        Text(theme.name, color = MainText, fontSize = 11.sp, maxLines = 1)
+                                    }
+                                }
+                                TextButton(onClick = {
+                                    ambientCustomThemes = ambientCustomThemes.filterIndexed { i, _ -> i != index }
+                                    ambientPrefs.edit().putString("custom_themes", encodeAmbientCustomThemes(ambientCustomThemes)).apply()
+                                }) { Text("Удалить", color = Muted, fontSize = 9.sp) }
+                            }
+                        }
+                    }
                     Divider(color = DividerTone)
                     Text("СОБСТВЕННАЯ ПАЛИТРА · HEX", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     OutlinedTextField(ambientPrimaryHex, { ambientPrimaryHex = it; ambientPreset = "custom" }, modifier = Modifier.fillMaxWidth(), label = { Text("Основной цвет свечения") }, singleLine = true)
@@ -2168,6 +2251,27 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                             Text("ПРЕДПРОСМОТР NEXUS", color = ambientAnimatedPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                         }
                     }
+                    OutlinedTextField(
+                        value = ambientCustomThemeName,
+                        onValueChange = { ambientCustomThemeName = it.take(28) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Название собственной темы") },
+                        singleLine = true
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            val cleanName = ambientCustomThemeName.trim()
+                            if (cleanName.isNotBlank()) {
+                                val saved = AmbientCustomTheme(cleanName, ambientPrimaryHex, ambientSecondaryHex, ambientTertiaryHex, ambientMode, ambientIntensity, ambientHeight, ambientSpeed, ambientReduceMotion)
+                                ambientCustomThemes = (ambientCustomThemes.filterNot { it.name.equals(cleanName, ignoreCase = true) } + saved).takeLast(12)
+                                ambientPrefs.edit().putString("custom_themes", encodeAmbientCustomThemes(ambientCustomThemes)).apply()
+                                ambientCustomThemeName = ""
+                            }
+                        },
+                        enabled = ambientCustomThemeName.trim().isNotEmpty(),
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Сохранить мою тему", color = ambientAccent) }
+                    Text("Можно хранить до 12 собственных тем. Повторное имя обновляет существующую тему.", color = Muted, fontSize = 9.sp)
                     Divider(color = DividerTone)
                     Text("РЕЖИМ ЭФФЕКТА", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -2175,11 +2279,11 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                             FilterChip(selected = ambientMode == id, onClick = { ambientMode = id }, label = { Text(label, fontSize = 10.sp) })
                         }
                     }
-                    Text("Интенсивность свечения · \${(ambientIntensity * 100).toInt()}%", color = MainText, fontSize = 11.sp)
+                    Text("Интенсивность свечения · ${(ambientIntensity * 100).toInt()}%", color = MainText, fontSize = 11.sp)
                     Slider(value = ambientIntensity, onValueChange = { ambientIntensity = it }, valueRange = 0.1f..1f)
-                    Text("Высота свечения · \${(ambientHeight * 100).toInt()}%", color = MainText, fontSize = 11.sp)
+                    Text("Высота свечения · ${(ambientHeight * 100).toInt()}%", color = MainText, fontSize = 11.sp)
                     Slider(value = ambientHeight, onValueChange = { ambientHeight = it }, valueRange = 0.15f..0.9f)
-                    Text("Скорость анимации · \${(ambientSpeed * 100).toInt()}%", color = MainText, fontSize = 11.sp)
+                    Text("Скорость анимации · ${(ambientSpeed * 100).toInt()}%", color = MainText, fontSize = 11.sp)
                     Slider(value = ambientSpeed, onValueChange = { ambientSpeed = it }, valueRange = 0.15f..1f)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = ambientReduceMotion, onCheckedChange = { ambientReduceMotion = it })
