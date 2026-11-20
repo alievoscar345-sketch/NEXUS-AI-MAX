@@ -2,7 +2,7 @@ import json
 import unittest
 import httpx
 
-from app.model_gateway import ModelConfig, ModelGateway, ModelGatewayError
+from app.model_gateway import ModelConfig, ModelGateway, ModelGatewayError, infer_task_type
 
 
 def config(name="test", purposes=("general", "planning", "evaluation"), priority=1):
@@ -69,6 +69,43 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         gateway = ModelGateway([config(purposes=("general",))])
         with self.assertRaises(ModelGatewayError):
             await gateway.complete("system", "user", "coding")
+
+
+    async def test_selects_highest_benchmark_fit_for_task(self):
+        calls = []
+        def handler(request):
+            calls.append(json.loads(request.content)["model"])
+            return httpx.Response(200, json={"choices":[{"message":{"content":"ok"}}]})
+        models = [
+            ModelConfig(id="generalist", base_url="https://provider.example/v1", model="general-model",
+                        api_key="key", benchmark_scores={"general": 95, "coding": 55}),
+            ModelConfig(id="coder", base_url="https://provider.example/v1", model="coding-model",
+                        api_key="key", benchmark_scores={"general": 70, "coding": 96}),
+        ]
+        gateway = ModelGateway(models, transport=httpx.MockTransport(handler))
+        result = await gateway.complete("system", "Please debug this Python code")
+        self.assertEqual(result.provider_id, "coder")
+        self.assertEqual(calls, ["coding-model"])
+
+    async def test_cost_and_latency_break_quality_tie(self):
+        calls = []
+        def handler(request):
+            calls.append(json.loads(request.content)["model"])
+            return httpx.Response(200, json={"choices":[{"message":{"content":"ok"}}]})
+        models = [
+            ModelConfig(id="expensive", base_url="https://provider.example/v1", model="expensive",
+                        api_key="key", benchmark_scores={"general": 90}, cost_per_million_tokens=10, latency_ms=900),
+            ModelConfig(id="efficient", base_url="https://provider.example/v1", model="efficient",
+                        api_key="key", benchmark_scores={"general": 90}, cost_per_million_tokens=1, latency_ms=200),
+        ]
+        gateway = ModelGateway(models, transport=httpx.MockTransport(handler))
+        result = await gateway.complete("system", "Explain this concept")
+        self.assertEqual(result.provider_id, "efficient")
+
+    def test_infers_task_categories_without_extra_model_call(self):
+        self.assertEqual(infer_task_type("Проведи научное исследование и найди источники"), "research")
+        self.assertEqual(infer_task_type("Реши математическое уравнение"), "math")
+        self.assertEqual(infer_task_type("Напиши Python программу"), "coding")
 
 
 if __name__ == "__main__":
