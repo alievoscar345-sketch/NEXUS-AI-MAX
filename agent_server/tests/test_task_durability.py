@@ -107,6 +107,43 @@ class DurableTaskTests(unittest.TestCase):
             count = conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"]
         self.assertEqual(count, 1)
 
+    def test_provider_credentials_are_encrypted_and_owner_scoped(self):
+        import os
+        from unittest.mock import patch
+
+        body = main.ProviderCredentialInput(
+            provider_id="anymodel",
+            base_url="https://anymodel.org/v1",
+            model="claude-fable-5-2",
+            api_key="provider-secret-key-value",
+        )
+        key = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+        with patch.dict(os.environ, {"NEXUS_CREDENTIAL_ENCRYPTION_KEY": key}):
+            result = asyncio.run(main.save_provider(body, owner_id="tenant-a"))
+            self.assertEqual(result["status"], "saved")
+            with main.db() as conn:
+                row = conn.execute("SELECT encrypted_api_key FROM provider_credentials WHERE owner_id=?",
+                                    ("tenant-a",)).fetchone()
+            self.assertNotIn(b"provider-secret-key-value", bytes(row["encrypted_api_key"]))
+            models = main.provider_models_for_owner("tenant-a")
+            self.assertTrue(any(m.id == "user-anymodel" and m.api_key == body.api_key for m in models))
+            self.assertEqual(main.provider_models_for_owner("tenant-b"), [])
+
+    def test_task_lists_are_owner_scoped(self):
+        first = main.NewTask(prompt="Task for tenant A")
+        second = main.NewTask(prompt="Task for tenant B")
+        asyncio.run(main.create_task(first, owner_id="tenant-a"))
+        asyncio.run(main.create_task(second, owner_id="tenant-b"))
+        tenant_a = asyncio.run(main.list_tasks(owner_id="tenant-a"))
+        tenant_b = asyncio.run(main.list_tasks(owner_id="tenant-b"))
+        self.assertEqual(len(tenant_a["tasks"]), 1)
+        self.assertEqual(len(tenant_b["tasks"]), 1)
+        self.assertNotEqual(tenant_a["tasks"][0]["id"], tenant_b["tasks"][0]["id"])
+
+    def test_rejects_unlisted_provider_hosts(self):
+        with self.assertRaises(main.HTTPException):
+            main.validate_provider_base_url("https://attacker.example/v1")
+
     def test_approval_record_is_idempotent_for_retried_step(self):
         now = time.time()
         with main.db() as conn:
