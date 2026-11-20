@@ -156,7 +156,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var pendingAttachments by mutableStateOf<List<ChatAttachment>>(emptyList())
         private set
-    var activeChatId by mutableStateOf(chats.firstOrNull()?.id)
+    var activeChatId by mutableStateOf(chats.firstOrNull { !it.isSystem }?.id ?: chats.firstOrNull()?.id)
         private set
     var busy by mutableStateOf(false)
         private set
@@ -193,6 +193,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun markRemindersUnread() {
+        if (activeChatId == REMINDERS_CHAT_ID) return
         chats = sortChats(chats.map { if (it.id == REMINDERS_CHAT_ID) it.copy(hasUnread = true, updatedAt = System.currentTimeMillis()) else it })
         saveChats()
     }
@@ -276,8 +277,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteChat(id: String) {
         if (id == REMINDERS_CHAT_ID) return
         chats = chats.filterNot { it.id == id }
-        if (activeChatId == id) activeChatId = chats.firstOrNull()?.id
-        if (chats.isEmpty()) createChat() else saveChats()
+        if (activeChatId == id) activeChatId = chats.firstOrNull { !it.isSystem }?.id
+        if (chats.none { !it.isSystem }) createChat() else saveChats()
         error = null
     }
 
