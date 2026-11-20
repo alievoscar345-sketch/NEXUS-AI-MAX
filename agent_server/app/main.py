@@ -119,9 +119,9 @@ def init_db():
             model TEXT NOT NULL, encrypted_api_key BLOB NOT NULL,
             created_at REAL NOT NULL, updated_at REAL NOT NULL,
             PRIMARY KEY(owner_id, provider_id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_provider_credentials_owner ON provider_credentials(owner_id,provider_id);
+        )
         """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_provider_credentials_owner ON provider_credentials(owner_id,provider_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(status,next_attempt_at,created_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_steps_task ON task_steps(task_id,step_index)")
 
