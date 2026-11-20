@@ -23,6 +23,7 @@ import java.util.zip.ZipInputStream
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
+import androidx.compose.animation.core.*
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -108,6 +109,19 @@ private val MainText = Color(0xFFF0EEEE)
 private val Muted = Color(0xFF969090)
 private val AccentSoft = Color(0xFF5D252B)
 private val DividerTone = Color(0xFF30282A)
+
+private data class AmbientPreset(val id: String, val title: String, val primary: String, val secondary: String, val tertiary: String)
+private val AmbientPresets = listOf(
+    AmbientPreset("red", "NEXUS Red", "#D6293E", "#26090E", "#6D1728"),
+    AmbientPreset("ocean", "Deep Ocean", "#268DDA", "#061827", "#123F70"),
+    AmbientPreset("emerald", "Emerald", "#25B987", "#061C16", "#12634A"),
+    AmbientPreset("purple", "Purple Nebula", "#A56BEB", "#170B27", "#542C83"),
+    AmbientPreset("solar", "Solar", "#E8A832", "#211507", "#80511A"),
+    AmbientPreset("aurora", "Aurora", "#45D6B2", "#071C24", "#6849A8")
+)
+private fun parseAmbientColor(value: String, fallback: Color): Color = try {
+    Color(android.graphics.Color.parseColor(if (value.startsWith("#")) value else "#$value"))
+} catch (_: Exception) { fallback }
 
 data class ChatAttachment(
     val name: String,
@@ -1257,6 +1271,40 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     val uiScope = rememberCoroutineScope()
     var showHistory by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showAmbientSettings by remember { mutableStateOf(false) }
+    val ambientPrefs = remember(context) { context.getSharedPreferences("nexus_ambient", 0) }
+    var ambientPreset by remember { mutableStateOf(ambientPrefs.getString("preset", "red") ?: "red") }
+    var ambientPrimaryHex by remember { mutableStateOf(ambientPrefs.getString("primary", "#D6293E") ?: "#D6293E") }
+    var ambientSecondaryHex by remember { mutableStateOf(ambientPrefs.getString("secondary", "#26090E") ?: "#26090E") }
+    var ambientTertiaryHex by remember { mutableStateOf(ambientPrefs.getString("tertiary", "#6D1728") ?: "#6D1728") }
+    var ambientMode by remember { mutableStateOf(ambientPrefs.getString("mode", "static") ?: "static") }
+    var ambientIntensity by remember { mutableFloatStateOf(ambientPrefs.getFloat("intensity", 0.72f)) }
+    var ambientHeight by remember { mutableFloatStateOf(ambientPrefs.getFloat("height", 0.52f)) }
+    var ambientSpeed by remember { mutableFloatStateOf(ambientPrefs.getFloat("speed", 0.35f)) }
+    var ambientReduceMotion by remember { mutableStateOf(ambientPrefs.getBoolean("reduce_motion", false)) }
+    val ambientPrimary = parseAmbientColor(ambientPrimaryHex, AccentRed)
+    val ambientSecondary = parseAmbientColor(ambientSecondaryHex, BackgroundGlow)
+    val ambientTertiary = parseAmbientColor(ambientTertiaryHex, AccentSoft)
+    val ambientTransition = rememberInfiniteTransition(label = "ambient")
+    val ambientPhase by ambientTransition.animateFloat(
+        initialValue = 0f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween((9000f / ambientSpeed.coerceIn(0.15f, 1f)).toInt(), easing = LinearEasing), RepeatMode.Restart),
+        label = "ambient-phase"
+    )
+    val ambientAnimatedPrimary = when {
+        ambientReduceMotion || ambientMode == "static" -> ambientPrimary
+        ambientMode == "rgb" -> Color(android.graphics.Color.HSVToColor(floatArrayOf((ambientPhase * 360f) % 360f, 0.78f, 0.92f)))
+        ambientMode == "aurora" -> Color(android.graphics.Color.HSVToColor(floatArrayOf((155f + ambientPhase * 170f) % 360f, 0.62f, 0.86f)))
+        else -> ambientPrimary
+    }
+    val ambientGlow = ambientSecondary.copy(alpha = (ambientIntensity * 0.92f).coerceIn(0f, 1f))
+    val ambientBackground = Brush.verticalGradient(
+        colorStops = arrayOf(
+            0f to Ink, (1f - ambientHeight.coerceIn(0.15f, 0.9f)) to Ink,
+            1f to ambientGlow
+        )
+    )
+    val ambientAccent = ambientAnimatedPrimary
     var topMenuExpanded by remember { mutableStateOf(false) }
     var showChatSearch by remember { mutableStateOf(false) }
     var editTargetIndex by remember { mutableStateOf<Int?>(null) }
@@ -1459,6 +1507,10 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                 }
                                 topMenuExpanded = false
                             })
+                            DropdownMenuItem(text = { Text("Оформление") }, onClick = {
+                                showAmbientSettings = true
+                                topMenuExpanded = false
+                            })
                             DropdownMenuItem(text = { Text("Настройки") }, onClick = {
                                 url = vm.settings.baseUrl
                                 model = vm.settings.model
@@ -1474,7 +1526,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 }
             },
             bottomBar = {
-                Column(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Ink, Color(0xFF120508), BackgroundGlow))).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)).padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Column(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Ink, ambientGlow, ambientGlow))).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)).padding(horizontal = 12.dp, vertical = 8.dp)) {
                     if (vm.pendingAttachments.isNotEmpty()) {
                         Column(Modifier.fillMaxWidth().padding(bottom = 7.dp)) {
                             vm.pendingAttachments.forEachIndexed { index, attachment ->
@@ -1493,7 +1545,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                 onClick = { featureMenuExpanded = true },
                                 contentPadding = PaddingValues(horizontal = 7.dp, vertical = 3.dp)
                             ) {
-                                Text("Возможности  ⚙", color = AccentRed, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                Text("Возможности  ⚙", color = ambientAccent, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                             }
                             DropdownMenu(
                                 expanded = featureMenuExpanded,
@@ -1593,7 +1645,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                             enabled = !vm.busy && (input.isNotBlank() || vm.pendingAttachments.isNotEmpty()),
                             onClick = { vm.send(input, webSearchEnabled, useReasoning = reasoningEnabled); input = "" },
                             modifier = Modifier.size(38.dp)
-                                .background(if (!vm.busy && (input.isNotBlank() || vm.pendingAttachments.isNotEmpty())) Violet else Color(0xFF3A292B), CircleShape)
+                                .background(if (!vm.busy && (input.isNotBlank() || vm.pendingAttachments.isNotEmpty())) ambientAccent else Color(0xFF3A292B), CircleShape)
                         ) {
                             Text(if (vm.busy) "…" else "↑", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                         }
@@ -1607,7 +1659,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 }
             }
         ) { padding ->
-            Column(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Ink, Ink, Color(0xFF100508), BackgroundGlow))).padding(padding)) {
+            Column(Modifier.fillMaxSize().background(ambientBackground).padding(padding)) {
                 vm.error?.let { message ->
                     Surface(color = Color(0xFF321D20), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
                         Text(message, color = Color(0xFFD69A9F), fontSize = 12.sp, modifier = Modifier.padding(12.dp))
@@ -2050,6 +2102,103 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 }
             },
             confirmButton = { TextButton(onClick = { showChatSearch = false }) { Text("Закрыть", color = AccentRed) } }
+        )
+    }
+
+
+    if (showAmbientSettings) {
+        AlertDialog(
+            onDismissRequest = { showAmbientSettings = false },
+            containerColor = Panel,
+            title = { Text("Ambient Design Engine", color = MainText) },
+            text = {
+                Column(
+                    Modifier.heightIn(max = 570.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text("ГОТОВЫЕ ТЕМЫ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    AmbientPresets.chunked(2).forEach { pair ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            pair.forEach { preset ->
+                                Surface(
+                                    modifier = Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).clickable {
+                                        ambientPreset = preset.id
+                                        ambientPrimaryHex = preset.primary
+                                        ambientSecondaryHex = preset.secondary
+                                        ambientTertiaryHex = preset.tertiary
+                                        ambientMode = if (preset.id == "aurora") "aurora" else "static"
+                                    },
+                                    color = if (ambientPreset == preset.id) PanelRaised else Color(0xFF101010),
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = androidx.compose.foundation.BorderStroke(
+                                        if (ambientPreset == preset.id) 1.5.dp else 0.5.dp,
+                                        if (ambientPreset == preset.id) ambientAccent else DividerTone
+                                    )
+                                ) {
+                                    Column(Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Box(Modifier.fillMaxWidth().height(25.dp).clip(RoundedCornerShape(7.dp)).background(
+                                            Brush.horizontalGradient(listOf(parseAmbientColor(preset.secondary, BackgroundGlow), parseAmbientColor(preset.primary, AccentRed), parseAmbientColor(preset.tertiary, AccentSoft)))
+                                        ))
+                                        Text(preset.title, color = MainText, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                    }
+                                }
+                            }
+                            if (pair.size == 1) Spacer(Modifier.weight(1f))
+                        }
+                    }
+                    Divider(color = DividerTone)
+                    Text("СОБСТВЕННАЯ ПАЛИТРА · HEX", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    OutlinedTextField(ambientPrimaryHex, { ambientPrimaryHex = it; ambientPreset = "custom" }, modifier = Modifier.fillMaxWidth(), label = { Text("Основной цвет свечения") }, singleLine = true)
+                    OutlinedTextField(ambientSecondaryHex, { ambientSecondaryHex = it; ambientPreset = "custom" }, modifier = Modifier.fillMaxWidth(), label = { Text("Цвет фона / нижнего свечения") }, singleLine = true)
+                    OutlinedTextField(ambientTertiaryHex, { ambientTertiaryHex = it; ambientPreset = "custom" }, modifier = Modifier.fillMaxWidth(), label = { Text("Вторичный цвет градиента") }, singleLine = true)
+                    Surface(color = Color(0xFF080808), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().height(76.dp)) {
+                        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Ink, ambientTertiary, ambientSecondary.copy(alpha = ambientIntensity)))))
+                        Box(Modifier.fillMaxSize().padding(10.dp), contentAlignment = Alignment.BottomStart) {
+                            Text("ПРЕДПРОСМОТР NEXUS", color = ambientAnimatedPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Divider(color = DividerTone)
+                    Text("РЕЖИМ ЭФФЕКТА", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("static" to "Статика", "rgb" to "RGB Flow", "aurora" to "Aurora").forEach { (id, label) ->
+                            FilterChip(selected = ambientMode == id, onClick = { ambientMode = id }, label = { Text(label, fontSize = 10.sp) })
+                        }
+                    }
+                    Text("Интенсивность свечения · \${(ambientIntensity * 100).toInt()}%", color = MainText, fontSize = 11.sp)
+                    Slider(value = ambientIntensity, onValueChange = { ambientIntensity = it }, valueRange = 0.1f..1f)
+                    Text("Высота свечения · \${(ambientHeight * 100).toInt()}%", color = MainText, fontSize = 11.sp)
+                    Slider(value = ambientHeight, onValueChange = { ambientHeight = it }, valueRange = 0.15f..0.9f)
+                    Text("Скорость анимации · \${(ambientSpeed * 100).toInt()}%", color = MainText, fontSize = 11.sp)
+                    Slider(value = ambientSpeed, onValueChange = { ambientSpeed = it }, valueRange = 0.15f..1f)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = ambientReduceMotion, onCheckedChange = { ambientReduceMotion = it })
+                        Column {
+                            Text("Уменьшить движение", color = MainText, fontSize = 11.sp)
+                            Text("Отключает анимацию для экономии энергии и комфорта", color = Muted, fontSize = 9.sp)
+                        }
+                    }
+                    Text("Анимация работает только в активном интерфейсе. Aurora сейчас построена на плавной смене градиентных оттенков; отдельный GPU RuntimeShader можно добавить позднее.", color = Muted, fontSize = 9.sp, lineHeight = 13.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    ambientPrefs.edit()
+                        .putString("preset", ambientPreset)
+                        .putString("primary", ambientPrimaryHex)
+                        .putString("secondary", ambientSecondaryHex)
+                        .putString("tertiary", ambientTertiaryHex)
+                        .putString("mode", ambientMode)
+                        .putFloat("intensity", ambientIntensity)
+                        .putFloat("height", ambientHeight)
+                        .putFloat("speed", ambientSpeed)
+                        .putBoolean("reduce_motion", ambientReduceMotion)
+                        .apply()
+                    showAmbientSettings = false
+                }) { Text("Сохранить оформление", color = ambientAccent) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAmbientSettings = false }) { Text("Закрыть", color = Muted) }
+            }
         )
     }
 
