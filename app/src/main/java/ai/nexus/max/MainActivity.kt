@@ -1303,8 +1303,20 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun NexusApp(vm: NexusViewModel = viewModel()) {
     val lifecycleOwner = LocalLifecycleOwner.current
+    var isAppResumed by remember(lifecycleOwner) {
+        mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+    }
     DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) vm.refreshChatsFromDisk() }
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    isAppResumed = true
+                    vm.refreshChatsFromDisk()
+                }
+                Lifecycle.Event.ON_PAUSE -> isAppResumed = false
+                else -> Unit
+            }
+        }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
@@ -1339,8 +1351,8 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     val ambientSecondary = parseAmbientColor(ambientSecondaryHex, BackgroundGlow)
     val ambientTertiary = parseAmbientColor(ambientTertiaryHex, AccentSoft)
     val ambientPhaseState = remember { Animatable(0f) }
-    LaunchedEffect(ambientMode, ambientReduceMotion, ambientSpeed) {
-        if (!ambientReduceMotion && ambientMode != "static") {
+    LaunchedEffect(ambientMode, ambientReduceMotion, ambientSpeed, isAppResumed) {
+        if (isAppResumed && !ambientReduceMotion && ambientMode != "static") {
             val halfCycleMs = (4500f / ambientSpeed.coerceIn(0.15f, 1f)).toInt()
             while (true) {
                 ambientPhaseState.animateTo(1f, tween(halfCycleMs, easing = LinearEasing))
@@ -1727,7 +1739,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                 Modifier.fillMaxSize()
                     .background(ambientBackground)
                     .drawBehind {
-                        if (ambientMode == "aurora" && !ambientReduceMotion) {
+                        if (isAppResumed && ambientMode == "aurora" && !ambientReduceMotion) {
                             val w = size.width
                             val h = size.height
                             val angle = ambientPhase * (Math.PI.toFloat() * 2f)
