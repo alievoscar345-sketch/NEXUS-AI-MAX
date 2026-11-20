@@ -643,7 +643,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         val cfg = settings
         val activeModel = if (cfg.provider == "OpenRouter") cfg.openRouterModel else cfg.model
         val activeKey = if (cfg.provider == "OpenRouter") cfg.openRouterApiKey else cfg.apiKey
-        val useCloudGateway = agentServerConfigured && agentServerUrl.isNotBlank() && !useWebSearch && !useReasoning
+        val useCloudGateway = agentServerConfigured && agentServerUrl.startsWith("https://") && !useWebSearch && !useReasoning
         if (!useCloudGateway && (activeKey.isBlank() || activeModel.isBlank())) {
             error = if (cfg.provider == "OpenRouter") "Открой настройки и введи OpenRouter API key, затем выбери модель." else "Открой настройки API и введи ключ."
             return
