@@ -30,6 +30,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -120,6 +122,11 @@ data class ChatLine(
     val providerMessagesJson: String? = null
 )
 data class WebSearchAnswer(val text: String, val providerMessagesJson: String)
+data class RemoteProvider(
+    val providerId: String,
+    val baseUrl: String,
+    val model: String
+)
 data class ChatSession(
     val id: String,
     val title: String,
@@ -175,6 +182,16 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     var openRouterModels by mutableStateOf<List<OpenRouterModel>>(emptyList())
         private set
     var loadingOpenRouterModels by mutableStateOf(false)
+        private set
+    var agentServerUrl by mutableStateOf(prefs.getString("agent_server_url", "") ?: "")
+        private set
+    var agentServerConfigured by mutableStateOf(SecureSecretStore.load(application).isNotBlank())
+        private set
+    var remoteProviders by mutableStateOf<List<RemoteProvider>>(emptyList())
+        private set
+    var providerVaultBusy by mutableStateOf(false)
+        private set
+    var providerVaultMessage by mutableStateOf<String?>(null)
         private set
 
     val activeChat: ChatSession?
@@ -255,6 +272,156 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         settings = settings.copy(provider = provider, openRouterModel = openRouterModel.trim(), openRouterApiKey = openRouterKey.trim())
         prefs.edit().putString("provider", provider).putString("openrouter_model", openRouterModel.trim()).apply()
         error = null
+    }
+
+    fun updateAgentServer(url: String, accessToken: String) {
+        val cleanUrl = url.trim().trimEnd('/')
+        if (!cleanUrl.startsWith("https://", ignoreCase = true)) {
+            providerVaultMessage = "Адрес сервера должен начинаться с https://."
+            return
+        }
+        agentServerUrl = cleanUrl
+        prefs.edit().putString("agent_server_url", cleanUrl).apply()
+        if (accessToken.isNotBlank()) {
+            try {
+                SecureSecretStore.save(getApplication(), accessToken.trim())
+                agentServerConfigured = true
+            } catch (e: Exception) {
+                providerVaultMessage = e.message ?: "Не удалось сохранить токен сервера."
+                return
+            }
+        }
+        providerVaultMessage = "Настройки сервера сохранены."
+    }
+
+    fun clearAgentServerToken() {
+        SecureSecretStore.clear(getApplication())
+        agentServerConfigured = false
+        remoteProviders = emptyList()
+        providerVaultMessage = "Токен доступа удалён с устройства."
+    }
+
+    private fun agentAuthorization(): String {
+        val token = SecureSecretStore.load(getApplication())
+        if (agentServerUrl.isBlank() || token.isBlank()) {
+            throw IllegalStateException("Сначала укажи HTTPS-адрес NEXUS Agent Server и токен доступа.")
+        }
+        return token
+    }
+
+    fun loadRemoteProviders() {
+        if (providerVaultBusy) return
+        providerVaultBusy = true
+        viewModelScope.launch {
+            try {
+                val loaded = withContext(Dispatchers.IO) {
+                    val request = Request.Builder()
+                        .url(agentServerUrl.trimEnd('/') + "/v1/providers")
+                        .header("Authorization", "Bearer " + agentAuthorization())
+                        .get().build()
+                    client.newCall(request).execute().use { response ->
+                        val raw = response.body?.string().orEmpty()
+                        if (!response.isSuccessful) throw IllegalStateException("NEXUS server returned HTTP " + response.code)
+                        val data = JSONObject(raw).optJSONArray("providers") ?: JSONArray()
+                        (0 until data.length()).mapNotNull { index ->
+                            val item = data.optJSONObject(index) ?: return@mapNotNull null
+                            val id = item.optString("provider_id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                            RemoteProvider(id, item.optString("base_url"), item.optString("model"))
+                        }
+                    }
+                }
+                remoteProviders = loaded
+                providerVaultMessage = "Подключений на сервере: " + loaded.size
+            } catch (e: Exception) {
+                providerVaultMessage = e.message ?: "Не удалось загрузить подключения."
+            } finally {
+                providerVaultBusy = false
+            }
+        }
+    }
+
+    fun saveRemoteProvider(providerId: String, baseUrl: String, modelId: String, providerKey: String) {
+        if (providerVaultBusy) return
+        if (providerId.isBlank() || baseUrl.isBlank() || modelId.isBlank() || providerKey.isBlank()) {
+            providerVaultMessage = "Заполни ID, Base URL, Model ID и API-ключ."
+            return
+        }
+        providerVaultBusy = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val body = JSONObject()
+                        .put("provider_id", providerId.trim())
+                        .put("base_url", baseUrl.trim())
+                        .put("model", modelId.trim())
+                        .put("api_key", providerKey.trim())
+                        .toString().toRequestBody("application/json".toMediaType())
+                    val request = Request.Builder()
+                        .url(agentServerUrl.trimEnd('/') + "/v1/providers")
+                        .header("Authorization", "Bearer " + agentAuthorization())
+                        .post(body).build()
+                    client.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) throw IllegalStateException("Не удалось сохранить ключ: HTTP " + response.code)
+                    }
+                }
+                providerVaultMessage = "Ключ сохранён на сервере в зашифрованном виде."
+                loadRemoteProviders()
+            } catch (e: Exception) {
+                providerVaultMessage = e.message ?: "Не удалось сохранить ключ."
+            } finally {
+                providerVaultBusy = false
+            }
+        }
+    }
+
+    fun testRemoteProvider(providerId: String) {
+        if (providerVaultBusy) return
+        providerVaultBusy = true
+        viewModelScope.launch {
+            try {
+                val message = withContext(Dispatchers.IO) {
+                    val request = Request.Builder()
+                        .url(agentServerUrl.trimEnd('/') + "/v1/providers/" + Uri.encode(providerId) + "/test")
+                        .header("Authorization", "Bearer " + agentAuthorization())
+                        .post(ByteArray(0).toRequestBody(null)).build()
+                    client.newCall(request).execute().use { response ->
+                        val raw = response.body?.string().orEmpty()
+                        if (!response.isSuccessful) throw IllegalStateException("Проверка провайдера не прошла: HTTP " + response.code)
+                        val payload = JSONObject(raw)
+                        "Подключение успешно · " + payload.optString("model") + " · " + payload.optInt("latency_ms") + " мс"
+                    }
+                }
+                providerVaultMessage = message
+            } catch (e: Exception) {
+                providerVaultMessage = e.message ?: "Проверка провайдера завершилась ошибкой."
+            } finally {
+                providerVaultBusy = false
+            }
+        }
+    }
+
+    fun deleteRemoteProvider(providerId: String) {
+        if (providerVaultBusy) return
+        providerVaultBusy = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val request = Request.Builder()
+                        .url(agentServerUrl.trimEnd('/') + "/v1/providers/" + Uri.encode(providerId))
+                        .header("Authorization", "Bearer " + agentAuthorization())
+                        .delete().build()
+                    client.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) throw IllegalStateException("Не удалось удалить ключ: HTTP " + response.code)
+                    }
+                }
+                remoteProviders = remoteProviders.filterNot { it.providerId == providerId }
+                providerVaultMessage = "Подключение удалено."
+            } catch (e: Exception) {
+                providerVaultMessage = e.message ?: "Не удалось удалить подключение."
+            } finally {
+                providerVaultBusy = false
+            }
+        }
     }
 
     fun loadOpenRouterModels(apiKey: String) {
