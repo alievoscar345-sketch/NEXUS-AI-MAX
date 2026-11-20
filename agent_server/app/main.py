@@ -76,6 +76,8 @@ def init_db():
             "next_attempt_at": "REAL",
             "max_attempts": "INTEGER NOT NULL DEFAULT 3",
             "cancel_requested": "INTEGER NOT NULL DEFAULT 0",
+            "max_steps": "INTEGER NOT NULL DEFAULT 8",
+            "client_request_key": "TEXT NOT NULL DEFAULT ''",
         }
         existing = _columns(c, "tasks")
         for name, definition in migrations.items():
@@ -107,6 +109,7 @@ def init_db():
         if "idempotency_key" not in approval_cols:
             c.execute("ALTER TABLE approvals ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''")
         c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_idempotency ON approvals(idempotency_key) WHERE idempotency_key <> ''")
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_client_request_key ON tasks(client_request_key) WHERE client_request_key <> ''")
         c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(status,next_attempt_at,created_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_steps_task ON task_steps(task_id,step_index)")
 
@@ -294,7 +297,7 @@ async def process(tid: str):
             steps = plan.get("steps", [])
             if not isinstance(steps, list):
                 raise ValueError("Planner did not return steps")
-            _persist_plan(tid, steps[:min(MAX_STEPS, 8, MAX_STEPS)], MAX_STEP_ATTEMPTS)
+            _persist_plan(tid, steps[:min(MAX_STEPS, int(row['max_steps']), 8)], MAX_STEP_ATTEMPTS)
 
         while True:
             if _task_cancelled(tid):
@@ -469,11 +472,14 @@ async def create_task(body: NewTask):
     now = time.time()
     with db() as c:
         if body.idempotency_key:
-            existing = c.execute("SELECT id,status FROM tasks WHERE id=?", (body.idempotency_key,)).fetchone()
+            existing = c.execute("SELECT id,status FROM tasks WHERE client_request_key=?",
+                                 (body.idempotency_key,)).fetchone()
             if existing:
                 return {"id": existing["id"], "status": existing["status"], "deduplicated": True}
-        c.execute("""INSERT INTO tasks(id,prompt,status,created_at,updated_at,max_attempts)
-            VALUES(?,?,?,?,?,?)""", (tid, body.prompt, "queued", now, now, MAX_STEP_ATTEMPTS))
+        c.execute("""INSERT INTO tasks(id,prompt,status,created_at,updated_at,max_attempts,
+            max_steps,client_request_key) VALUES(?,?,?,?,?,?,?,?)""",
+            (tid, body.prompt, "queued", now, now, MAX_STEP_ATTEMPTS,
+             body.max_steps, body.idempotency_key or ""))
     event(tid, "created", "Task queued in durable cloud worker")
     return {"id": tid, "status": "queued"}
 
