@@ -177,6 +177,33 @@ private fun parseAmbientColor(value: String, fallback: Color): Color = try {
     Color(android.graphics.Color.parseColor(if (value.startsWith("#")) value else "#$value"))
 } catch (_: Exception) { fallback }
 
+private fun readStreamLimited(input: java.io.InputStream, maxBytes: Int, errorMessage: String): ByteArray {
+    input.use { stream ->
+        val output = java.io.ByteArrayOutputStream(minOf(maxBytes, 64 * 1024))
+        val buffer = ByteArray(8192)
+        var total = 0
+        while (true) {
+            val count = stream.read(buffer)
+            if (count < 0) break
+            total += count
+            if (total > maxBytes) throw IllegalArgumentException(errorMessage)
+            output.write(buffer, 0, count)
+        }
+        return output.toByteArray()
+    }
+}
+
+private fun readUriLimited(
+    resolver: android.content.ContentResolver,
+    uri: Uri,
+    maxBytes: Int,
+    errorMessage: String,
+    readErrorMessage: String
+): ByteArray {
+    val input = resolver.openInputStream(uri) ?: throw IllegalStateException(readErrorMessage)
+    return readStreamLimited(input, maxBytes, errorMessage)
+}
+
 data class ChatAttachment(
     val name: String,
     val mimeType: String,
@@ -634,17 +661,13 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 val isPdf = mime == "application/pdf" || extension == "pdf"
                 val isDocx = mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || extension == "docx"
                 val attachment = if (mime.startsWith("image/")) {
-                    val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
-                        ?: throw IllegalStateException("Не удалось прочитать изображение.")
-                    if (bytes.size > 8 * 1024 * 1024) throw IllegalStateException("Изображение слишком большое. Максимум 8 МБ.")
+                    val bytes = readUriLimited(resolver, uri, 8 * 1024 * 1024, "Изображение слишком большое. Максимум 8 МБ.", "Не удалось прочитать изображение.")
                     val directory = File(getApplication<Application>().filesDir, "nexus_attachments").apply { mkdirs() }
                     val file = File(directory, UUID.randomUUID().toString() + ".img")
                     FileOutputStream(file).use { it.write(bytes) }
                     ChatAttachment(name, mime, file.absolutePath, "")
                 } else if (isPdf) {
-                    val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
-                        ?: throw IllegalStateException("Не удалось прочитать PDF.")
-                    if (bytes.size > 20 * 1024 * 1024) throw IllegalStateException("PDF слишком большой. Максимум 20 МБ.")
+                    val bytes = readUriLimited(resolver, uri, 20 * 1024 * 1024, "PDF слишком большой. Максимум 20 МБ.", "Не удалось прочитать PDF.")
                     val extracted = try {
                         PDFBoxResourceLoader.init(getApplication<Application>())
                         PDDocument.load(ByteArrayInputStream(bytes)).use { document ->
@@ -657,15 +680,13 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     if (extracted.isBlank()) throw IllegalArgumentException("В PDF не найден текстовый слой. Вероятно, это скан; OCR пока не поддерживается.")
                     ChatAttachment(name, "application/pdf", "", extracted)
                 } else if (isDocx) {
-                    val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
-                        ?: throw IllegalStateException("Не удалось прочитать DOCX.")
-                    if (bytes.size > 10 * 1024 * 1024) throw IllegalStateException("DOCX слишком большой. Максимум 10 МБ.")
+                    val bytes = readUriLimited(resolver, uri, 10 * 1024 * 1024, "DOCX слишком большой. Максимум 10 МБ.", "Не удалось прочитать DOCX.")
                     val xmlBytes = ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
                         var documentXml: ByteArray? = null
                         while (true) {
                             val entry = zip.nextEntry ?: break
                             if (entry.name == "word/document.xml") {
-                                documentXml = zip.readBytes()
+                                documentXml = readStreamLimited(zip, 20 * 1024 * 1024, "XML внутри DOCX слишком большой.")
                                 break
                             }
                         }
@@ -695,9 +716,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 } else if (mime.startsWith("text/") || mime == "application/json" || mime == "application/xml" ||
                     extension in setOf("txt", "md", "csv", "json", "xml")
                 ) {
-                    val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
-                        ?: throw IllegalStateException("Не удалось прочитать документ.")
-                    if (bytes.size > 1024 * 1024) throw IllegalStateException("Текстовый документ слишком большой. Максимум 1 МБ.")
+                    val bytes = readUriLimited(resolver, uri, 1024 * 1024, "Текстовый документ слишком большой. Максимум 1 МБ.", "Не удалось прочитать документ.")
                     ChatAttachment(name, mime, "", bytes.toString(Charsets.UTF_8))
                 } else {
                     throw IllegalArgumentException("Поддерживаются изображения, TXT, MD, CSV, JSON, XML, PDF и DOCX.")
