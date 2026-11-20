@@ -102,6 +102,40 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         result = await gateway.complete("system", "Explain this concept")
         self.assertEqual(result.provider_id, "efficient")
 
+    async def test_multimodal_request_selects_vision_capable_provider(self):
+        calls = []
+        def handler(request):
+            payload = json.loads(request.content)
+            calls.append(payload)
+            return httpx.Response(200, json={"choices":[{"message":{"content":"image analyzed"}}]})
+        text_model = ModelConfig(
+            id="text", base_url="https://provider.example/v1", model="text-model",
+            api_key="key", benchmark_scores={"vision": 99},
+        )
+        vision_model = ModelConfig(
+            id="vision", base_url="https://provider.example/v1", model="vision-model",
+            api_key="key", capabilities=("vision",), benchmark_scores={"vision": 80},
+        )
+        gateway = ModelGateway([text_model, vision_model], transport=httpx.MockTransport(handler))
+        messages = [{"role":"user","content":[
+            {"type":"text","text":"Describe this image"},
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}},
+        ]}]
+        result = await gateway.complete_messages(messages)
+        self.assertEqual(result.provider_id, "vision")
+        self.assertEqual(calls[0]["model"], "vision-model")
+        self.assertEqual(calls[0]["messages"], messages)
+
+    async def test_multimodal_request_fails_without_vision_capability(self):
+        gateway = ModelGateway([config()], transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"choices":[{"message":{"content":"unexpected"}}]})
+        ))
+        messages = [{"role":"user","content":[
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}
+        ]}]
+        with self.assertRaises(ModelGatewayError):
+            await gateway.complete_messages(messages)
+
     def test_infers_task_categories_without_extra_model_call(self):
         self.assertEqual(infer_task_type("Проведи научное исследование и найди источники"), "research")
         self.assertEqual(infer_task_type("Реши математическое уравнение"), "math")
