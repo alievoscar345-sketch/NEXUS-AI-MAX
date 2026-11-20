@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
+import re
 import ipaddress
 import json
 import os
@@ -118,9 +120,12 @@ def init_db():
             owner_id TEXT NOT NULL, provider_id TEXT NOT NULL, base_url TEXT NOT NULL,
             model TEXT NOT NULL, encrypted_api_key BLOB NOT NULL,
             created_at REAL NOT NULL, updated_at REAL NOT NULL,
+            supports_vision INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(owner_id, provider_id)
         )
         """)
+        if "supports_vision" not in _columns(c, "provider_credentials"):
+            c.execute("ALTER TABLE provider_credentials ADD COLUMN supports_vision INTEGER NOT NULL DEFAULT 0")
         c.execute("CREATE INDEX IF NOT EXISTS idx_provider_credentials_owner ON provider_credentials(owner_id,provider_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(status,next_attempt_at,created_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_steps_task ON task_steps(task_id,step_index)")
@@ -171,6 +176,11 @@ class ProviderCredentialInput(BaseModel):
     base_url: str = Field(min_length=12, max_length=300)
     model: str = Field(min_length=1, max_length=160)
     api_key: str = Field(min_length=8, max_length=4096)
+    supports_vision: bool = False
+
+
+class ChatCompletionInput(BaseModel):
+    messages: list[dict[str, Any]] = Field(min_length=1, max_length=40)
 
 
 ALLOWED_PROVIDER_HOSTS = {
@@ -192,7 +202,7 @@ def provider_models_for_owner(owner_id: str) -> list[ModelConfig]:
     models = load_models(allow_empty=True)
     with db() as c:
         rows = c.execute(
-            "SELECT provider_id,base_url,model,encrypted_api_key FROM provider_credentials WHERE owner_id=?",
+            "SELECT provider_id,base_url,model,encrypted_api_key,supports_vision FROM provider_credentials WHERE owner_id=?",
             (owner_id,),
         ).fetchall()
     for row in rows:
@@ -203,6 +213,7 @@ def provider_models_for_owner(owner_id: str) -> list[ModelConfig]:
         models.append(ModelConfig(
             id="user-" + row["provider_id"], base_url=row["base_url"], model=row["model"],
             api_key=key, priority=50, purposes=("general", "planning", "evaluation"),
+            capabilities=("vision",) if row["supports_vision"] else (),
         ))
     return models
 
@@ -528,7 +539,7 @@ async def health():
 @app.get("/v1/providers", dependencies=[Depends(auth)])
 async def list_providers(owner_id: str = Depends(auth)):
     with db() as c:
-        rows = c.execute("""SELECT provider_id,base_url,model,created_at,updated_at
+        rows = c.execute("""SELECT provider_id,base_url,model,supports_vision,created_at,updated_at
             FROM provider_credentials WHERE owner_id=? ORDER BY provider_id""", (owner_id,)).fetchall()
     return {"providers": [dict(row) for row in rows]}
 
@@ -543,10 +554,12 @@ async def save_provider(body: ProviderCredentialInput, owner_id: str = Depends(a
     now = time.time()
     with db() as c:
         c.execute("""INSERT INTO provider_credentials(owner_id,provider_id,base_url,model,
-            encrypted_api_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?)
+            encrypted_api_key,supports_vision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)
             ON CONFLICT(owner_id,provider_id) DO UPDATE SET base_url=excluded.base_url,
-            model=excluded.model,encrypted_api_key=excluded.encrypted_api_key,updated_at=excluded.updated_at""",
-            (owner_id, body.provider_id, base_url, body.model, encrypted, now, now))
+            model=excluded.model,encrypted_api_key=excluded.encrypted_api_key,
+            supports_vision=excluded.supports_vision,updated_at=excluded.updated_at""",
+            (owner_id, body.provider_id, base_url, body.model, encrypted,
+             1 if body.supports_vision else 0, now, now))
     return {"provider_id": body.provider_id, "status": "saved", "secret_returned": False}
 
 
