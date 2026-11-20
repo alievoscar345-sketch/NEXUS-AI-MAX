@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Intent
 import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
+import android.speech.tts.Voice
 import android.speech.tts.UtteranceProgressListener
 import android.media.MediaPlayer
 import android.media.PlaybackParams
@@ -928,14 +929,36 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
         pendingBackupImport = uri
     }
     val context = LocalContext.current
+    val speechPrefs = remember(context) { context.getSharedPreferences("nexus_speech", 0) }
     var ttsReady by remember { mutableStateOf(false) }
+    var availableTtsVoices by remember { mutableStateOf<List<Voice>>(emptyList()) }
+    var selectedVoiceName by remember { mutableStateOf(speechPrefs.getString("voice_name", "") ?: "") }
+    var voiceMenuExpanded by remember { mutableStateOf(false) }
     val textToSpeech = remember(context) { TextToSpeech(context) { status ->
         ttsReady = status == TextToSpeech.SUCCESS
-
     } }
+    LaunchedEffect(ttsReady) {
+        if (ttsReady) {
+            val russianVoices = textToSpeech.voices.orEmpty()
+                .filter { it.locale.language == "ru" }
+                .sortedBy { it.name.lowercase(Locale.ROOT) }
+            availableTtsVoices = if (russianVoices.isNotEmpty()) russianVoices else textToSpeech.voices.orEmpty().sortedBy { it.name.lowercase(Locale.ROOT) }
+            val savedVoice = availableTtsVoices.firstOrNull { it.name == selectedVoiceName }
+            if (savedVoice != null) {
+                textToSpeech.voice = savedVoice
+            } else {
+                textToSpeech.language = Locale("ru")
+                availableTtsVoices.firstOrNull()?.let { voice ->
+                    selectedVoiceName = voice.name
+                    speechPrefs.edit().putString("voice_name", voice.name).apply()
+                    textToSpeech.voice = voice
+                }
+            }
+        }
+    }
     DisposableEffect(textToSpeech) { onDispose { textToSpeech.stop(); textToSpeech.shutdown() } }
     var speaking by remember { mutableStateOf(false) }
-    var speechRate by remember { mutableFloatStateOf(1.0f) }
+    var speechRate by remember { mutableFloatStateOf(speechPrefs.getFloat("speech_rate", 1.0f)) }
     var speechSpeedMenu by remember { mutableStateOf(false) }
     var audioPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     var speechFile by remember { mutableStateOf<File?>(null) }
@@ -1364,6 +1387,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                                         text = { Text(if (rate == 1.0f) "Обычная скорость · 1×" else "${rate}×", color = if (speechRate == rate) AccentRed else MainText) },
                                                         onClick = {
                                                             speechRate = rate
+                                                            speechPrefs.edit().putFloat("speech_rate", rate).apply()
                                                             speechSpeedMenu = false
                                                             audioPlayer?.let { player ->
                                                                 player.setPlaybackParams(PlaybackParams().setSpeed(rate))
@@ -1574,6 +1598,50 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                             Text("Импорт", color = MainText)
                         }
                     }
+                    Divider(color = DividerTone, modifier = Modifier.padding(vertical = 4.dp))
+                    Text("ГОЛОС И ОЗВУЧИВАНИЕ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text("Доступные голоса зависят от установленного движка синтеза речи Android и загруженных языковых пакетов.", color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
+                    Box {
+                        OutlinedButton(onClick = { voiceMenuExpanded = true }, enabled = ttsReady && availableTtsVoices.isNotEmpty()) {
+                            Text(
+                                availableTtsVoices.firstOrNull { it.name == selectedVoiceName }?.let { "${it.name} · ${it.locale.displayLanguage}" }
+                                    ?: if (!ttsReady) "Загрузка голосов…" else "Голос не найден",
+                                color = MainText,
+                                maxLines = 1
+                            )
+                        }
+                        DropdownMenu(expanded = voiceMenuExpanded, onDismissRequest = { voiceMenuExpanded = false }) {
+                            availableTtsVoices.forEach { voice ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(voice.name, color = if (voice.name == selectedVoiceName) AccentRed else MainText, fontSize = 12.sp)
+                                            Text(voice.locale.displayName + if (voice.isNetworkConnectionRequired) " · требуется интернет" else " · локальный", color = Muted, fontSize = 10.sp)
+                                        }
+                                    },
+                                    onClick = {
+                                        selectedVoiceName = voice.name
+                                        speechPrefs.edit().putString("voice_name", voice.name).apply()
+                                        textToSpeech.voice = voice
+                                        voiceMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(
+                            enabled = ttsReady && selectedVoiceName.isNotBlank(),
+                            onClick = {
+                                val chosenVoice = availableTtsVoices.firstOrNull { it.name == selectedVoiceName }
+                                if (chosenVoice != null) textToSpeech.voice = chosenVoice
+                                textToSpeech.setSpeechRate(1.0f)
+                                textToSpeech.speak("Здравствуйте. Это пример выбранного голоса NEXUS.", TextToSpeech.QUEUE_FLUSH, null, "nexus_voice_preview")
+                            }
+                        ) { Text("Прослушать голос", color = MainText) }
+                        Text("${availableTtsVoices.size} голосов", color = Muted, fontSize = 10.sp)
+                    }
+                    Text("Скорость озвучивания: ${speechRate}×. Изменяется кнопкой скорости возле ответа и сохраняется автоматически.", color = Muted, fontSize = 10.sp)
                     Text("ПРОВАЙДЕР", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(selected = selectedProvider == "AnyModel", onClick = { selectedProvider = "AnyModel" }, label = { Text("AnyModel") })
