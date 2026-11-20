@@ -286,3 +286,12 @@ The Agent Server now includes an initial owner-scoped provider credential vault:
 - Task listing, inspection, cancellation, and approval access are scoped by owner identity. Idempotency keys are unique within an owner scope.
 
 Current boundary: the prototype bearer-token authentication maps requests to the fixed `personal` owner. This is suitable only for a single-user deployment. Before multi-user access, replace it with verified account authentication (e.g. JWT subject mapping), apply owner scoping to every resource and background job, and add per-user rate/cost quotas. Do not accept a tenant/user ID directly from an untrusted client. Android settings UI, deployment secret provisioning, key rotation, and billing controls are not yet implemented.
+
+
+## Standard chat and vision gateway milestone
+
+The Agent Server now exposes a normalized authenticated chat-completions endpoint. Standard text chat and inline image attachments can use the same Model Gateway as background tasks. The gateway routes image requests only to provider configurations explicitly marked with the `vision` capability. Image payloads must be bounded base64 data URLs; remote image URLs are rejected to avoid server-side fetch/SSRF behavior.
+
+Android settings now include the Agent Server connection, an encrypted local server access token (Android Keystore), provider credential management, and a vision-capability flag. When the server is configured, ordinary chat and supported image attachments are routed through the server gateway. Provider-specific web search and reasoning still use the legacy direct-provider path. The cloud chat endpoint is currently non-streaming.
+
+Remaining boundaries: the server bearer token still maps to the single `personal` owner; account/JWT authentication is required before multi-user exposure. The backend must be deployed and its encryption key configured before the Android vault can connect. Streaming, server-side web-search adapters, reasoning controls, provider capability verification, quotas, and billing are future work.
