@@ -244,16 +244,54 @@ private fun ChatAttachmentPreview(attachment: ChatAttachment, compact: Boolean =
         }
     }
     val bitmap = bitmapState.value
+    var showFullImage by remember(attachment.localPath) { mutableStateOf(false) }
     if (bitmap != null) {
         androidx.compose.foundation.Image(
             bitmap = bitmap,
-            contentDescription = attachment.name,
+            contentDescription = "Открыть изображение: " + attachment.name,
             contentScale = ContentScale.Fit,
             modifier = Modifier
                 .fillMaxWidth(if (compact) 0.42f else 1f)
                 .heightIn(max = if (compact) 64.dp else 240.dp)
                 .clip(RoundedCornerShape(12.dp))
+                .clickable { showFullImage = true }
         )
+        if (showFullImage) {
+            Dialog(
+                onDismissRequest = { showFullImage = false },
+                properties = DialogProperties(usePlatformDefaultWidth = false)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.96f))
+                        .clickable { showFullImage = false },
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        attachment.name,
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                    androidx.compose.foundation.Image(
+                        bitmap = bitmap,
+                        contentDescription = attachment.name,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 0.82f * androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp)
+                    )
+                    Text(
+                        "Нажми, чтобы закрыть",
+                        color = Color.LightGray,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+        }
     } else {
         Text(attachment.name, color = Blue, fontSize = 11.sp, modifier = Modifier.padding(top = 5.dp))
     }
