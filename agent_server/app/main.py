@@ -599,6 +599,18 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
     }
 
 
+@app.get("/v1/models", dependencies=[Depends(auth)])
+async def list_available_models(owner_id: str = Depends(auth)):
+    models = provider_models_for_owner(owner_id)
+    return {"models": [{
+        "provider_id": model.id,
+        "model": model.model,
+        "source": "user" if model.id.startswith("user-") else "built_in",
+        "capabilities": list(model.capabilities),
+        "purposes": list(model.purposes),
+    } for model in models]}
+
+
 @app.get("/v1/providers", dependencies=[Depends(auth)])
 async def list_providers(owner_id: str = Depends(auth)):
     with db() as c:
