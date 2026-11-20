@@ -258,3 +258,10 @@ Acceptance: reproducible benchmark report and no regression against current base
 6. Add sandboxed tools, then Avito.
 
 This order minimizes spend and avoids exposing unfinished autonomy or external actions.
+
+
+## Dynamic benchmark-aware model routing (implementation milestone)
+
+The Model Gateway has an initial deterministic scoring router. It infers a coarse task category (coding, research, math, vision, writing, general) from the request without an extra LLM call, filters providers by purpose, and ranks them using explicitly configured per-category benchmark scores, token cost, latency, and provider priority. Quality is weighted most heavily; cost and latency are secondary factors. Explicit purpose route variables remain operator overrides.
+
+Benchmark metadata is supplied per provider in `NEXUS_MODEL_PROVIDERS`: `benchmark_scores` (0–100), `cost_per_million_tokens`, `latency_ms`, `ranking_source`, and `ranking_updated_at`. This is an initial scoring mechanism, not a live leaderboard integration. It does not claim to fetch or validate current global rankings. Production rollout requires a maintained, dated benchmark catalog, source-specific normalization, freshness controls, and NEXUS task-level evaluations. Missing benchmark data is neutral and falls back to configured priority; it is not evidence of model quality. Vision categorization is preparatory until image input support is implemented.
