@@ -274,3 +274,15 @@ The SQLite prototype now persists the generated plan as ordered task-step rows b
 At worker startup, tasks left in planning/running states are recovered into retry_wait; interrupted running steps are reset to retry_wait. This is safe for the currently supported action set: search and fetch are read-only, artifact writes target deterministic task-scoped paths, and approval records are deduplicated by step idempotency key. Transient network errors and selected HTTP statuses use bounded exponential backoff. Cancellation is cooperative.
 
 The SQLite claim transaction and lease metadata are suitable only for the documented single-process/single-replica prototype. They are not distributed locking. Production multi-worker execution requires PostgreSQL transactions/locking and a durable queue or equivalent coordination. Approval records only record consent; the generic backend does not execute third-party actions, and approved tasks remain paused pending a service-specific connector and explicit action implementation.
+
+
+## Provider credential vault milestone
+
+The Agent Server now includes an initial owner-scoped provider credential vault:
+- Provider API keys are encrypted with AES-256-GCM before persistence; the encryption key is supplied separately through `NEXUS_CREDENTIAL_ENCRYPTION_KEY`.
+- Provider metadata can be listed without returning secret material. Credentials can be added/replaced, tested with a minimal completion request, and deleted through authenticated API endpoints.
+- The Model Gateway combines server-configured providers with credentials belonging to the authenticated owner.
+- Provider base URLs are restricted to an explicit HTTPS host allowlist to reduce SSRF risk.
+- Task listing, inspection, cancellation, and approval access are scoped by owner identity. Idempotency keys are unique within an owner scope.
+
+Current boundary: the prototype bearer-token authentication maps requests to the fixed `personal` owner. This is suitable only for a single-user deployment. Before multi-user access, replace it with verified account authentication (e.g. JWT subject mapping), apply owner scoping to every resource and background job, and add per-user rate/cost quotas. Do not accept a tenant/user ID directly from an untrusted client. Android settings UI, deployment secret provisioning, key rotation, and billing controls are not yet implemented.
