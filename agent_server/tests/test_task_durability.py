@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import time
 import unittest
@@ -95,6 +96,33 @@ class DurableTaskTests(unittest.TestCase):
                 ("task-d", "retry later", "retry_wait", now, now, now + 3600),
             )
         self.assertIsNone(main.claim_task())
+
+    def test_create_task_deduplicates_client_request_key(self):
+        body = main.NewTask(prompt="Research this subject", idempotency_key="client-key-0001")
+        first = asyncio.run(main.create_task(body))
+        second = asyncio.run(main.create_task(body))
+        self.assertEqual(first["id"], second["id"])
+        self.assertTrue(second["deduplicated"])
+        with main.db() as conn:
+            count = conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"]
+        self.assertEqual(count, 1)
+
+    def test_approval_record_is_idempotent_for_retried_step(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("task-approval", "send a message", "running", now, now),
+            )
+        step = {"title": "Prepare message", "action": "draft_external_action",
+                "input": {"description": "Send approved message"}}
+        first = asyncio.run(main.run_step(step, "task-approval", "same-idempotency-key"))
+        second = asyncio.run(main.run_step(step, "task-approval", "same-idempotency-key"))
+        self.assertEqual(first["approval_id"], second["approval_id"])
+        with main.db() as conn:
+            count = conn.execute("SELECT COUNT(*) AS n FROM approvals WHERE task_id=?",
+                                 ("task-approval",)).fetchone()["n"]
+        self.assertEqual(count, 1)
 
 
 if __name__ == "__main__":
