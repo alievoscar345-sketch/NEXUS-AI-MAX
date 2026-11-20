@@ -11,8 +11,8 @@ android {
         applicationId = "ai.nexus.max"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
     }
     val signingStore = System.getenv("NEXUS_KEYSTORE_PATH")
     val signingStorePassword = System.getenv("NEXUS_KEYSTORE_PASSWORD")
