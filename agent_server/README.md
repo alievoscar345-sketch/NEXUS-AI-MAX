@@ -69,3 +69,12 @@ Provider API keys are encrypted in SQLite using AES-256-GCM with a fresh 96-bit 
 User-managed credentials are merged with server-configured built-in providers inside the Model Gateway, so task planning and evaluation can use either source. Credential metadata is owner-scoped; tasks, task reads, cancellations, and approvals are also filtered by owner. In this single-user prototype, the existing server bearer key maps to the fixed owner `personal`. A verified account/JWT authentication layer must replace that mapping before opening the service to multiple users; a client-supplied owner ID is never trusted.
 
 The provider credential API is not exposed to Android yet. Android settings integration and account authentication remain separate milestones. Provider connectivity testing sends a minimal prompt to the selected provider and may incur a small token charge.
+
+
+## Standard chat gateway
+
+The authenticated `POST /v1/chat/completions` endpoint accepts OpenAI-style message history and returns a normalized chat completion. It uses the same Model Gateway and merges server-configured built-in providers with the authenticated owner's encrypted provider credentials. The Android client can route ordinary text chat and inline image attachments through this endpoint after the Agent Server URL and access token are configured.
+
+Image input is accepted only as base64 data URLs for PNG, JPEG, WEBP, or GIF, with an 8 MB decoded limit per image and a 12 MB total chat payload limit. Remote image URLs are rejected to prevent server-side URL fetching. A provider must explicitly declare the `vision` capability before it can be selected for image requests. User-managed providers expose this as the `supports_vision` setting; environment-defined providers use `"capabilities":["vision"]`. This flag is an operator assertion, not automatic model capability discovery, so enable it only for models whose provider documentation confirms image input.
+
+The first chat gateway version is non-streaming and does not yet proxy provider-specific web-search or reasoning controls. Those paths remain in the existing direct-provider mode until compatible server-side tool adapters are implemented.
