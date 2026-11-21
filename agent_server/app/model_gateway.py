@@ -258,6 +258,121 @@ class ModelGateway:
             detail = f"provider returned HTTP {last_error.response.status_code}"
         raise ModelGatewayError(f"All eligible model providers failed ({detail})") from last_error
 
+    async def stream_messages(self, messages: list[dict[str, Any]], purpose: str = "general"):
+        """Yield OpenAI-compatible chunk payloads; retry providers only before output starts."""
+        text_parts: list[str] = []
+        requires_vision = False
+        for message in messages:
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, str):
+                text_parts.append(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+                        text_parts.append(part["text"])
+                    elif isinstance(part, dict) and part.get("type") == "image_url":
+                        requires_vision = True
+        task_type = "vision" if requires_vision else infer_task_type("\\n".join(text_parts))
+        candidates = self._select(purpose, task_type, "vision" if requires_vision else None)
+        stream_id = "nexus-" + __import__("uuid").uuid4().hex
+        created = int(__import__("time").time())
+        last_error: Exception | None = None
+
+        for index, model in enumerate(candidates):
+            emitted = False
+            try:
+                timeout = httpx.Timeout(connect=15.0, read=120.0, write=30.0, pool=15.0)
+                async with httpx.AsyncClient(timeout=timeout, transport=self.transport) as client:
+                    async with client.stream(
+                        "POST",
+                        model.base_url + "/chat/completions",
+                        headers={"Authorization": "Bearer " + model.api_key,
+                                 "Accept": "text/event-stream"},
+                        json={"model": model.model, "temperature": 0.2,
+                              "messages": messages, "stream": True},
+                    ) as response:
+                        response.raise_for_status()
+                        data_lines: list[str] = []
+
+                        async def consume_event():
+                            nonlocal emitted
+                            if not data_lines:
+                                return None
+                            raw = "\\n".join(data_lines)
+                            data_lines.clear()
+                            if raw.strip() == "[DONE]":
+                                return "done"
+                            try:
+                                payload = json.loads(raw)
+                            except (ValueError, TypeError) as exc:
+                                raise ModelGatewayError("Provider returned malformed streaming data") from exc
+                            if not isinstance(payload, dict):
+                                raise ModelGatewayError("Provider returned malformed streaming data")
+                            choices = payload.get("choices", [])
+                            if not isinstance(choices, list):
+                                raise ModelGatewayError("Provider returned malformed streaming choices")
+                            if not choices:
+                                usage = payload.get("usage")
+                                if isinstance(usage, dict):
+                                    emitted = True
+                                    return {"id": stream_id, "object": "chat.completion.chunk",
+                                            "created": created, "model": model.model,
+                                            "choices": [], "usage": usage}
+                                return None
+                            choice = choices[0]
+                            if not isinstance(choice, dict):
+                                raise ModelGatewayError("Provider returned malformed streaming choice")
+                            delta = choice.get("delta", {})
+                            if not isinstance(delta, dict):
+                                raise ModelGatewayError("Provider returned malformed streaming delta")
+                            normalized = {"id": stream_id, "object": "chat.completion.chunk",
+                                          "created": created, "model": model.model,
+                                          "choices": [{"index": int(choice.get("index", 0)),
+                                                       "delta": delta,
+                                                       "finish_reason": choice.get("finish_reason")}]}
+                            emitted = True
+                            return normalized
+
+                        async for line in response.aiter_lines():
+                            if line == "":
+                                event = await consume_event()
+                                if event == "done":
+                                    return
+                                if event is not None:
+                                    yield event
+                            elif line.startswith("data:"):
+                                data_lines.append(line[5:].lstrip())
+                        event = await consume_event()
+                        if event == "done":
+                            return
+                        if event is not None:
+                            yield event
+                        if emitted:
+                            yield {"id": stream_id, "object": "chat.completion.chunk",
+                                   "created": created, "model": model.model,
+                                   "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+                            return
+                        raise ModelGatewayError("Provider ended the stream without completion data")
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError,
+                    httpx.HTTPStatusError, ModelGatewayError) as exc:
+                last_error = exc
+                if emitted:
+                    yield {"error": {"message": "The model stream was interrupted.",
+                                     "type": "provider_stream_error"}}
+                    return
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code not in (
+                    408, 429, 500, 502, 503, 504
+                ):
+                    break
+                if index < len(candidates) - 1:
+                    continue
+                break
+
+        detail = type(last_error).__name__ if last_error else "unknown provider error"
+        if isinstance(last_error, httpx.HTTPStatusError):
+            detail = f"provider returned HTTP {last_error.response.status_code}"
+        raise ModelGatewayError(f"All eligible model providers failed ({detail})") from last_error
+
     async def complete(self, system: str, user: str, purpose: str = "general") -> ModelResult:
         return await self.complete_messages(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],

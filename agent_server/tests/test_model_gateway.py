@@ -20,6 +20,57 @@ def config(name="test", purposes=("general", "planning", "evaluation"), priority
 
 
 class GatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stream_parses_content_and_done(self):
+        body = (
+            'data: {"choices":[{"index":0,"delta":{"role":"assistant"}}]}\\n\\n'
+            'data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}\\n\\n'
+            'data: [DONE]\\n\\n'
+        )
+        def handler(request):
+            self.assertTrue(json.loads(request.content)["stream"])
+            return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+        gateway = ModelGateway([config()], transport=httpx.MockTransport(handler))
+        chunks = [chunk async for chunk in gateway.stream_messages([{"role":"user","content":"hi"}])]
+        self.assertEqual(chunks[1]["choices"][0]["delta"]["content"], "hello")
+        self.assertEqual(len(chunks), 2)
+
+    async def test_stream_falls_back_before_first_chunk(self):
+        calls = []
+        def handler(request):
+            calls.append(1)
+            if len(calls) == 1:
+                raise httpx.ConnectError("offline", request=request)
+            return httpx.Response(200, text='data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\\n\\ndata: [DONE]\\n\\n')
+        gateway = ModelGateway([config("first"), config("second", priority=2)],
+                               transport=httpx.MockTransport(handler))
+        chunks = [chunk async for chunk in gateway.stream_messages([{"role":"user","content":"hi"}])]
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(chunks[0]["choices"][0]["delta"]["content"], "ok")
+
+    async def test_stream_does_not_fallback_after_partial_output(self):
+        calls = []
+        def handler(request):
+            calls.append(1)
+            async def body():
+                yield b'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\\n\\n'
+                raise httpx.ReadError("connection dropped", request=request)
+            return httpx.Response(200, stream=httpx.AsyncByteStream.__subclasshook__ if False else None)
+        class BrokenStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\\n\\n'
+                raise httpx.ReadError("connection dropped")
+            async def aclose(self):
+                return None
+        def broken_handler(request):
+            calls.append(1)
+            return httpx.Response(200, stream=BrokenStream())
+        gateway = ModelGateway([config("first"), config("second", priority=2)],
+                               transport=httpx.MockTransport(broken_handler))
+        chunks = [chunk async for chunk in gateway.stream_messages([{"role":"user","content":"hi"}])]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(chunks[0]["choices"][0]["delta"]["content"], "partial")
+        self.assertEqual(chunks[-1]["error"]["type"], "provider_stream_error")
+
     async def test_parses_json_completion(self):
         def handler(request):
             payload = {"choices":[{"message":{"content":'{"summary":"ok"}'}}],"usage":{"total_tokens":12}}
