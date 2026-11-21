@@ -4466,7 +4466,22 @@ private fun ProjectManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
 
 @Composable
 private fun ProjectFilesDialog(vm: NexusViewModel, project: NexusProject, onDismiss: () -> Unit) {
+    val context = LocalContext.current
     var restoreTarget by remember { mutableStateOf<NexusProjectFile?>(null) }
+    var pendingDownloadPath by remember { mutableStateOf<String?>(null) }
+    val binaryImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            val name = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "upload.bin"
+            vm.uploadProjectBinaryFile(project.id, uri, name)
+        }
+    }
+    val binaryExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        val path = pendingDownloadPath
+        if (uri != null && path != null) vm.downloadProjectBinaryFile(project.id, path, uri)
+        pendingDownloadPath = null
+    }
     LaunchedEffect(project.id) {
         vm.projectFilePathDraft = ""
         vm.projectFileContentDraft = ""
@@ -4485,19 +4500,28 @@ private fun ProjectFilesDialog(vm: NexusViewModel, project: NexusProject, onDism
                     }
                     TextButton(onClick = onDismiss) { Text("Закрыть", color = Muted) }
                 }
-                Text("Файлы сохраняются на сервере. Каждое сохранение создаёт новую версию. Поддерживаются UTF-8 текстовые файлы до 2 МиБ.",
+                Text("Текстовые файлы редактируются здесь. Любые бинарные файлы можно загружать и скачивать; лимит — 50 МиБ на файл.",
                     color = Muted, fontSize = 9.sp, lineHeight = 13.sp)
+                Button(onClick = { binaryImportLauncher.launch(arrayOf("*/*")) },
+                    enabled = !vm.projectFilesBusy, modifier = Modifier.fillMaxWidth()) {
+                    Text("Импортировать файл с устройства")
+                }
                 Text("ФАЙЛЫ · ${vm.projectFiles.size}", color = Muted, fontSize = 9.sp,
                     fontWeight = FontWeight.Bold)
                 LazyColumn(Modifier.fillMaxWidth().weight(0.24f).background(PanelRaised, RoundedCornerShape(9.dp)).padding(6.dp)) {
                     items(vm.projectFiles, key = { it.path }) { file ->
-                        TextButton(onClick = { vm.openProjectFile(project.id, file.path) },
-                            enabled = !vm.projectFilesBusy, modifier = Modifier.fillMaxWidth()) {
-                            Column(Modifier.fillMaxWidth()) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            Column(Modifier.weight(1f).clickable(enabled = !vm.projectFilesBusy) {
+                                vm.openProjectFile(project.id, file.path)
+                            }.padding(vertical = 6.dp)) {
                                 Text(file.path, color = MainText, fontSize = 10.sp)
                                 Text("v${file.revision} · ${file.bytes} байт · ${file.sha256.take(10)}…",
                                     color = Muted, fontSize = 8.sp)
                             }
+                            TextButton(onClick = {
+                                pendingDownloadPath = file.path
+                                binaryExportLauncher.launch(file.path.substringAfterLast('/'))
+                            }, enabled = !vm.projectFilesBusy) { Text("Скачать", color = Blue, fontSize = 8.sp) }
                         }
                     }
                     if (vm.projectFiles.isEmpty()) item {
