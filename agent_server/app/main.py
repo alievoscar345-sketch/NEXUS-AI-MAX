@@ -1104,11 +1104,17 @@ def _restore_checkpoint_project_files(tid: str, project_manifest_json: str) -> i
                       (now, project_id, task["owner_id"]))
     return restored
 
-def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True) -> dict[str, Any] | None:
-    """Verify and restore the newest workspace checkpoint, optionally restoring its DB state."""
+def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True,
+                                    checkpoint_id: str | None = None,
+                                    manual: bool = False) -> dict[str, Any] | None:
+    """Verify and restore a selected or newest workspace checkpoint."""
     with db() as c:
-        checkpoint = c.execute("""SELECT * FROM task_checkpoints
-            WHERE task_id=? ORDER BY sequence DESC LIMIT 1""", (tid,)).fetchone()
+        if checkpoint_id:
+            checkpoint = c.execute("""SELECT * FROM task_checkpoints
+                WHERE task_id=? AND id=?""", (tid, checkpoint_id)).fetchone()
+        else:
+            checkpoint = c.execute("""SELECT * FROM task_checkpoints
+                WHERE task_id=? ORDER BY sequence DESC LIMIT 1""", (tid,)).fetchone()
     if not checkpoint:
         return None
     archive = Path(checkpoint["archive_path"])
@@ -1252,11 +1258,16 @@ def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True) -> dic
                  step["max_attempts"], step["idempotency_key"], step["result_json"],
                  step["error"], step["next_attempt_at"], step["created_at"], step["updated_at"]))
         restored_at = time.time()
+        event_kind = "checkpoint_manually_restored" if manual else "checkpoint_restored"
+        event_message = (f"Manually restored checkpoint {checkpoint['sequence']}"
+                         if manual else
+                         f"Restored checkpoint {checkpoint['sequence']} after worker interruption")
         c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
-                  (tid, restored_at, "checkpoint_restored",
-                   f"Restored checkpoint {checkpoint['sequence']} after worker interruption"))
-    return {"sequence": int(checkpoint["sequence"]), "files": file_count,
-            "bytes": total_bytes, "project_revisions_restored": project_revisions_restored,
+                  (tid, restored_at, event_kind, event_message))
+    return {"id": checkpoint["id"], "sequence": int(checkpoint["sequence"]),
+            "reason": checkpoint["reason"], "created_at": checkpoint["created_at"],
+            "files": file_count, "bytes": total_bytes,
+            "project_revisions_restored": project_revisions_restored,
             "artifacts": len(expected_artifacts)}
 
 
@@ -4144,6 +4155,122 @@ async def stream_task_events(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.get("/v1/tasks/{tid}/checkpoints", dependencies=[Depends(auth)])
+def list_task_checkpoints(tid: str, owner_id: str = Depends(auth)):
+    _require_owned_task(tid, owner_id)
+    with db() as c:
+        rows = c.execute("""SELECT id,sequence,step_id,reason,plan_json,steps_json,
+            archive_path,archive_sha256,archive_bytes,project_manifest_json,
+            artifact_manifest_json,created_at FROM task_checkpoints
+            WHERE task_id=? AND owner_id=? ORDER BY sequence DESC""",
+            (tid, owner_id)).fetchall()
+        latest = int(rows[0]["sequence"]) if rows else 0
+    checkpoints = []
+    for row in rows:
+        archive = Path(row["archive_path"])
+        try:
+            archive.resolve().relative_to(CHECKPOINT_ROOT)
+            if archive.is_symlink() or not archive.is_file() or archive.stat().st_size != int(row["archive_bytes"]):
+                raise ValueError("Checkpoint archive is missing or has an unexpected size")
+            digest = _sha256_file(archive)
+            if not hmac.compare_digest(digest, row["archive_sha256"]):
+                raise ValueError("Checkpoint archive SHA-256 verification failed")
+            workspace_files = []
+            total_bytes = 0
+            with zipfile.ZipFile(archive, "r") as bundle:
+                for info in bundle.infolist():
+                    if info.is_dir():
+                        continue
+                    name = info.filename
+                    path = PurePosixPath(name)
+                    if (not name or not path.parts or path.is_absolute() or "\\" in name
+                            or any(part in {"", ".", ".."} for part in path.parts)):
+                        raise ValueError("Checkpoint contains an unsafe path")
+                    if path.parts[0] == "__nexus_internal_artifacts__":
+                        continue
+                    total_bytes += info.file_size
+                    if total_bytes > MAX_TASK_CHECKPOINT_BYTES or len(workspace_files) >= MAX_TASK_CHECKPOINT_FILES:
+                        raise ValueError("Checkpoint exceeds configured inspection limits")
+                    with bundle.open(info, "r") as stream:
+                        file_digest = hashlib.sha256()
+                        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                            file_digest.update(chunk)
+                    workspace_files.append({"path": name, "bytes": info.file_size,
+                                            "sha256": file_digest.hexdigest()})
+            project_manifest = json.loads(row["project_manifest_json"] or "{}")
+            artifact_manifest = json.loads(row["artifact_manifest_json"] or "[]")
+            steps = json.loads(row["steps_json"] or "[]")
+            plan = json.loads(row["plan_json"] or "[]")
+            checkpoints.append({
+                "id": row["id"], "sequence": int(row["sequence"]),
+                "step_id": row["step_id"], "reason": row["reason"],
+                "created_at": row["created_at"], "archive_bytes": int(row["archive_bytes"]),
+                "archive_sha256": row["archive_sha256"], "is_latest": int(row["sequence"]) == latest,
+                "plan_steps": len(plan) if isinstance(plan, list) else 0,
+                "completed_steps": sum(1 for item in steps if item.get("status") == "completed"),
+                "workspace_files": workspace_files,
+                "project_files": project_manifest.get("files", []) if isinstance(project_manifest, dict) else [],
+                "artifacts": artifact_manifest if isinstance(artifact_manifest, list) else [],
+                "legacy": (row["project_manifest_json"] or "{}").strip() == "{}",
+            })
+        except (OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
+            checkpoints.append({
+                "id": row["id"], "sequence": int(row["sequence"]),
+                "step_id": row["step_id"], "reason": row["reason"],
+                "created_at": row["created_at"], "archive_bytes": int(row["archive_bytes"]),
+                "is_latest": int(row["sequence"]) == latest, "available": False,
+                "error": str(exc), "workspace_files": [], "project_files": [], "artifacts": [],
+            })
+        else:
+            checkpoints[-1]["available"] = True
+    return {"checkpoints": checkpoints, "latest_sequence": latest}
+
+
+@app.post("/v1/tasks/{tid}/checkpoints/{checkpoint_id}/restore", dependencies=[Depends(auth)])
+def restore_task_checkpoint(tid: str, checkpoint_id: str, body: dict[str, Any],
+                            owner_id: str = Depends(auth)):
+    expected_latest = body.get("expected_latest_sequence")
+    if not isinstance(expected_latest, int) or expected_latest < 1:
+        raise HTTPException(422, "expected_latest_sequence must be a positive integer")
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        task = c.execute("""SELECT status,lease_owner,lease_expires_at FROM tasks
+            WHERE id=? AND owner_id=?""", (tid, owner_id)).fetchone()
+        if not task:
+            raise HTTPException(404, "Task not found")
+        if task["status"] not in {"paused", "completed", "failed", "cancelled"}:
+            raise HTTPException(409, "Pause or finish the task before restoring a checkpoint")
+        if task["lease_owner"] and task["lease_expires_at"] and task["lease_expires_at"] > time.time():
+            raise HTTPException(409, "Task still has an active worker lease")
+        latest = c.execute("""SELECT COALESCE(MAX(sequence),0) AS sequence
+            FROM task_checkpoints WHERE task_id=? AND owner_id=?""", (tid, owner_id)).fetchone()
+        if int(latest["sequence"]) != expected_latest:
+            raise HTTPException(409, "Checkpoint history changed. Refresh before restoring.")
+        selected = c.execute("""SELECT id FROM task_checkpoints
+            WHERE id=? AND task_id=? AND owner_id=?""",
+            (checkpoint_id, tid, owner_id)).fetchone()
+        if not selected:
+            raise HTTPException(404, "Checkpoint not found")
+    try:
+        restored = _restore_latest_task_checkpoint(tid, restore_state=True,
+                                                   checkpoint_id=checkpoint_id, manual=True)
+    except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile,
+            json.JSONDecodeError, sqlite3.Error) as exc:
+        raise HTTPException(422, f"Checkpoint restore failed: {exc}") from exc
+    if not restored:
+        raise HTTPException(404, "Checkpoint not found")
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        changed = c.execute("""UPDATE tasks SET status='paused',cancel_requested=0,
+            pause_requested=0,lease_owner='',lease_expires_at=NULL,updated_at=?
+            WHERE id=? AND owner_id=? AND status IN ('paused','completed','failed','cancelled')
+            AND (lease_owner='' OR lease_expires_at IS NULL OR lease_expires_at<=?)""",
+            (time.time(), tid, owner_id, time.time())).rowcount
+        if not changed:
+            raise HTTPException(409, "Task state changed during checkpoint restore")
+    return {**restored, "status": "paused"}
 
 
 @app.get("/v1/tasks/{tid}", dependencies=[Depends(auth)])
