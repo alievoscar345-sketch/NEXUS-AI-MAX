@@ -1041,39 +1041,45 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         val reader = response.body?.charStream()?.buffered()
                                 ?: throw IllegalStateException("Пустой ответ API")
-                            reader.use { stream ->
-                                while (true) {
-                                    val rawLine = stream.readLine() ?: break
-                                    if (!rawLine.startsWith("data:")) continue
-                                    val payload = rawLine.removePrefix("data:").trim()
-                                    if (payload == "[DONE]") break
-                                    if (payload.isBlank()) continue
-                                    val delta = try {
-                                        JSONObject(payload).optJSONArray("choices")
-                                            ?.optJSONObject(0)?.optJSONObject("delta")
-                                            ?.opt("content")
-                                    } catch (_: Exception) { null }
-                                    val chunk = when (delta) {
-                                        is String -> delta
-                                        is JSONArray -> {
-                                            val parts = StringBuilder()
-                                            for (i in 0 until delta.length()) {
-                                                val part = delta.optJSONObject(i)
-                                                if (part != null) parts.append(part.optString("text", ""))
-                                            }
-                                            parts.toString()
-                                        }
-                                        else -> ""
+                        val parser = SseDataParser()
+                        suspend fun processSseData(payload: String): Boolean {
+                            if (payload == "[DONE]") return false
+                            if (payload.isBlank()) return true
+                            val delta = try {
+                                JSONObject(payload).optJSONArray("choices")
+                                    ?.optJSONObject(0)?.optJSONObject("delta")
+                                    ?.opt("content")
+                            } catch (_: Exception) { null }
+                            val chunk = when (delta) {
+                                is String -> delta
+                                is JSONArray -> {
+                                    val parts = StringBuilder()
+                                    for (i in 0 until delta.length()) {
+                                        val part = delta.optJSONObject(i)
+                                        if (part != null) parts.append(part.optString("text", ""))
                                     }
-                                    if (chunk.isNotEmpty()) {
-                                        streamedAnswer += chunk
-                                        withContext(Dispatchers.Main) {
-                                            updateChatLive(chatId, streamedAnswer)
-                                        }
-                                    }
+                                    parts.toString()
+                                }
+                                else -> ""
+                            }
+                            if (chunk.isNotEmpty()) {
+                                streamedAnswer += chunk
+                                withContext(Dispatchers.Main) {
+                                    updateChatLive(chatId, streamedAnswer)
                                 }
                             }
-                            streamedAnswer
+                            return true
+                        }
+                        reader.use { stream ->
+                            while (true) {
+                                val rawLine = stream.readLine() ?: break
+                                val event = parser.acceptLine(rawLine) ?: continue
+                                if (!processSseData(event)) break
+                            }
+                            val trailingEvent = parser.finish()
+                            if (trailingEvent != null) processSseData(trailingEvent)
+                        }
+                        streamedAnswer
                     }
                 }
                 }

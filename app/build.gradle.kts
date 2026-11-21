@@ -60,4 +60,5 @@ dependencies {
     implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.32.0")
     implementation("com.mikepenz:multiplatform-markdown-renderer-code:0.32.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    testImplementation("junit:junit:4.13.2")
 }
