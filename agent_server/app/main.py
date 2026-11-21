@@ -619,7 +619,10 @@ def _publish_workspace_artifact(tid: str, relative_path: str, filename: str = ""
             or "/" in name or "\\" in name or "\x00" in name
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name)):
         raise ValueError("Artifact filename must use letters, numbers, dots, underscores, or hyphens")
-    target = (WORKSPACE / (tid + "-" + name)).resolve()
+    candidate = WORKSPACE / (tid + "-" + name)
+    if candidate.is_symlink():
+        raise ValueError("Artifact destination cannot be a symbolic link")
+    target = candidate.resolve()
     if target.parent != WORKSPACE.resolve():
         raise ValueError("Invalid artifact destination")
     temporary = target.with_name(target.name + ".tmp-" + uuid.uuid4().hex)
