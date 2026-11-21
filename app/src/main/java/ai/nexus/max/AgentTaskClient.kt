@@ -11,6 +11,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.io.OutputStream
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -214,9 +215,39 @@ class AgentTaskClient(
         request("GET", listOf("v1", "tasks", taskId, "artifacts", "file"),
             query = mapOf("name" to name)).optString("content")
 
-    fun downloadArtifact(taskId: String, name: String): ByteArray =
-        requestBytes(listOf("v1", "tasks", taskId, "artifacts", "download"),
-            query = mapOf("name" to name))
+    fun downloadArtifact(taskId: String, name: String, output: OutputStream): Long {
+        val builder = base.newBuilder()
+        listOf("v1", "tasks", taskId, "artifacts", "download").forEach { builder.addPathSegment(it) }
+        builder.addQueryParameter("name", name)
+        val request = Request.Builder().url(builder.build())
+            .header("Authorization", "Bearer $token")
+            .header("Accept", "application/octet-stream")
+            .get().build()
+        val downloadHttp = http.newBuilder()
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .callTimeout(0, TimeUnit.MILLISECONDS)
+            .build()
+        downloadHttp.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                val raw = response.body?.string().orEmpty()
+                val detail = try { JSONObject(raw).optString("detail") } catch (_: Exception) { "" }
+                throw IOException(detail.ifBlank { "Artifact download returned HTTP ${response.code}" })
+            }
+            val input = response.body?.byteStream() ?: throw IOException("Artifact download body is empty")
+            var copied = 0L
+            val buffer = ByteArray(64 * 1024)
+            input.use { source ->
+                while (true) {
+                    val count = source.read(buffer)
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                    copied += count
+                }
+            }
+            output.flush()
+            return copied
+        }
+    }
 
     fun listProjects(): List<NexusProject> {
         val items = request("GET", listOf("v1", "projects")).optJSONArray("projects") ?: JSONArray()
