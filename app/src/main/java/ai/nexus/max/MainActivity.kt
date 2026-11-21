@@ -1253,7 +1253,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val loaded = withContext(Dispatchers.IO) {
                     val request = Request.Builder()
-                        .url("https://openrouter.ai/api/v1/models?endpoints=%2Fapi%2Fv1%2Fchat%2Fcompletions&output_modalities=all")
+                        .url("https://openrouter.ai/api/v1/models?endpoints=%2Fapi%2Fv1%2Fchat%2Fcompletions&output_modalities=text")
                         .header("Authorization", "Bearer " + apiKey.trim())
                         .header("Accept", "application/json")
                         .get().build()
