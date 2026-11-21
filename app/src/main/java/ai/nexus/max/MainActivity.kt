@@ -86,6 +86,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -3049,6 +3050,20 @@ private fun extractMarkdownCode(content: String, node: ASTNode, fenced: Boolean)
 private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
     var prompt by remember { mutableStateOf("") }
     var selectedTask by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(vm.agentServerUrl, vm.agentServerConfigured, selectedTask) {
+        if (vm.agentServerConfigured && vm.agentServerUrl.isNotBlank()) {
+            while (true) {
+                delay(3000)
+                val taskId = selectedTask ?: vm.activeAgentTask?.id
+                if (taskId != null) {
+                    vm.refreshAgentTask(taskId)
+                } else {
+                    vm.refreshAgentTasks()
+                }
+                vm.refreshAgentApprovals()
+            }
+        }
+    }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
             modifier = Modifier.fillMaxWidth(0.96f).fillMaxHeight(0.88f),
