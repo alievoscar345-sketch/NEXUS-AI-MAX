@@ -528,6 +528,15 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     var memorySuggestions by mutableStateOf<List<MemorySuggestion>>(emptyList())
         private set
     var memorySuggesting by mutableStateOf(false)
+    var nexusProjects by mutableStateOf<List<NexusProject>>(emptyList())
+        private set
+    var projectBusy by mutableStateOf(false)
+        private set
+    var projectMessage by mutableStateOf<String?>(null)
+        private set
+    var projectNameDraft by mutableStateOf("")
+    var projectDescriptionDraft by mutableStateOf("")
+    var projectContextDraft by mutableStateOf("")
     var nexusSkills by mutableStateOf<List<NexusSkill>>(emptyList())
         private set
     var skillBusy by mutableStateOf(false)
@@ -797,6 +806,59 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             } finally {
                 memoryBusy = false
             }
+        }
+    }
+
+    fun refreshProjects() {
+        if (projectBusy || !agentServerConfigured || agentServerUrl.isBlank()) return
+        projectBusy = true
+        viewModelScope.launch {
+            try {
+                nexusProjects = withContext(Dispatchers.IO) { agentTaskClient().listProjects() }
+                projectMessage = null
+            } catch (e: Exception) { projectMessage = e.message ?: "Не удалось загрузить проекты." }
+            finally { projectBusy = false }
+        }
+    }
+
+    fun saveProject() {
+        if (projectBusy || projectNameDraft.isBlank()) return
+        projectBusy = true
+        val name = projectNameDraft.trim(); val description = projectDescriptionDraft.trim(); val context = projectContextDraft.trim()
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { agentTaskClient().createProject(name, description, context) }
+                nexusProjects = withContext(Dispatchers.IO) { agentTaskClient().listProjects() }
+                projectNameDraft = ""; projectDescriptionDraft = ""; projectContextDraft = ""
+                projectMessage = "Проект создан. Контекст будет передаваться агенту в задачах этого проекта."
+            } catch (e: Exception) { projectMessage = e.message ?: "Не удалось создать проект." }
+            finally { projectBusy = false }
+        }
+    }
+
+    fun archiveProject(project: NexusProject) {
+        if (projectBusy) return
+        projectBusy = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { agentTaskClient().updateProject(project.copy(status = if (project.status == "active") "archived" else "active")) }
+                nexusProjects = withContext(Dispatchers.IO) { agentTaskClient().listProjects() }
+                projectMessage = if (project.status == "active") "Проект архивирован." else "Проект восстановлен."
+            } catch (e: Exception) { projectMessage = e.message ?: "Не удалось изменить проект." }
+            finally { projectBusy = false }
+        }
+    }
+
+    fun deleteProject(id: String) {
+        if (projectBusy) return
+        projectBusy = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { agentTaskClient().deleteProject(id) }
+                nexusProjects = nexusProjects.filterNot { it.id == id }
+                projectMessage = "Проект удалён. История задач сохранена без привязки к проекту."
+            } catch (e: Exception) { projectMessage = e.message ?: "Не удалось удалить проект." }
+            finally { projectBusy = false }
         }
     }
 
@@ -1171,12 +1233,12 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun createAgentTask(prompt: String) {
+    fun createAgentTask(prompt: String, projectId: String? = null) {
         if (agentBusy || agentRefreshing) return
         agentBusy = true
         viewModelScope.launch {
             try {
-                val id = withContext(Dispatchers.IO) { agentTaskClient().createTask(prompt) }
+                val id = withContext(Dispatchers.IO) { agentTaskClient().createTask(prompt, projectId = projectId) }
                 val loaded = withContext(Dispatchers.IO) { agentTaskClient().getTask(id) }
                 activeAgentTask = loaded
                 selectAgentTask(loaded.id)
@@ -2298,6 +2360,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var showMemoryManager by remember { mutableStateOf(false) }
     var showAutomationManager by remember { mutableStateOf(false) }
     var showSkillManager by remember { mutableStateOf(false) }
+    var showProjectManager by remember { mutableStateOf(false) }
     var showAmbientSettings by remember { mutableStateOf(false) }
     val ambientPrefs = remember(context) { context.getSharedPreferences("nexus_ambient", 0) }
     var ambientPreset by remember { mutableStateOf(ambientPrefs.getString("preset", "red") ?: "red") }
@@ -2533,6 +2596,11 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                 showAgentConsole = true
                                 topMenuExpanded = false
                                 vm.refreshAgentConsole()
+                            })
+                            DropdownMenuItem(text = { Text("Проекты NEXUS") }, onClick = {
+                                showProjectManager = true
+                                topMenuExpanded = false
+                                vm.refreshProjects()
                             })
                             DropdownMenuItem(text = { Text("Навыки NEXUS") }, onClick = {
                                 showSkillManager = true
@@ -3679,6 +3747,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     if (showMemoryManager) MemoryManagerDialog(vm) { showMemoryManager = false }
     if (showAutomationManager) AutomationManagerDialog(vm) { showAutomationManager = false }
     if (showSkillManager) SkillManagerDialog(vm) { showSkillManager = false }
+    if (showProjectManager) ProjectManagerDialog(vm) { showProjectManager = false }
 
     renameTarget?.let { target ->
         AlertDialog(
@@ -3903,6 +3972,64 @@ private fun MemoryManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
             },
             dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Отмена", color = Muted) } }
         )
+    }
+}
+
+@Composable
+private fun ProjectManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
+    var deleteTarget by remember { mutableStateOf<NexusProject?>(null) }
+    LaunchedEffect(Unit) { vm.refreshProjects() }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxWidth(0.96f).fillMaxHeight(0.88f), color = Panel, shape = RoundedCornerShape(20.dp)) {
+            Column(Modifier.fillMaxSize().padding(15.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("ПРОЕКТЫ NEXUS", color = MainText, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    TextButton(onClick = onDismiss) { Text("Закрыть", color = Muted) }
+                }
+                Text("Проект хранит постоянный контекст: цель, ограничения, важные решения и материалы. При запуске задачи в проекте этот контекст передаётся автономному агенту.",
+                    color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
+                OutlinedTextField(vm.projectNameDraft, { vm.projectNameDraft = it.take(100) }, Modifier.fillMaxWidth(),
+                    singleLine = true, label = { Text("Название проекта") })
+                OutlinedTextField(vm.projectDescriptionDraft, { vm.projectDescriptionDraft = it.take(500) }, Modifier.fillMaxWidth(),
+                    singleLine = true, label = { Text("Краткое описание") })
+                OutlinedTextField(vm.projectContextDraft, { vm.projectContextDraft = it.take(12000) }, Modifier.fillMaxWidth(),
+                    minLines = 3, maxLines = 5, label = { Text("Контекст, цели, требования и ограничения") })
+                Button(onClick = { vm.saveProject() }, enabled = !vm.projectBusy && vm.agentServerConfigured && vm.projectNameDraft.isNotBlank()) {
+                    Text("Создать проект")
+                }
+                vm.projectMessage?.let { Text(it, color = Muted, fontSize = 10.sp) }
+                Divider(color = DividerTone)
+                Text("МОИ ПРОЕКТЫ · ${vm.nexusProjects.size}", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    items(vm.nexusProjects, key = { it.id }) { project ->
+                        Column(Modifier.fillMaxWidth().background(PanelRaised, RoundedCornerShape(10.dp)).padding(10.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(project.name, color = MainText, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                                Text(if (project.status == "active") "АКТИВЕН" else "АРХИВ", color = Muted, fontSize = 8.sp)
+                            }
+                            Text("${project.description} · Задач: ${project.taskCount}", color = Muted, fontSize = 9.sp)
+                            Text(project.context, color = MainText, fontSize = 10.sp, maxLines = 4)
+                            Row {
+                                TextButton(onClick = { vm.archiveProject(project) }, enabled = !vm.projectBusy) {
+                                    Text(if (project.status == "active") "В архив" else "Восстановить", color = Blue, fontSize = 10.sp)
+                                }
+                                TextButton(onClick = { deleteTarget = project }, enabled = !vm.projectBusy) {
+                                    Text("Удалить", color = Color(0xFFE5A0A0), fontSize = 10.sp)
+                                }
+                            }
+                        }
+                    }
+                    if (vm.nexusProjects.isEmpty()) item { Text("Проектов пока нет. Создай первый выше.", color = Muted, fontSize = 10.sp) }
+                }
+            }
+        }
+    }
+    deleteTarget?.let { project ->
+        AlertDialog(onDismissRequest = { deleteTarget = null }, containerColor = Panel,
+            title = { Text("Удалить проект?", color = MainText) },
+            text = { Text("Задачи проекта останутся в истории, но потеряют связь с проектом. ${project.name}", color = Muted) },
+            confirmButton = { TextButton(onClick = { vm.deleteProject(project.id); deleteTarget = null }) { Text("Удалить", color = Color(0xFFE5A0A0)) } },
+            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Отмена", color = Muted) } })
     }
 }
 
