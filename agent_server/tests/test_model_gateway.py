@@ -3,7 +3,8 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -153,6 +154,39 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ModelGatewayError):
             await gateway.complete("system", "user")
         self.assertEqual(len(calls), 1)
+
+    async def test_task_manual_model_selection_restricts_all_task_llm_calls(self):
+        models = [
+            ModelConfig(id="user-selected", base_url="https://provider.example/v1",
+                        model="selected-model", api_key="secret"),
+            ModelConfig(id="user-other", base_url="https://provider.example/v1",
+                        model="other-model", api_key="secret"),
+        ]
+        observed = {}
+
+        class CapturingGateway:
+            def __init__(self, models):
+                observed["models"] = models
+
+            async def complete_json(self, system, user, purpose):
+                return {"ok": True}, SimpleNamespace(
+                    provider_id=self.models[0].id, model=self.models[0].model, usage={}
+                )
+
+            def __init__(self, models):
+                self.models = models
+                observed["models"] = models
+
+        token = main._TASK_MODEL_SELECTION.set("user-selected")
+        try:
+            with patch.object(main, "run_db", new=AsyncMock(return_value=models)), \
+                 patch.object(main, "ModelGateway", CapturingGateway):
+                result = await main.llm_json("system", "user", purpose="planning")
+        finally:
+            main._TASK_MODEL_SELECTION.reset(token)
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual([model.id for model in observed["models"]], ["user-selected"])
 
     async def test_rejects_non_object_json(self):
         def handler(request):
