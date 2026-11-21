@@ -165,9 +165,6 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         observed = {}
 
         class CapturingGateway:
-            def __init__(self, models):
-                observed["models"] = models
-
             async def complete_json(self, system, user, purpose):
                 return {"ok": True}, SimpleNamespace(
                     provider_id=self.models[0].id, model=self.models[0].model, usage={}
