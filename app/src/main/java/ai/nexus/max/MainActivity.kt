@@ -1307,12 +1307,12 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun createAgentTask(prompt: String, projectId: String? = null) {
+    fun createAgentTask(prompt: String, projectId: String? = null, contextText: String = "") {
         if (agentBusy || agentRefreshing) return
         agentBusy = true
         viewModelScope.launch {
             try {
-                val id = withContext(Dispatchers.IO) { agentTaskClient().createTask(prompt, projectId = projectId) }
+                val id = withContext(Dispatchers.IO) { agentTaskClient().createTask(prompt, projectId = projectId, contextText = contextText) }
                 val loaded = withContext(Dispatchers.IO) { agentTaskClient().getTask(id) }
                 activeAgentTask = loaded
                 selectAgentTask(loaded.id)
