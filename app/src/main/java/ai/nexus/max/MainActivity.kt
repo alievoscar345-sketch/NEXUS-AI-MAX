@@ -550,6 +550,12 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var automationMessage by mutableStateOf<String?>(null)
         private set
+    var automationRuns by mutableStateOf<List<NexusAutomationRun>>(emptyList())
+        private set
+    var automationRunsForId by mutableStateOf<String?>(null)
+        private set
+    var automationRunsBusy by mutableStateOf(false)
+        private set
 
 
     @Volatile private var agentEventStreamCall: okhttp3.Call? = null
@@ -969,6 +975,17 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) {
                 automationMessage = e.message ?: "Не удалось загрузить автоматизации."
             } finally { automationBusy = false }
+        }
+    }
+
+    fun refreshAutomationRuns(id: String) {
+        if (automationRunsBusy) return
+        automationRunsBusy = true
+        automationRunsForId = id
+        viewModelScope.launch {
+            try { automationRuns = withContext(Dispatchers.IO) { agentTaskClient().listAutomationRuns(id) } }
+            catch (e: Exception) { automationMessage = e.message ?: "Не удалось загрузить историю запусков." }
+            finally { automationRunsBusy = false }
         }
     }
 
@@ -4158,6 +4175,7 @@ private fun SkillManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
 
 @Composable
 private fun AutomationManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
+    var expandedHistoryId by remember { mutableStateOf<String?>(null) }
     var name by remember { mutableStateOf("") }
     var prompt by remember { mutableStateOf("") }
     var scheduleType by remember { mutableStateOf("daily") }
@@ -4263,6 +4281,25 @@ private fun AutomationManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                             Text("Следующий запуск: ${next ?: "не запланирован"} · ${item.timezone}",
                                 color = Muted, fontSize = 9.sp)
                             item.lastTaskStatus?.let { Text("Последняя задача: $it", color = Muted, fontSize = 9.sp) }
+                            TextButton(onClick = {
+                                expandedHistoryId = if (expandedHistoryId == item.id) null else item.id
+                                if (expandedHistoryId == item.id) vm.refreshAutomationRuns(item.id)
+                            }, enabled = !vm.automationRunsBusy) {
+                                Text(if (expandedHistoryId == item.id) "Скрыть историю" else "История запусков", color = Blue, fontSize = 9.sp)
+                            }
+                            if (expandedHistoryId == item.id) {
+                                if (vm.automationRunsBusy) Text("Загрузка истории…", color = Muted, fontSize = 9.sp)
+                                vm.automationRuns.forEach { run ->
+                                    val runTime = runCatching { Instant.ofEpochMilli((run.scheduledFor * 1000).toLong())
+                                        .atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("dd.MM.yy HH:mm")) }.getOrDefault("—")
+                                    Text("$runTime · ${run.taskStatus}", color = Muted, fontSize = 9.sp)
+                                    (run.taskSummary.ifBlank { run.taskError }).takeIf { it.isNotBlank() }?.let {
+                                        Text(it, color = MainText, fontSize = 9.sp, maxLines = 2)
+                                    }
+                                }
+                                if (!vm.automationRunsBusy && vm.automationRunsForId == item.id && vm.automationRuns.isEmpty())
+                                    Text("Запусков пока нет.", color = Muted, fontSize = 9.sp)
+                            }
                             Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                                 TextButton(onClick = { vm.controlAutomation(item.id, "run") }, enabled = !vm.automationBusy) {
                                     Text("Запустить", color = Blue, fontSize = 9.sp)
