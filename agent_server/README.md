@@ -156,3 +156,17 @@ Reusable skills are owner-scoped instruction sets with name, description, catego
 - `GET /v1/skills`, `POST /v1/skills`, `PATCH /v1/skills/{id}`, and `DELETE /v1/skills/{id}` manage skills.
 - Maximum 100 projects and 100 skills per account; skill instructions are capped at 6 KB.
 
+
+## Isolated code execution
+
+The autonomous planner can request a `code_execute` step. The backend never evaluates task commands in its own process; it starts a short-lived Docker container with a preloaded image and an argument-array command. No shell string is accepted. Executable names are allowlisted to Python, pytest, Node/npm, Java/javac, Gradle, and `./gradlew`.
+
+The runner image definition is in `sandbox/Dockerfile`. Build it, push it to a registry, and configure the exact `repository@sha256:...` digest as `NEXUS_SANDBOX_IMAGE`. The image must already be present on the Docker host because execution uses `--pull=never`.
+
+The backend image includes the Docker CLI. To enable execution, the deployment operator must additionally:
+1. Mount the host Docker socket into the backend container at `/var/run/docker.sock`.
+2. Add the socket's host group ID as a supplementary group for the backend container's non-root `nexus` user.
+3. Ensure the backend workspace is a host bind mount. Set `NEXUS_SANDBOX_HOST_WORKSPACE_ROOT` to the corresponding host-side path for the configured `NEXUS_AGENT_WORKSPACE` directory when container and host paths differ.
+4. Preload the exact sandbox image digest on the same Docker daemon.
+
+The Docker socket is a privileged host interface. Only enable this on a trusted, single-user deployment with the backend API key protected. Do not expose the Docker socket to the sandbox container, and do not enable this on a shared or untrusted multi-user service. If any prerequisite is missing, code execution returns a blocked result and the agent can continue file-based work without claiming that code was run.
