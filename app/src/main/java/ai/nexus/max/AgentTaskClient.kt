@@ -31,6 +31,18 @@ data class AgentTaskStep(val index: Int, val title: String, val action: String, 
 data class AgentApproval(val id: String, val taskId: String, val description: String, val status: String)
 data class NexusGitHubIntegration(val connected: Boolean, val repoFullName: String, val githubLogin: String, val defaultBranch: String)
 data class AgentWorkspaceEntry(val name: String, val type: String, val bytes: Long?)
+data class AgentCheckpointFile(
+    val path: String, val bytes: Long, val sha256: String,
+    val revision: Int? = null, val contentType: String = "", val isBinary: Boolean = false
+)
+data class AgentTaskCheckpoint(
+    val id: String, val sequence: Int, val stepId: String, val reason: String,
+    val createdAt: Double, val archiveBytes: Long, val archiveSha256: String,
+    val isLatest: Boolean, val planSteps: Int, val completedSteps: Int,
+    val workspaceFiles: List<AgentCheckpointFile>, val projectFiles: List<AgentCheckpointFile>,
+    val artifacts: List<AgentArtifact>, val legacy: Boolean, val available: Boolean,
+    val error: String
+)
 data class AgentArtifact(val name: String, val bytes: Long, val contentType: String, val sha256: String)
 data class NexusMemory(val id: String, val title: String, val content: String, val category: String, val pinned: Boolean, val updatedAt: Double)
 data class MemorySuggestion(val title: String, val content: String, val category: String)
@@ -215,6 +227,47 @@ class AgentTaskClient(
             AgentTaskSnapshot(item.optString("id"), item.optString("status"), item.optString("prompt"),
                 item.optString("summary"), item.optString("error"), emptyList(), emptyList())
         }
+    }
+
+    fun listTaskCheckpoints(taskId: String): Pair<Int, List<AgentTaskCheckpoint>> {
+        val obj = request("GET", listOf("v1", "tasks", taskId, "checkpoints"))
+        val items = obj.optJSONArray("checkpoints") ?: JSONArray()
+        val checkpoints = (0 until items.length()).mapNotNull { index ->
+            val item = items.optJSONObject(index) ?: return@mapNotNull null
+            fun files(key: String, project: Boolean = false): List<AgentCheckpointFile> {
+                val array = item.optJSONArray(key) ?: JSONArray()
+                return (0 until array.length()).mapNotNull { fileIndex ->
+                    val file = array.optJSONObject(fileIndex) ?: return@mapNotNull null
+                    AgentCheckpointFile(
+                        path = file.optString(if (key == "artifacts") "name" else "path"),
+                        bytes = file.optLong(if (key == "artifacts") "bytes" else if (project) "size_bytes" else "bytes"),
+                        sha256 = file.optString("sha256"),
+                        revision = if (file.has("revision")) file.optInt("revision") else null,
+                        contentType = file.optString("content_type"),
+                        isBinary = file.optBoolean("is_binary")
+                    )
+                }
+            }
+            val artifactFiles = files("artifacts")
+            AgentTaskCheckpoint(
+                id = item.optString("id"), sequence = item.optInt("sequence"),
+                stepId = item.optString("step_id"), reason = item.optString("reason"),
+                createdAt = item.optDouble("created_at"), archiveBytes = item.optLong("archive_bytes"),
+                archiveSha256 = item.optString("archive_sha256"), isLatest = item.optBoolean("is_latest"),
+                planSteps = item.optInt("plan_steps"), completedSteps = item.optInt("completed_steps"),
+                workspaceFiles = files("workspace_files"), projectFiles = files("project_files", project = true),
+                artifacts = artifactFiles.map { AgentArtifact(it.path, it.bytes, it.contentType, it.sha256) },
+                legacy = item.optBoolean("legacy"), available = item.optBoolean("available", true),
+                error = item.optString("error")
+            )
+        }
+        return obj.optInt("latest_sequence") to checkpoints
+    }
+
+    fun restoreTaskCheckpoint(taskId: String, checkpointId: String, expectedLatestSequence: Int): String {
+        require(expectedLatestSequence >= 1) { "Checkpoint history is empty" }
+        return request("POST", listOf("v1", "tasks", taskId, "checkpoints", checkpointId, "restore"),
+            JSONObject().put("expected_latest_sequence", expectedLatestSequence))["status"]?.toString().orEmpty()
     }
 
     fun cancelTask(taskId: String): String =
