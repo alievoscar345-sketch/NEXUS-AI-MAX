@@ -54,6 +54,9 @@ jobs:
       - name: Install Android packages
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
 
+      - name: Validate backend Python syntax
+        run: python -m compileall -q agent_server/app agent_server/tests
+
       - name: Run Android unit tests
         run: gradle --no-daemon :app:testDebugUnitTest
 
