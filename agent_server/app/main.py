@@ -742,11 +742,12 @@ async def test_provider(provider_id: str, owner_id: str = Depends(auth)):
             "status": "connected", "latency_ms": round((time.monotonic() - started) * 1000)}
 
 
-@app.post("/v1/tasks", dependencies=[Depends(auth)])
-def create_task(body: NewTask, owner_id: str = Depends(auth)):
+def _create_task_record(body: NewTask, owner_id: str) -> dict[str, Any]:
     tid = str(uuid.uuid4())
     now = time.time()
     with db() as c:
+        # Serialize the idempotency check and insert to make concurrent retries deterministic.
+        c.execute("BEGIN IMMEDIATE")
         if body.idempotency_key:
             existing = c.execute("SELECT id,status FROM tasks WHERE owner_id=? AND client_request_key=?",
                                  (owner_id, body.idempotency_key)).fetchone()
@@ -756,8 +757,16 @@ def create_task(body: NewTask, owner_id: str = Depends(auth)):
             max_steps,client_request_key,owner_id) VALUES(?,?,?,?,?,?,?,?,?)""",
             (tid, body.prompt, "queued", now, now, MAX_STEP_ATTEMPTS,
              body.max_steps, body.idempotency_key or "", owner_id))
-    event(tid, "created", "Task queued in durable cloud worker")
+        event_time = time.time()
+        c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                  (tid, event_time, "created", "Task queued in durable cloud worker"))
+        c.execute("UPDATE tasks SET updated_at=? WHERE id=?", (event_time, tid))
     return {"id": tid, "status": "queued"}
+
+
+@app.post("/v1/tasks", dependencies=[Depends(auth)])
+def create_task(body: NewTask, owner_id: str = Depends(auth)):
+    return _create_task_record(body, owner_id)
 
 
 @app.get("/v1/tasks", dependencies=[Depends(auth)])
