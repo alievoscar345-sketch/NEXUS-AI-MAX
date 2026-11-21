@@ -58,6 +58,11 @@ def db():
     return c
 
 
+async def run_db(fn, *args):
+    """Run a complete synchronous DB operation outside the event-loop thread."""
+    return await asyncio.to_thread(fn, *args)
+
+
 def _columns(c: sqlite3.Connection, table: str) -> set[str]:
     return {row["name"] for row in c.execute(f"PRAGMA table_info({table})").fetchall()}
 
@@ -234,12 +239,12 @@ def provider_models_for_owner(owner_id: str) -> list[ModelConfig]:
 
 async def llm_json(system: str, user: str, purpose: str = "general",
                    task_id: str | None = None, owner_id: str = "personal") -> dict[str, Any]:
-    models = provider_models_for_owner(owner_id)
+    models = await run_db(provider_models_for_owner, owner_id)
     if not models:
         raise ModelGatewayError("No model provider is configured for this account")
     parsed, result = await ModelGateway(models=models).complete_json(system, user, purpose)
     if task_id:
-        event(task_id, "model_call", json.dumps({
+        await run_db(event, task_id, "model_call", json.dumps({
             "purpose": purpose, "provider": result.provider_id,
             "model": result.model, "usage": result.usage,
         }, ensure_ascii=False)[:1500])
@@ -522,7 +527,7 @@ def claim_task() -> str | None:
 
 async def worker():
     while True:
-        tid = claim_task()
+        tid = await run_db(claim_task)
         if tid:
             await process(tid)
         else:
@@ -531,8 +536,8 @@ async def worker():
 
 @asynccontextmanager
 async def lifespan(app):
-    init_db()
-    recover_interrupted_tasks()
+    await run_db(init_db)
+    await run_db(recover_interrupted_tasks)
     task = asyncio.create_task(worker())
     yield
     task.cancel()
@@ -593,7 +598,7 @@ def validate_chat_messages(messages: list[dict[str, Any]]) -> bool:
 @app.post("/v1/chat/completions", dependencies=[Depends(auth)])
 async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(auth)):
     requires_vision = validate_chat_messages(body.messages)
-    models = provider_models_for_owner(owner_id)
+    models = await run_db(provider_models_for_owner, owner_id)
     if not models:
         raise HTTPException(503, "No model provider is configured for this account")
     try:
@@ -615,7 +620,7 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
 
 @app.get("/v1/models", dependencies=[Depends(auth)])
 async def list_available_models(owner_id: str = Depends(auth)):
-    models = provider_models_for_owner(owner_id)
+    models = await run_db(provider_models_for_owner, owner_id)
     return {"models": [{
         "provider_id": model.id,
         "model": model.model,
@@ -667,7 +672,7 @@ async def delete_provider(provider_id: str, owner_id: str = Depends(auth)):
 
 @app.post("/v1/providers/{provider_id}/test", dependencies=[Depends(auth)])
 async def test_provider(provider_id: str, owner_id: str = Depends(auth)):
-    models = [m for m in provider_models_for_owner(owner_id) if m.id == "user-" + provider_id]
+    models = [m for m in await run_db(provider_models_for_owner, owner_id) if m.id == "user-" + provider_id]
     if not models:
         raise HTTPException(404, "Provider not found")
     started = time.monotonic()
