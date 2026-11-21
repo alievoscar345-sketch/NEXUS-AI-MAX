@@ -11,7 +11,7 @@ Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent 
 - Multi-provider routing using task category, configured benchmark metadata, cost/latency metadata, and provider priority.
 - Limited provider fallback for network failures, timeouts, and transient HTTP errors. No fallback after streamed output has started.
 - Server-sent event streams for chat responses and task events.
-- Encrypted per-owner provider credentials; API keys are never returned by provider or model listing endpoints.
+- Encrypted per-owner provider credentials and GitHub repository tokens; secrets are never returned by status or listing endpoints.
 - Standard chat endpoint with bounded text and inline image payloads. The Android app extracts supported document text locally and sends it as message context.
 - Provider connectivity checks and an image-understanding probe that can confirm and enable the provider's vision capability.
 - Task-scoped workspace files plus binary artifact publication, listing, text preview, SHA-256 metadata, and authenticated downloads; Android can save original files such as APKs to device storage.
@@ -22,7 +22,7 @@ Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent 
 
 ## Not yet implemented
 
-Avito Messenger/listing connectors, general browser automation, production-grade VM/microVM isolation, push notifications, and automatic execution of approved external actions. Approval currently records the decision and resumes the task; it does not send messages, publish listings, make purchases, or modify third-party accounts. Do not connect a real Avito account until official API credentials and permissions are configured.
+Avito Messenger/listing connectors, general browser automation, GitHub Actions workflow dispatch/artifact polling, automatic pull-request creation, production-grade VM/microVM isolation, push notifications, and automatic execution of approved external actions. Approval currently records the decision and resumes the task; it does not send messages, publish listings, make purchases, or modify third-party accounts. Do not connect a real Avito account until official API credentials and permissions are configured.
 
 ## Deployment and security
 
@@ -62,6 +62,22 @@ Provider base URLs are HTTPS-only and host-allowlisted: AnyModel, OpenRouter, Op
 Provider API keys are encrypted in SQLite using AES-256-GCM with a fresh 96-bit nonce per write. Set `NEXUS_CREDENTIAL_ENCRYPTION_KEY` to a base64-encoded 32-byte random key (for example, generate one with `openssl rand -base64 32`). Keep it outside the database and repository.
 
 The current bearer-token authentication maps requests to the fixed owner `personal`. This is a single-user prototype, not multi-account authentication. A verified account/JWT layer must replace this mapping before the service is opened to multiple users; client-supplied owner IDs are never trusted.
+
+## GitHub repository integration
+
+A single repository can be connected to the single-user account through the Android settings screen:
+
+- `POST /v1/github/connect` — verify a GitHub token and selected `owner/repository`, then encrypt and store the token.
+- `GET /v1/github/status` — return repository/account metadata only; never returns the token.
+- `DELETE /v1/github/connect` — delete the stored encrypted token and integration.
+- `GET /v1/github/files` and `GET /v1/github/file?path=...&branch=...` — inspect repository files.
+- Task actions `github_create_branch`, `github_list_files`, `github_read_file`, and `github_write_file` let the agent work with the connected repository.
+
+Use a GitHub fine-grained personal access token restricted to the one selected repository, with Metadata read-only and Contents read/write. The token is transmitted only to the configured HTTPS NEXUS server and encrypted at rest using the same AES-256-GCM credential key as provider secrets. Never put it in a task prompt or chat message.
+
+Each coding task gets a deterministic `nexus-agent/task-<task-id>` feature branch based on the repository's default branch. The worker checks its active lease before creating a branch or committing a file. Writes are accepted only on `nexus-agent/*` branches; `main`, `master`, and `nexus-1.0-development` are never write targets. Protected/default branches remain readable for inspection. The integration does not merge branches or create pull requests. GitHub's own token permissions and repository branch rules remain authoritative.
+
+The current implementation edits UTF-8 text files through the GitHub Contents API (1 MB per-file text limit). It is not a full Git clone and does not yet transfer binary files or dispatch/poll GitHub Actions builds.
 
 ## Chat and attachments
 
@@ -121,7 +137,7 @@ The feature returns a blocked result instead of pretending execution occurred wh
 
 For software-development tasks, the planner now prioritizes explicit requirements and acceptance criteria, workspace inspection, architecture/file layout, ordered file-level implementation, build configuration, tests, and setup documentation. It maintains a requirements-to-deliverables progress document, reviews written files, and can request independent architect/implementer/critic review before finalizing. The planner has no fixed total-step ceiling. `max_steps` is legacy request metadata only and does not truncate plans or dynamically appended work.
 
-Important limitation: the agent can now execute allowlisted commands in an optional isolated Docker runner when the operator provisions it. Without that runner, it can author source code and test files but cannot execute them. Repository checkout/branch integration and production-grade VM/microVM isolation are still missing.
+Important limitation: the agent can now execute allowlisted commands in an optional isolated Docker runner when the operator provisions it. Without that runner, it can author source code and test files but cannot execute them. Full Git clone/checkout, GitHub Actions workflow dispatch and artifact polling, automatic pull-request creation, and production-grade VM/microVM isolation are still missing. The current GitHub API integration can inspect a selected repository, create a per-task feature branch, read UTF-8 files, and commit UTF-8 file updates.
 
 ### Long-running background work
 
