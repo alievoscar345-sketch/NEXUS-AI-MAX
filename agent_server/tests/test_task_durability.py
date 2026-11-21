@@ -109,6 +109,25 @@ class DurableTaskTests(unittest.TestCase):
                                 ("task-expired-claim",)).fetchone()
         self.assertIsNone(main._claim_step("task-expired-claim", step["id"]))
 
+    def test_worker_task_transitions_reject_lost_lease(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("task-stale-transition", "stale transition", "running", now, now, "new-worker", now + 600),
+            )
+        self.assertFalse(main._set_task_planning("task-stale-transition"))
+        self.assertFalse(main._set_task_waiting_for_approval("task-stale-transition"))
+        self.assertFalse(main._set_task_retry_wait("task-stale-transition", now + 30))
+        self.assertFalse(main._complete_task("task-stale-transition", "late", "[]"))
+        with main.db() as conn:
+            row = conn.execute("SELECT status,lease_owner,summary FROM tasks WHERE id=?",
+                               ("task-stale-transition",)).fetchone()
+        self.assertEqual(row["status"], "running")
+        self.assertEqual(row["lease_owner"], "new-worker")
+        self.assertEqual(row["summary"], "")
+
     def test_step_failure_write_rejects_lost_lease(self):
         now = time.time()
         with main.db() as conn:
@@ -456,6 +475,7 @@ class DurableTaskTests(unittest.TestCase):
                 "INSERT INTO tasks(id,prompt,status,created_at,updated_at) VALUES(?,?,?,?,?)",
                 ("task-thread-process", "finish an empty task", "queued", now, now),
             )
+        self.assertEqual(main.claim_task(), "task-thread-process")
 
         loop_thread = threading.get_ident()
         observed = []

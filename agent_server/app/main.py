@@ -538,7 +538,9 @@ async def process(tid: str):
     started = time.monotonic()
     try:
         if not row["plan_json"] or row["plan_json"] == "[]":
-            await run_db(_set_task_planning, tid)
+            planning = await run_db(_set_task_planning, tid)
+            if not planning:
+                return
             await run_db(event, tid, "status", "Planning task")
             plan = await llm_json(
                 'You are NEXUS Agent Planner. Return strict JSON only: {"summary":"...","steps":[{"title":"...","action":"web_search|fetch_url|save_artifact|draft_external_action","input":{}}]}. Use only listed actions. For publishing, messaging, purchases or account changes use draft_external_action. Never claim external actions succeeded.',
