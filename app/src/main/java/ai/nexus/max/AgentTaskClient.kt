@@ -458,27 +458,6 @@ class AgentTaskClient(
         request("POST", listOf("v1", "approvals", approvalId),
             JSONObject().put("approved", approved).put("note", note.take(1000)))["status"]?.toString().orEmpty()
 
-    private fun requestBytes(
-        segments: List<String>,
-        query: Map<String, String> = emptyMap()
-    ): ByteArray {
-        val builder = base.newBuilder()
-        segments.forEach { segment -> builder.addPathSegment(segment) }
-        query.forEach { (key, value) -> builder.addQueryParameter(key, value) }
-        val request = Request.Builder().url(builder.build())
-            .header("Authorization", "Bearer $token")
-            .header("Accept", "application/octet-stream")
-            .get().build()
-        http.newCall(request).execute().use { response ->
-            val bytes = response.body?.bytes() ?: ByteArray(0)
-            if (!response.isSuccessful) {
-                val detail = try { JSONObject(bytes.toString(Charsets.UTF_8)).optString("detail") } catch (_: Exception) { "" }
-                throw IOException(detail.ifBlank { "Artifact download returned HTTP ${response.code}" })
-            }
-            return bytes
-        }
-    }
-
     private fun request(
         method: String,
         segments: List<String>,
