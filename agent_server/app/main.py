@@ -760,7 +760,10 @@ def _publish_workspace_artifact(tid: str, relative_path: str, filename: str = ""
 
 
 def _task_workspace_root(tid: str) -> Path:
-    root = (WORKSPACE / tid).resolve()
+    candidate = WORKSPACE / tid
+    if candidate.is_symlink():
+        raise ValueError("Task workspace root cannot be a symbolic link")
+    root = candidate.resolve()
     if root.parent != WORKSPACE.resolve():
         raise ValueError("Invalid task workspace")
     return root
@@ -1108,6 +1111,8 @@ def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True) -> dic
     if not checkpoint:
         return None
     archive = Path(checkpoint["archive_path"])
+    if archive.is_symlink():
+        raise ValueError("Checkpoint archive cannot be a symbolic link")
     try:
         archive.resolve().relative_to(CHECKPOINT_ROOT)
     except ValueError as exc:
