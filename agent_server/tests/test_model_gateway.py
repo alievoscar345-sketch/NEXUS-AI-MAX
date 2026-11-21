@@ -1,7 +1,14 @@
 import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
 import httpx
 
+from app import main
 from app.model_gateway import ModelConfig, ModelGateway, ModelGatewayError, infer_task_type
 
 
@@ -17,6 +24,96 @@ def config(name="test", purposes=("general", "planning", "evaluation"), priority
 
 
 class GatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stream_parses_content_and_done(self):
+        body = (
+            'data: {"choices":[{"index":0,"delta":{"role":"assistant"}}]}\n\n'
+            'data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}\n\n'
+            'data: [DONE]\n\n'
+        )
+        def handler(request):
+            self.assertTrue(json.loads(request.content)["stream"])
+            return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+        gateway = ModelGateway([config()], transport=httpx.MockTransport(handler))
+        chunks = [chunk async for chunk in gateway.stream_messages([{"role":"user","content":"hi"}])]
+        self.assertEqual(chunks[1]["choices"][0]["delta"]["content"], "hello")
+        self.assertEqual(len(chunks), 2)
+
+    async def test_stream_rejects_oversized_sse_event(self):
+        body = "data: " + ("x" * 1_000_001) + "\n\n"
+        gateway = ModelGateway([config()], transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, text=body)
+        ))
+        with self.assertRaises(ModelGatewayError):
+            _ = [chunk async for chunk in gateway.stream_messages([{"role":"user","content":"hi"}])]
+
+    async def test_stream_rejects_invalid_choice_index(self):
+        body = 'data: {"choices":[{"index":"bad","delta":{"content":"x"}}]}\n\n'
+        gateway = ModelGateway([config()], transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, text=body)
+        ))
+        with self.assertRaises(ModelGatewayError):
+            _ = [chunk async for chunk in gateway.stream_messages([{"role":"user","content":"hi"}])]
+
+    async def test_stream_falls_back_before_first_chunk(self):
+        calls = []
+        def handler(request):
+            calls.append(1)
+            if len(calls) == 1:
+                raise httpx.ConnectError("offline", request=request)
+            return httpx.Response(200, text='data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\ndata: [DONE]\n\n')
+        gateway = ModelGateway([config("first"), config("second", priority=2)],
+                               transport=httpx.MockTransport(handler))
+        chunks = [chunk async for chunk in gateway.stream_messages([{"role":"user","content":"hi"}])]
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(chunks[0]["choices"][0]["delta"]["content"], "ok")
+
+    async def test_stream_does_not_fallback_after_partial_output(self):
+        calls = []
+        class BrokenStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\n\n'
+                raise httpx.ReadError("connection dropped")
+            async def aclose(self):
+                return None
+        def broken_handler(request):
+            calls.append(1)
+            return httpx.Response(200, stream=BrokenStream())
+        gateway = ModelGateway([config("first"), config("second", priority=2)],
+                               transport=httpx.MockTransport(broken_handler))
+        chunks = [chunk async for chunk in gateway.stream_messages([{"role":"user","content":"hi"}])]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(chunks[0]["choices"][0]["delta"]["content"], "partial")
+        self.assertEqual(chunks[-1]["error"]["type"], "provider_stream_error")
+
+    async def test_chat_endpoint_returns_sse_when_stream_requested(self):
+        provider_body = (
+            'data: {"choices":[{"index":0,"delta":{"content":"streamed"}}]}\n\n'
+            'data: [DONE]\n\n'
+        )
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, text=provider_body,
+                                           headers={"content-type": "text/event-stream"})
+        )
+        gateway = ModelGateway([config()], transport=transport)
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(main, "DB_PATH", Path(temp) / "nexus.sqlite3"), \
+                 patch.object(main, "API_KEY", "test-key"), \
+                 patch.object(main, "provider_models_for_owner", return_value=[config()]), \
+                 patch.object(main, "ModelGateway", return_value=gateway):
+                main.init_db()
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=main.app), base_url="http://nexus.test"
+                ) as client:
+                    response = await client.post(
+                        "/v1/chat/completions",
+                        headers={"Authorization": "Bearer test-key"},
+                        json={"messages": [{"role": "user", "content": "hello"}], "stream": True},
+                    )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/event-stream", response.headers["content-type"])
+        self.assertIn('"content":"streamed"', response.text)
+        self.assertTrue(response.text.rstrip().endswith("data: [DONE]"))
+
     async def test_parses_json_completion(self):
         def handler(request):
             payload = {"choices":[{"message":{"content":'{"summary":"ok"}'}}],"usage":{"total_tokens":12}}
@@ -58,6 +155,36 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             await gateway.complete("system", "user")
         self.assertEqual(len(calls), 1)
 
+    async def test_task_manual_model_selection_restricts_all_task_llm_calls(self):
+        models = [
+            ModelConfig(id="user-selected", base_url="https://provider.example/v1",
+                        model="selected-model", api_key="secret"),
+            ModelConfig(id="user-other", base_url="https://provider.example/v1",
+                        model="other-model", api_key="secret"),
+        ]
+        observed = {}
+
+        class CapturingGateway:
+            async def complete_json(self, system, user, purpose):
+                return {"ok": True}, SimpleNamespace(
+                    provider_id=self.models[0].id, model=self.models[0].model, usage={}
+                )
+
+            def __init__(self, models):
+                self.models = models
+                observed["models"] = models
+
+        token = main._TASK_MODEL_SELECTION.set("user-selected")
+        try:
+            with patch.object(main, "run_db", new=AsyncMock(return_value=models)), \
+                 patch.object(main, "ModelGateway", CapturingGateway):
+                result = await main.llm_json("system", "user", purpose="planning")
+        finally:
+            main._TASK_MODEL_SELECTION.reset(token)
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual([model.id for model in observed["models"]], ["user-selected"])
+
     async def test_rejects_non_object_json(self):
         def handler(request):
             return httpx.Response(200, json={"choices":[{"message":{"content":"[1,2]"}}]})
@@ -70,6 +197,30 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ModelGatewayError):
             await gateway.complete("system", "user", "coding")
 
+
+    def test_rejects_non_finite_benchmark_and_cost_metadata(self):
+        cases = [
+            {"benchmark_scores": {"general": float("nan")}},
+            {"benchmark_scores": {"general": float("inf")}},
+            {"cost_per_million_tokens": float("inf")},
+            {"latency_ms": float("nan")},
+            {"priority": -1},
+            {"priority": 100001},
+        ]
+        for metadata in cases:
+            with self.subTest(metadata=metadata):
+                item = {
+                    "id": "invalid", "base_url": "https://provider.example/v1",
+                    "model": "model", "api_key_env": "NEXUS_TEST_KEY",
+                }
+                item.update(metadata)
+                with patch.dict(
+                    os.environ,
+                    {"NEXUS_MODEL_PROVIDERS": json.dumps([item]), "NEXUS_TEST_KEY": "secret"},
+                ):
+                    with self.assertRaises(ModelGatewayError):
+                        from app.model_gateway import load_models
+                        load_models()
 
     async def test_selects_highest_benchmark_fit_for_task(self):
         calls = []

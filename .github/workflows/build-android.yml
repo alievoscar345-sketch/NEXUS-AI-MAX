@@ -1,7 +1,18 @@
 name: Build NEXUS AI APK
+run-name: NEXUS-${{ github.event.inputs.nexus_task_id || github.run_id }}-${{ github.sha }}
 
 on:
   workflow_dispatch:
+    inputs:
+      require_signed_release:
+        description: "Fail unless a signed release APK is produced"
+        required: false
+        default: false
+        type: boolean
+      nexus_task_id:
+        description: "NEXUS task ID for idempotent build tracking"
+        required: false
+        type: string
   push:
     branches: [nexus-1.0-development]
     tags: ['v*']
@@ -23,6 +34,7 @@ jobs:
       NEXUS_KEYSTORE_PASSWORD: ${{ secrets.NEXUS_KEYSTORE_PASSWORD }}
       NEXUS_KEY_ALIAS: ${{ secrets.NEXUS_KEY_ALIAS }}
       NEXUS_KEY_PASSWORD: ${{ secrets.NEXUS_KEY_PASSWORD }}
+      REQUIRE_SIGNED_RELEASE: ${{ inputs.require_signed_release || false }}
     steps:
       - uses: actions/checkout@v4
 
@@ -42,10 +54,18 @@ jobs:
       - name: Install Android packages
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
 
-      - name: Build debug APK for safe migration
+      - name: Validate backend Python syntax
+        run: python -m compileall -q agent_server/app agent_server/tests
+
+      - name: Run Android unit tests
+        run: gradle --no-daemon :app:testDebugUnitTest
+
+      - name: Build debug APK for development checks
+        if: ${{ inputs.require_signed_release != true }}
         run: gradle --no-daemon :app:assembleDebug
 
       - name: Upload debug APK
+        if: ${{ inputs.require_signed_release != true }}
         uses: actions/upload-artifact@v4
         with:
           name: NEXUS-AI-MAX-debug-apk
@@ -65,9 +85,24 @@ jobs:
               gradle --no-daemon :app:assembleRelease
             echo "APK_VARIANT=release" >> "$GITHUB_ENV"
           else
+            if [[ "$REQUIRE_SIGNED_RELEASE" == "true" ]]; then
+              echo "::error::Signed release requested, but one or more signing secrets are missing."
+              exit 1
+            fi
             echo "::warning::Release signing secrets are not configured. Release APK was not built."
             echo "APK_VARIANT=debug" >> "$GITHUB_ENV"
           fi
+
+      - name: Verify release APK signature
+        if: env.APK_VARIANT == 'release'
+        shell: bash
+        run: |
+          APK_PATH="$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -print -quit)"
+          if [[ -z "$APK_PATH" ]]; then
+            echo "::error::Release APK was not produced."
+            exit 1
+          fi
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK_PATH"
 
       - name: Upload release APK
         if: env.APK_VARIANT == 'release'

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -90,11 +91,20 @@ def load_models(allow_empty: bool = False) -> list[ModelConfig]:
             if not isinstance(scores, dict):
                 scores = {}
             try:
-                normalized_scores = {str(k): max(0.0, min(100.0, float(v))) for k, v in scores.items()}
+                normalized_scores = {}
+                for key, value in scores.items():
+                    score = float(value)
+                    if not math.isfinite(score):
+                        raise ValueError("Benchmark scores must be finite numbers")
+                    normalized_scores[str(key)] = max(0.0, min(100.0, score))
                 cost = float(item["cost_per_million_tokens"]) if item.get("cost_per_million_tokens") is not None else None
                 latency = float(item["latency_ms"]) if item.get("latency_ms") is not None else None
-                if cost is not None and cost < 0 or latency is not None and latency < 0:
-                    raise ValueError("Cost and latency cannot be negative")
+                priority = int(item.get("priority", 100))
+                if (cost is not None and (not math.isfinite(cost) or cost < 0)
+                        or latency is not None and (not math.isfinite(latency) or latency < 0)):
+                    raise ValueError("Cost and latency must be finite non-negative numbers")
+                if not 0 <= priority <= 100000:
+                    raise ValueError("Priority must be between 0 and 100000")
             except (TypeError, ValueError) as exc:
                 raise ModelGatewayError("Invalid benchmark, cost, or latency metadata") from exc
             configs.append(ModelConfig(
@@ -102,7 +112,7 @@ def load_models(allow_empty: bool = False) -> list[ModelConfig]:
                 base_url=str(item.get("base_url", "")).rstrip("/"),
                 model=str(item.get("model", "")).strip(),
                 api_key=os.getenv(key_env, "") if key_env else "",
-                priority=int(item.get("priority", 100)),
+                priority=priority,
                 purposes=tuple(str(x) for x in purposes),
                 enabled=bool(item.get("enabled", True)),
                 capabilities=tuple(str(x) for x in capabilities),
@@ -243,6 +253,133 @@ class ModelGateway:
                 break
             if index == len(candidates) - 1:
                 break
+        detail = type(last_error).__name__ if last_error else "unknown provider error"
+        if isinstance(last_error, httpx.HTTPStatusError):
+            detail = f"provider returned HTTP {last_error.response.status_code}"
+        raise ModelGatewayError(f"All eligible model providers failed ({detail})") from last_error
+
+    async def stream_messages(self, messages: list[dict[str, Any]], purpose: str = "general"):
+        """Yield OpenAI-compatible chunk payloads; retry providers only before output starts."""
+        text_parts: list[str] = []
+        requires_vision = False
+        for message in messages:
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, str):
+                text_parts.append(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+                        text_parts.append(part["text"])
+                    elif isinstance(part, dict) and part.get("type") == "image_url":
+                        requires_vision = True
+        task_type = "vision" if requires_vision else infer_task_type("\n".join(text_parts))
+        candidates = self._select(purpose, task_type, "vision" if requires_vision else None)
+        stream_id = "nexus-" + __import__("uuid").uuid4().hex
+        created = int(__import__("time").time())
+        last_error: Exception | None = None
+
+        for index, model in enumerate(candidates):
+            emitted = False
+            try:
+                timeout = httpx.Timeout(connect=15.0, read=120.0, write=30.0, pool=15.0)
+                async with httpx.AsyncClient(timeout=timeout, transport=self.transport) as client:
+                    async with client.stream(
+                        "POST",
+                        model.base_url + "/chat/completions",
+                        headers={"Authorization": "Bearer " + model.api_key,
+                                 "Accept": "text/event-stream"},
+                        json={"model": model.model, "temperature": 0.2,
+                              "messages": messages, "stream": True},
+                    ) as response:
+                        response.raise_for_status()
+                        data_lines: list[str] = []
+
+                        async def consume_event():
+                            nonlocal emitted
+                            if not data_lines:
+                                return None
+                            raw = "\n".join(data_lines)
+                            data_lines.clear()
+                            if len(raw.encode("utf-8")) > 1_000_000:
+                                raise ModelGatewayError("Provider streaming event exceeded the size limit")
+                            if raw.strip() == "[DONE]":
+                                return "done"
+                            try:
+                                payload = json.loads(raw)
+                            except (ValueError, TypeError) as exc:
+                                raise ModelGatewayError("Provider returned malformed streaming data") from exc
+                            if not isinstance(payload, dict):
+                                raise ModelGatewayError("Provider returned malformed streaming data")
+                            choices = payload.get("choices", [])
+                            if not isinstance(choices, list):
+                                raise ModelGatewayError("Provider returned malformed streaming choices")
+                            if not choices:
+                                usage = payload.get("usage")
+                                if isinstance(usage, dict):
+                                    emitted = True
+                                    return {"id": stream_id, "object": "chat.completion.chunk",
+                                            "created": created, "model": model.model,
+                                            "choices": [], "usage": usage}
+                                return None
+                            choice = choices[0]
+                            if not isinstance(choice, dict):
+                                raise ModelGatewayError("Provider returned malformed streaming choice")
+                            delta = choice.get("delta", {})
+                            if not isinstance(delta, dict):
+                                raise ModelGatewayError("Provider returned malformed streaming delta")
+                            choice_index = choice.get("index", 0)
+                            if isinstance(choice_index, bool) or not isinstance(choice_index, int) or choice_index < 0:
+                                raise ModelGatewayError("Provider returned an invalid streaming choice index")
+                            normalized = {"id": stream_id, "object": "chat.completion.chunk",
+                                          "created": created, "model": model.model,
+                                          "choices": [{"index": choice_index,
+                                                       "delta": delta,
+                                                       "finish_reason": choice.get("finish_reason")}]}
+                            emitted = True
+                            return normalized
+
+                        async for line in response.aiter_lines():
+                            if line.strip() == "":
+                                event = await consume_event()
+                                if event == "done":
+                                    return
+                                if event is not None:
+                                    yield event
+                            elif line.startswith("data:"):
+                                # Dispatch a previous data field if an upstream omits the blank separator.
+                                if data_lines:
+                                    event = await consume_event()
+                                    if event == "done":
+                                        return
+                                    if event is not None:
+                                        yield event
+                                data_lines.append(line[5:].lstrip())
+                        event = await consume_event()
+                        if event == "done":
+                            return
+                        if event is not None:
+                            yield event
+                        if emitted:
+                            yield {"id": stream_id, "object": "chat.completion.chunk",
+                                   "created": created, "model": model.model,
+                                   "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+                            return
+                        raise ModelGatewayError("Provider ended the stream without completion data")
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError,
+                    httpx.HTTPStatusError, ModelGatewayError) as exc:
+                last_error = exc
+                if emitted:
+                    yield {"error": {"message": "The model stream was interrupted.",
+                                     "type": "provider_stream_error"}}
+                    return
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code not in (
+                    408, 429, 500, 502, 503, 504
+                ):
+                    break
+                if index < len(candidates) - 1:
+                    continue
+                break
+
         detail = type(last_error).__name__ if last_error else "unknown provider error"
         if isinstance(last_error, httpx.HTTPStatusError):
             detail = f"provider returned HTTP {last_error.response.status_code}"
