@@ -68,8 +68,7 @@ class AgentTaskNotificationWorker(
             }
 
             finished.filterNot { it.id in known }.forEach { task ->
-                showNotification(task)
-                known.add(task.id)
+                if (showNotification(task)) known.add(task.id)
             }
             prefs.edit().putStringSet("agent_notified_task_ids", known).apply()
             Result.success()
@@ -80,12 +79,13 @@ class AgentTaskNotificationWorker(
         }
     }
 
-    private fun showNotification(task: AgentTaskSnapshot) {
+    private fun showNotification(task: AgentTaskSnapshot): Boolean {
         if (Build.VERSION.SDK_INT >= 33 &&
             applicationContext.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) return
+        ) return false
 
         val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (!manager.areNotificationsEnabled()) return false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             manager.createNotificationChannel(
                 NotificationChannel(
@@ -117,5 +117,6 @@ class AgentTaskNotificationWorker(
                 .setContentIntent(openApp)
                 .build()
         )
+        return true
     }
 }
