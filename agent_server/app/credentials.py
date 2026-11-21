@@ -18,7 +18,8 @@ def _encryption_key() -> bytes:
     if not encoded:
         raise CredentialEncryptionError("Credential encryption is not configured")
     try:
-        key = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        padded = encoded + "=" * (-len(encoded) % 4)
+        key = base64.b64decode(padded, altchars=b"-_", validate=True)
     except (ValueError, base64.binascii.Error) as exc:
         raise CredentialEncryptionError("Credential encryption key is invalid") from exc
     if len(key) != 32:
