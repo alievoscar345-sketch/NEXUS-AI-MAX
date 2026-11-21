@@ -2,6 +2,8 @@ package ai.nexus.max
 
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.tls.HandshakeCertificates
+import okhttp3.tls.HeldCertificate
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -13,15 +15,22 @@ class AgentTaskClientTest {
     private lateinit var client: AgentTaskClient
 
     @Before fun setUp() {
+        val heldCertificate = HeldCertificate.Builder()
+            .addSubjectAlternativeName("localhost")
+            .build()
+        val serverCertificates = HandshakeCertificates.Builder()
+            .heldCertificate(heldCertificate)
+            .build()
+        val clientCertificates = HandshakeCertificates.Builder()
+            .addTrustedCertificate(heldCertificate.certificate)
+            .build()
         server = MockWebServer()
+        server.useHttps(serverCertificates.sslSocketFactory(), false)
         server.start()
-        val httpsUrl = server.url("/").newBuilder().scheme("https").build().toString()
-        // MockWebServer uses HTTP by default; rewrite only the scheme check for the test transport.
-        client = AgentTaskClient(httpsUrl, "test-token",
-            okhttp3.OkHttpClient.Builder().sslSocketFactory(
-                okhttp3.tls.HandshakeCertificates.Builder().addInsecureHosts("localhost").build().sslSocketFactory(),
-                okhttp3.tls.HandshakeCertificates.Builder().addInsecureHosts("localhost").build().trustManager
-            ).hostnameVerifier { _, _ -> true }.build())
+        val http = okhttp3.OkHttpClient.Builder()
+            .sslSocketFactory(clientCertificates.sslSocketFactory(), clientCertificates.trustManager)
+            .build()
+        client = AgentTaskClient(server.url("/").toString(), "test-token", http)
     }
 
     @After fun tearDown() { server.shutdown() }
