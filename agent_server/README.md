@@ -6,6 +6,10 @@ Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent 
 
 - Authenticated API for creating, listing, inspecting, and cancelling tasks.
 - Persistent SQLite task queue, ordered task steps, event log, retry scheduling, safe pause/resume, and lease-fenced worker writes.
+- Immutable task checkpoints archive the complete task workspace and persist the matching plan, results, and ordered step state after initial planning, dynamic plan extension, and each completed/failed step boundary.
+- Checkpoint archives are SHA-256 verified before restore, extracted into a staging directory with path/symlink checks, then atomically replace the task workspace. Recovery restores both workspace files and the checkpointed plan/step database state before re-queueing interrupted work.
+- Failed or interrupted step mutations are rolled back to the last confirmed workspace snapshot; the failed step result remains recorded for planner-driven repair. A corrupt or missing latest checkpoint stops the task rather than continuing against inconsistent files.
+- Checkpoints live beside the SQLite database on the persistent /data volume. NEXUS_AGENT_MAX_CHECKPOINT_BYTES and NEXUS_AGENT_MAX_CHECKPOINT_FILES set archive safety bounds; NEXUS_AGENT_CHECKPOINT_RETENTION (default 5) controls rolling per-task history.
 - Configurable in-process worker concurrency (`NEXUS_AGENT_WORKER_CONCURRENCY`, default 2; supported range 1–8) with isolated per-task lease context; one worker process remains required for this SQLite deployment.
 - Long tasks retain durable checkpoints and automatically recover after backend restarts; the active worker renews its lease rather than stopping at a fixed task-duration budget.
 - Task planning and evaluation through a provider-agnostic OpenAI-compatible Model Gateway.
