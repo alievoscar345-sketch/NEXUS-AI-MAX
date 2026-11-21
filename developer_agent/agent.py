@@ -50,6 +50,8 @@ def validate_repo_path(path: str) -> str:
 
 class GitHub:
     def __init__(self, token: str, repository: str, base_branch: str, run_id: str):
+        if base_branch != "gemini-hydrogen-development":
+            raise ValueError("Developer Agent is restricted to gemini-hydrogen-development as its PR base")
         self.repository = repository
         self.base_branch = base_branch
         self.headers = {"Authorization": f"Bearer {token}", "Accept":"application/vnd.github+json", "X-GitHub-Api-Version":"2022-11-28"}
@@ -87,17 +89,20 @@ class GitHub:
         return content
 
     def search_code(self, query: str) -> list[dict]:
-        result = self._request("GET", f"/code?q={httpx.QueryParams({'q': query + ' repo:' + self.repository})['q']}")
+        response = httpx.get(f"{GITHUB_API}/search/code", params={"q": f"{query} repo:{self.repository}"}, headers=self.headers, timeout=30)
+        if response.status_code >= 400:
+            raise RuntimeError(f"GitHub code search failed ({response.status_code}): {response.text[:500]}")
+        result = response.json()
         return [{"path":x["path"],"url":x["html_url"],"snippet":x.get("text_matches",[])} for x in result.get("items",[])[:10]]
 
     def write_file(self, path: str, content: str, message: str) -> dict:
         path = validate_repo_path(path)
         if path not in self.changed and len(self.changed) >= MAX_CHANGED_FILES:
             raise ValueError(f"Change limit reached ({MAX_CHANGED_FILES} files)")
-        if len(content.encode("utf-8")) > MAX_FILE_BYTES:
-            raise ValueError("File exceeds the 180 KB safety limit")
         if not isinstance(content, str):
             raise ValueError("File content must be text")
+        if len(content.encode("utf-8")) > MAX_FILE_BYTES:
+            raise ValueError("File exceeds the 180 KB safety limit")
         existing = None
         try:
             existing = self._get(f"/contents/{path}?ref={self.branch}")
@@ -151,12 +156,15 @@ def main() -> int:
             for call in calls:
                 name = call["function"]["name"]
                 args = json.loads(call["function"].get("arguments") or "{}")
-                if name == "list_files": result = github.list_files(args.get("path",""))
-                elif name == "read_file": result = github.read_file(args["path"])
-                elif name == "search_code": result = github.search_code(args["query"])
-                elif name == "write_file": result = github.write_file(args["path"],args["content"],args["message"])
-                elif name == "create_pull_request": result = github.create_pull_request(args["title"],args["body"])
-                else: result = {"error":"Unknown tool"}
+                try:
+                    if name == "list_files": result = github.list_files(args.get("path",""))
+                    elif name == "read_file": result = github.read_file(args["path"])
+                    elif name == "search_code": result = github.search_code(args["query"])
+                    elif name == "write_file": result = github.write_file(args["path"],args["content"],args["message"])
+                    elif name == "create_pull_request": result = github.create_pull_request(args["title"],args["body"])
+                    else: result = {"error":"Unknown tool"}
+                except Exception as exc:
+                    result = {"error":str(exc)[:1000],"operation_succeeded":False}
                 messages.append({"role":"tool","tool_call_id":call["id"],"content":json.dumps(result,ensure_ascii=False)})
         raise RuntimeError(f"Agent exceeded the {MAX_TOOL_ROUNDS} tool-round limit")
 

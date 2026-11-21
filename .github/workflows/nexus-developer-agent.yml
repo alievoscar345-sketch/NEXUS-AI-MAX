@@ -12,6 +12,10 @@ on:
         required: true
         default: "claude-fable-5-2"
         type: string
+  pull_request:
+    paths:
+      - "developer_agent/**"
+      - ".github/workflows/nexus-developer-agent.yml"
 
 permissions:
   contents: write
@@ -22,18 +26,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r developer_agent/requirements.txt
+      - name: Compile and run unit tests
+        working-directory: developer_agent
+        run: |
+          python -m compileall -q .
+          python -m unittest discover -s tests -v
+
   developer-agent:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install agent dependencies
-        run: pip install -r developer_agent/requirements.txt
+      - run: pip install -r developer_agent/requirements.txt
       - name: Run NEXUS Developer Agent
         working-directory: developer_agent
         env:
