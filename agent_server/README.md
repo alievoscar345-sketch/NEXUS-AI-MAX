@@ -15,6 +15,7 @@ Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent 
 - Standard chat endpoint with bounded text and inline image payloads. The Android app extracts supported document text locally and sends it as message context.
 - Provider connectivity checks and an image-understanding probe that can confirm and enable the provider's vision capability.
 - Task-scoped workspace files, artifact creation/listing/reading, and Android agent-console integration.
+- Optional isolated Docker code execution with digest-pinned images, no network, read-only container root, resource limits, and task-workspace-only writable mount; requires explicit operator configuration.
 - Optional Tavily search and HTTPS text/JSON fetching with private-network destination protections.
 - Approval records for proposed external side effects.
 - Optional isolated code execution through a digest-pinned Docker runner with bounded commands, no network, resource limits, and task-workspace-only write access.
