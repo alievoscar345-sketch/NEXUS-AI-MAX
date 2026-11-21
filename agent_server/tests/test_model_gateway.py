@@ -1,6 +1,8 @@
 import json
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import httpx
@@ -92,17 +94,20 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                                            headers={"content-type": "text/event-stream"})
         )
         gateway = ModelGateway([config()], transport=transport)
-        with patch.object(main, "API_KEY", "test-key"), \
-             patch.object(main, "provider_models_for_owner", return_value=[config()]), \
-             patch.object(main, "ModelGateway", return_value=gateway):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=main.app), base_url="http://nexus.test"
-            ) as client:
-                response = await client.post(
-                    "/v1/chat/completions",
-                    headers={"Authorization": "Bearer test-key"},
-                    json={"messages": [{"role": "user", "content": "hello"}], "stream": True},
-                )
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(main, "DB_PATH", Path(temp) / "nexus.sqlite3"), \
+                 patch.object(main, "API_KEY", "test-key"), \
+                 patch.object(main, "provider_models_for_owner", return_value=[config()]), \
+                 patch.object(main, "ModelGateway", return_value=gateway):
+                main.init_db()
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=main.app), base_url="http://nexus.test"
+                ) as client:
+                    response = await client.post(
+                        "/v1/chat/completions",
+                        headers={"Authorization": "Bearer test-key"},
+                        json={"messages": [{"role": "user", "content": "hello"}], "stream": True},
+                    )
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/event-stream", response.headers["content-type"])
         self.assertIn('"content":"streamed"', response.text)
