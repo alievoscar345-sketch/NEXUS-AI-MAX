@@ -395,9 +395,10 @@ class DurableTaskTests(unittest.TestCase):
         token = main._LEASE_OWNER.set(worker)
         try:
             with patch.object(main, "_github_api", new=AsyncMock(side_effect=[
+                {"object": {"sha": "0123456789abcdef0123456789abcdef01234567"}},
                 {"workflow_runs": []},
                 {},
-                {"workflow_runs": [{"id": 123, "display_title": "NEXUS-android-build-task",
+                {"workflow_runs": [{"id": 123, "display_title": "NEXUS-android-build-task-0123456789ab",
                                     "created_at": created_at,
                                     "head_branch": "nexus-agent/task-android-build-task",
                                     "html_url": "https://github.com/owner/repo/actions/runs/123"}]},
@@ -415,7 +416,7 @@ class DurableTaskTests(unittest.TestCase):
                 ))
             self.assertEqual(result["build_status"], "success")
             self.assertEqual(result["artifacts"][0]["name"], "app-release.apk")
-            dispatch_payload = github_api.await_args_list[1].args[3]
+            dispatch_payload = github_api.await_args_list[2].args[3]
             self.assertEqual(dispatch_payload["ref"], "nexus-agent/task-android-build-task")
             self.assertEqual(dispatch_payload["inputs"]["require_signed_release"], "true")
             self.assertEqual(dispatch_payload["inputs"]["nexus_task_id"], "android-build-task")
