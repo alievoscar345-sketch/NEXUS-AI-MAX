@@ -123,6 +123,31 @@ class AgentTaskClientTest {
         assertEquals("reviewed", payload.getString("note"))
     }
 
+    @Test fun listWorkspaceRequestsTaskScopedDirectory() {
+        transport.responseBody = """{"path":".","entries":[{"name":"report.md","type":"file","bytes":42}]}"""
+        val entries = client.listWorkspace("task-1")
+        assertEquals("report.md", entries.single().name)
+        assertEquals(42L, entries.single().bytes)
+        assertEquals("/v1/tasks/task-1/workspace", transport.lastRequest!!.url.encodedPath)
+    }
+
+    @Test fun readAndWriteWorkspaceFileUseAuthenticatedTaskScopedRoutes() {
+        transport.responseBody = """{"path":"report.md","content":"hello"}"""
+        assertEquals("hello", client.readWorkspaceFile("task-1", "report.md"))
+        assertEquals("report.md", transport.lastRequest!!.url.queryParameter("path"))
+        transport.responseBody = """{"path":"report.md","bytes":5}"""
+        assertEquals(5L, client.writeWorkspaceFile("task-1", "report.md", "hello"))
+        val request = transport.lastRequest!!
+        assertEquals("PUT", request.method)
+        assertEquals("/v1/tasks/task-1/workspace/file", request.url.encodedPath)
+        assertEquals("Bearer test-token", request.header("Authorization"))
+        val buffer = Buffer()
+        request.body!!.writeTo(buffer)
+        val payload = org.json.JSONObject(buffer.readUtf8())
+        assertEquals("report.md", payload.getString("path"))
+        assertEquals("hello", payload.getString("content"))
+    }
+
     @Test fun rejectsNonHttpsServer() {
         try {
             AgentTaskClient("http://example.com", "token")
