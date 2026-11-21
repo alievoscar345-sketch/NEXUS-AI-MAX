@@ -2501,6 +2501,78 @@ async def _download_github_actions_artifact(tid: str, integration: dict[str, str
             archive_path.unlink()
 
 
+async def _download_github_actions_logs(integration: dict[str, str], run_id: int) -> list[dict[str, str]]:
+    token = integration["token"]
+    repo_path = quote(integration["repo_full_name"], safe="/")
+    headers = {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
+               "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "NEXUS-AI-MAX"}
+    api_url = f"https://api.github.com/repos/{repo_path}/actions/runs/{run_id}/logs"
+    archive_path = WORKSPACE / (".nexus-action-logs-" + uuid.uuid4().hex + ".zip")
+    try:
+        timeout = httpx.Timeout(connect=20.0, read=90.0, write=30.0, pool=30.0)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            response = await client.get(api_url, headers=headers)
+            if response.status_code not in {301, 302, 303, 307, 308}:
+                raise RuntimeError(f"GitHub Actions log endpoint returned HTTP {response.status_code}")
+            location = response.headers.get("location", "")
+            parsed = urlparse(location)
+            host = (parsed.hostname or "").lower()
+            allowed_host = (host.endswith(".blob.core.windows.net") or
+                            host.endswith(".githubusercontent.com"))
+            if (parsed.scheme != "https" or not allowed_host or parsed.username
+                    or parsed.password or parsed.port not in (None, 443)):
+                raise RuntimeError("GitHub Actions log redirect destination is not allowed")
+            async with client.stream("GET", location) as download:
+                if download.status_code >= 400:
+                    raise RuntimeError(f"GitHub Actions log download returned HTTP {download.status_code}")
+                content_length = int(download.headers.get("content-length", "0") or "0")
+                if content_length > 100 * 1024 * 1024:
+                    raise RuntimeError("GitHub Actions log archive exceeds the 100 MB safety limit")
+                total = 0
+                with archive_path.open("wb") as output:
+                    async for chunk in download.aiter_bytes(1024 * 1024):
+                        total += len(chunk)
+                        if total > 100 * 1024 * 1024:
+                            raise RuntimeError("GitHub Actions log archive exceeded the 100 MB safety limit")
+                        output.write(chunk)
+        excerpts: list[dict[str, str]] = []
+        total_text = 0
+        with zipfile.ZipFile(archive_path) as archive:
+            infos = archive.infolist()
+            if len(infos) > 1000:
+                raise RuntimeError("GitHub Actions log archive contains too many entries")
+            if sum(info.file_size for info in infos if not info.is_dir()) > 200 * 1024 * 1024:
+                raise RuntimeError("GitHub Actions log archive exceeds the 200 MB extracted-size limit")
+            for info in infos:
+                if info.is_dir() or stat.S_ISLNK(info.external_attr >> 16):
+                    continue
+                name = PurePosixPath(info.filename).name
+                if not name.endswith(".txt") or len(name) > 200:
+                    continue
+                if any(part in {"", ".", ".."} for part in PurePosixPath(info.filename).parts):
+                    continue
+                if info.file_size > 2 * 1024 * 1024:
+                    continue
+                with archive.open(info, "r") as source:
+                    raw = source.read(2 * 1024 * 1024 + 1)
+                decoded = raw[:2 * 1024 * 1024].decode("utf-8", errors="replace")
+                decoded = decoded.replace(token, "[REDACTED_GITHUB_TOKEN]")
+                decoded = re.sub(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})",
+                                 "[REDACTED_GITHUB_TOKEN]", decoded)
+                excerpt = decoded[-12000:]
+                if total_text + len(excerpt) > 48000:
+                    excerpt = excerpt[:max(0, 48000 - total_text)]
+                if excerpt:
+                    excerpts.append({"file": name, "tail": excerpt})
+                    total_text += len(excerpt)
+                if total_text >= 48000:
+                    break
+        return excerpts
+    finally:
+        if archive_path.exists():
+            archive_path.unlink()
+
+
 async def _github_build_android(tid: str, integration: dict[str, str],
                                 branch: str, require_signed_release: bool = True) -> dict[str, Any]:
     selected_branch = _github_branch_name(branch, require_feature=True)
@@ -2566,8 +2638,14 @@ async def _github_build_android(tid: str, integration: dict[str, str],
                                 if step.get("conclusion") not in {"success", "skipped", None}]
                 failed_jobs.append({"name": job.get("name"), "conclusion": job.get("conclusion"),
                                     "failed_steps": failed_steps})
+        try:
+            build_logs = await _download_github_actions_logs(integration, run_id)
+        except Exception as log_error:
+            build_logs = [{"file": "log-download-error",
+                           "tail": str(log_error)[:1000]}]
         return {"build_status": conclusion, "run_id": run_id, "run_url": run_url,
-                "branch": selected_branch, "failed_jobs": failed_jobs}
+                "branch": selected_branch, "failed_jobs": failed_jobs,
+                "build_logs": build_logs}
     artifacts = await _github_api(token, "GET",
         f"/repos/{repo_path}/actions/runs/{run_id}/artifacts?per_page=100")
     expected_name = "NEXUS-AI-MAX-release-apk" if require_signed_release else "NEXUS-AI-MAX-debug-apk"
