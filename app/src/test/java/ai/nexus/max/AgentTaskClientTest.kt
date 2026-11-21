@@ -365,6 +365,15 @@ class AgentTaskClientTest {
         assertEquals("/v1/tasks/task-checkpoints/checkpoints", transport.lastRequest!!.url.encodedPath)
     }
 
+
+    @Test fun listTaskCheckpointsSendsIncrementalSequenceCursor() {
+        transport.responseBody = """{"latest_sequence":5,"checkpoints":[]}"""
+        val (latest, items) = client.listTaskCheckpoints("task-5", afterSequence = 4)
+        assertEquals(5, latest)
+        assertTrue(items.isEmpty())
+        assertEquals("4", transport.lastRequest!!.url.queryParameter("after_sequence"))
+    }
+
     @Test fun restoreTaskCheckpointSendsExpectedLatestSequence() {
         transport.responseBody = """{"status":"paused","sequence":1}"""
         assertEquals("paused", client.restoreTaskCheckpoint("task-1", "checkpoint-7", 9))
