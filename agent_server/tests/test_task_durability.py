@@ -103,8 +103,8 @@ class DurableTaskTests(unittest.TestCase):
 
     def test_create_task_deduplicates_client_request_key(self):
         body = main.NewTask(prompt="Research this subject", idempotency_key="client-key-0001")
-        first = asyncio.run(main.create_task(body, owner_id="personal"))
-        second = asyncio.run(main.create_task(body, owner_id="personal"))
+        first = main.create_task(body, owner_id="personal")
+        second = main.create_task(body, owner_id="personal")
         self.assertEqual(first["id"], second["id"])
         self.assertTrue(second["deduplicated"])
         with main.db() as conn:
@@ -132,9 +132,9 @@ class DurableTaskTests(unittest.TestCase):
         key = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
         with patch.dict(os.environ, {"NEXUS_CREDENTIAL_ENCRYPTION_KEY": key}):
             with self.assertRaises(main.HTTPException) as invalid_key:
-                asyncio.run(main.save_provider(short_body, owner_id="tenant-a"))
+                main.save_provider(short_body, owner_id="tenant-a")
             self.assertNotIn("short", str(invalid_key.exception.detail))
-            result = asyncio.run(main.save_provider(body, owner_id="tenant-a"))
+            result = main.save_provider(body, owner_id="tenant-a")
             self.assertEqual(result["status"], "saved")
             with main.db() as conn:
                 row = conn.execute("SELECT encrypted_api_key FROM provider_credentials WHERE owner_id=?",
@@ -149,10 +149,10 @@ class DurableTaskTests(unittest.TestCase):
     def test_task_lists_are_owner_scoped(self):
         first = main.NewTask(prompt="Task for tenant A")
         second = main.NewTask(prompt="Task for tenant B")
-        asyncio.run(main.create_task(first, owner_id="tenant-a"))
-        asyncio.run(main.create_task(second, owner_id="tenant-b"))
-        tenant_a = asyncio.run(main.list_tasks(owner_id="tenant-a"))
-        tenant_b = asyncio.run(main.list_tasks(owner_id="tenant-b"))
+        main.create_task(first, owner_id="tenant-a")
+        main.create_task(second, owner_id="tenant-b")
+        tenant_a = main.list_tasks(owner_id="tenant-a")
+        tenant_b = main.list_tasks(owner_id="tenant-b")
         self.assertEqual(len(tenant_a["tasks"]), 1)
         self.assertEqual(len(tenant_b["tasks"]), 1)
         self.assertNotEqual(tenant_a["tasks"][0]["id"], tenant_b["tasks"][0]["id"])
@@ -265,6 +265,29 @@ class DurableTaskTests(unittest.TestCase):
                                 ("task-thread-process",)).fetchone()
         self.assertEqual(task["status"], "completed")
         self.assertEqual(task["summary"], "finished")
+
+    def test_run_step_offloads_approval_database_work(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("task-approval-thread", "draft a message", "running", now, now),
+            )
+        loop_thread = threading.get_ident()
+        observed = []
+        original = main._create_approval
+
+        def capture_thread(*args):
+            observed.append(threading.get_ident())
+            return original(*args)
+
+        step = {"title": "Draft", "action": "draft_external_action",
+                "input": {"description": "Prepare a draft"}}
+        with patch.object(main, "_create_approval", side_effect=capture_thread):
+            result = asyncio.run(main.run_step(step, "task-approval-thread", "approval-thread-key"))
+        self.assertEqual(result["status"], "awaiting_approval")
+        self.assertTrue(observed)
+        self.assertNotEqual(observed[0], loop_thread)
 
     def test_db_context_commits_and_closes_connection(self):
         now = time.time()
