@@ -18,6 +18,7 @@ import android.util.Base64
 import android.graphics.BitmapFactory
 import android.util.Xml
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.util.zip.ZipInputStream
@@ -4448,10 +4449,45 @@ private fun AutomationManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
 
 @Composable
 private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
+    val context = LocalContext.current
     var prompt by remember { mutableStateOf("") }
+    var taskFileContext by remember { mutableStateOf("") }
+    var taskFileName by remember { mutableStateOf<String?>(null) }
+    var taskFileError by remember { mutableStateOf<String?>(null) }
     var selectedProjectId by remember { mutableStateOf<String?>(null) }
     var projectMenuExpanded by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { vm.refreshProjects() }
+    val taskContextPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            try {
+                val name = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getString(0) else null
+                } ?: "attached-context.txt"
+                val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
+                    val output = ByteArrayOutputStream()
+                    val buffer = ByteArray(8192)
+                    var total = 0
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        if (total > 24000) throw IllegalArgumentException("Файл контекста превышает лимит 24 КБ.")
+                        output.write(buffer, 0, count)
+                    }
+                    output.toByteArray()
+                } ?: throw IllegalStateException("Не удалось открыть выбранный файл.")
+                val decoded = bytes.toString(Charsets.UTF_8)
+                if (decoded.contains('\u0000')) throw IllegalArgumentException("Выбранный файл не является обычным текстом.")
+                taskFileContext = decoded
+                taskFileName = name
+                taskFileError = null
+            } catch (e: Exception) {
+                taskFileContext = ""
+                taskFileName = null
+                taskFileError = e.message ?: "Не удалось прочитать файл."
+            }
+        }
+    }
     val workspaceExportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/plain")
     ) { uri ->
@@ -4518,9 +4554,18 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                     maxLines = 4,
                     enabled = !vm.agentBusy
                 )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(onClick = { taskContextPicker.launch(arrayOf("text/*", "application/json", "application/xml")) }, enabled = !vm.agentBusy) {
+                        Text("Добавить текстовый файл", color = Blue, fontSize = 9.sp)
+                    }
+                    taskFileName?.let { Text(it, color = Muted, fontSize = 9.sp, maxLines = 1, modifier = Modifier.weight(1f)) }
+                    if (taskFileName != null) TextButton(onClick = { taskFileContext = ""; taskFileName = null }) { Text("Убрать", color = Muted, fontSize = 9.sp) }
+                }
+                taskFileError?.let { Text(it, color = Color(0xFFE5A0A0), fontSize = 9.sp) }
+                if (taskFileName != null) Text("Текст файла будет передан агенту как отдельный контекст задачи (лимит 24 КБ).", color = Muted, fontSize = 9.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
-                        onClick = { vm.createAgentTask(prompt, selectedProjectId); prompt = "" },
+                        onClick = { vm.createAgentTask(prompt, selectedProjectId, taskFileContext); prompt = ""; taskFileContext = ""; taskFileName = null },
                         enabled = prompt.trim().length >= 3 && !vm.agentBusy && !vm.agentRefreshing && vm.agentServerConfigured && vm.agentServerUrl.isNotBlank()
                     ) { Text("Запустить") }
                     OutlinedButton(onClick = { vm.refreshAgentConsole(selectedTask) }, enabled = !vm.agentBusy && !vm.agentRefreshing) {
