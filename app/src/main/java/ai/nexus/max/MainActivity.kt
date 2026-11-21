@@ -4227,6 +4227,9 @@ private fun AutomationManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
 @Composable
 private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
     var prompt by remember { mutableStateOf("") }
+    var selectedProjectId by remember { mutableStateOf<String?>(null) }
+    var projectMenuExpanded by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { vm.refreshProjects() }
     val workspaceExportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/plain")
     ) { uri ->
@@ -4273,6 +4276,17 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                     Text("АВТОНОМНЫЙ АГЕНТ", color = MainText, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     TextButton(onClick = onDismiss) { Text("Закрыть", color = Muted) }
                 }
+                Box {
+                    OutlinedButton(onClick = { projectMenuExpanded = true }, enabled = !vm.agentBusy) {
+                        Text(vm.nexusProjects.firstOrNull { it.id == selectedProjectId }?.name ?: "Без проекта", color = MainText)
+                    }
+                    DropdownMenu(expanded = projectMenuExpanded, onDismissRequest = { projectMenuExpanded = false }) {
+                        DropdownMenuItem(text = { Text("Без проекта") }, onClick = { selectedProjectId = null; projectMenuExpanded = false })
+                        vm.nexusProjects.filter { it.status == "active" }.forEach { project ->
+                            DropdownMenuItem(text = { Text(project.name) }, onClick = { selectedProjectId = project.id; projectMenuExpanded = false })
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = prompt,
                     onValueChange = { prompt = it },
@@ -4284,7 +4298,7 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
-                        onClick = { vm.createAgentTask(prompt); prompt = "" },
+                        onClick = { vm.createAgentTask(prompt, selectedProjectId); prompt = "" },
                         enabled = prompt.trim().length >= 3 && !vm.agentBusy && !vm.agentRefreshing && vm.agentServerConfigured && vm.agentServerUrl.isNotBlank()
                     ) { Text("Запустить") }
                     OutlinedButton(onClick = { vm.refreshAgentConsole(selectedTask) }, enabled = !vm.agentBusy && !vm.agentRefreshing) {
