@@ -698,22 +698,32 @@ def recover_interrupted_tasks():
         c.execute("BEGIN IMMEDIATE")
         # Preserve work that may still be owned by another live worker.
         # Missing leases are legacy/interrupted work; future leases remain valid.
-        rows = c.execute("""SELECT id FROM tasks
+        rows = c.execute("""SELECT id,cancel_requested FROM tasks
             WHERE status IN ('planning','running')
             AND (lease_expires_at IS NULL OR lease_expires_at<=?)""", (now,)).fetchall()
         for row in rows:
             tid = row["id"]
-            c.execute("""UPDATE task_steps SET status='retry_wait',next_attempt_at=?,updated_at=?,
-                error='Recovered after worker interruption'
-                WHERE task_id=? AND status='running'""", (now, now, tid))
-            c.execute("""UPDATE tasks SET status='retry_wait',next_attempt_at=?,lease_owner='',
-                lease_expires_at=NULL,updated_at=? WHERE id=?""", (now, now, tid))
+            cancelled = bool(row["cancel_requested"])
+            step_status = "skipped" if cancelled else "retry_wait"
+            c.execute("""UPDATE task_steps SET status=?,next_attempt_at=?,updated_at=?,
+                error=? WHERE task_id=? AND status='running'""",
+                (step_status, None if cancelled else now, now,
+                 "Task cancelled during worker interruption" if cancelled
+                 else "Recovered after worker interruption", tid))
+            c.execute("""UPDATE tasks SET status=?,next_attempt_at=?,lease_owner='',
+                lease_expires_at=NULL,updated_at=? WHERE id=?""",
+                ("cancelled" if cancelled else "retry_wait",
+                 None if cancelled else now, now, tid))
             c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
-                      (tid, now, "recovered", "Task recovered after worker restart"))
-        # A task with an expired lease can be reclaimed even if it was marked running by an older version.
-        c.execute("""UPDATE tasks SET status='retry_wait',next_attempt_at=?,lease_owner='',
-            lease_expires_at=NULL,updated_at=? WHERE status='running' AND lease_expires_at IS NOT NULL
-            AND lease_expires_at<?""", (now, now, now))
+                      (tid, now, "cancelled" if cancelled else "recovered",
+                       "Cancellation finalized after worker interruption" if cancelled
+                       else "Task recovered after worker restart"))
+        # Legacy running tasks with expired leases are also fenced from re-claim after cancellation.
+        c.execute("""UPDATE tasks SET status=CASE WHEN cancel_requested=1 THEN 'cancelled' ELSE 'retry_wait' END,
+            next_attempt_at=CASE WHEN cancel_requested=1 THEN NULL ELSE ? END,
+            lease_owner='',lease_expires_at=NULL,updated_at=?
+            WHERE status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at<?""",
+            (now, now, now))
 
 
 def claim_task() -> str | None:
@@ -721,6 +731,7 @@ def claim_task() -> str | None:
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         row = c.execute("""SELECT id FROM tasks WHERE status IN ('queued','retry_wait')
+            AND cancel_requested=0
             AND (next_attempt_at IS NULL OR next_attempt_at<=?)
             ORDER BY created_at LIMIT 1""", (now,)).fetchone()
         if not row:
@@ -728,7 +739,7 @@ def claim_task() -> str | None:
         tid = row["id"]
         changed = c.execute("""UPDATE tasks SET status='running',lease_owner=?,lease_expires_at=?,
             attempt_count=attempt_count+1,next_attempt_at=NULL,updated_at=?
-            WHERE id=? AND status IN ('queued','retry_wait')""",
+            WHERE id=? AND status IN ('queued','retry_wait') AND cancel_requested=0""",
             (WORKER_ID, now + LEASE_SECONDS, now, tid)).rowcount
         return tid if changed else None
 

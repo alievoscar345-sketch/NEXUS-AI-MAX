@@ -281,6 +281,43 @@ class DurableTaskTests(unittest.TestCase):
         self.assertEqual(row["lease_owner"], "other-live-worker")
         self.assertGreater(row["lease_expires_at"], now)
 
+    def test_recovery_finalizes_cancelled_task_instead_of_requeueing(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,cancel_requested,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                ("task-cancelled-recovery", "cancel me", "running", now, now, 1,
+                 "dead-worker", now - 10),
+            )
+            conn.execute(
+                "INSERT INTO task_steps(id,task_id,step_index,title,action,input_json,idempotency_key,status,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                ("step-cancelled-recovery", "task-cancelled-recovery", 0, "Work", "fetch_url",
+                 "{}", "cancel-recovery-key", "running", now, now),
+            )
+        main.recover_interrupted_tasks()
+        with main.db() as conn:
+            task = conn.execute("SELECT status,cancel_requested,lease_owner FROM tasks WHERE id=?",
+                                ("task-cancelled-recovery",)).fetchone()
+            step = conn.execute("SELECT status FROM task_steps WHERE id=?",
+                                ("step-cancelled-recovery",)).fetchone()
+        self.assertEqual(task["status"], "cancelled")
+        self.assertEqual(task["cancel_requested"], 1)
+        self.assertEqual(task["lease_owner"], "")
+        self.assertEqual(step["status"], "skipped")
+        self.assertIsNone(main.claim_task())
+
+    def test_claim_skips_cancel_requested_retry_task(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,cancel_requested,next_attempt_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("task-cancelled-queued", "cancel me", "retry_wait", now, now, 1, now - 1),
+            )
+        self.assertIsNone(main.claim_task())
+
     def test_claim_respects_retry_schedule(self):
         now = time.time()
         with main.db() as conn:
