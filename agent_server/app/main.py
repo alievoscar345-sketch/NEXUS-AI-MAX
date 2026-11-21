@@ -38,6 +38,7 @@ API_KEY = os.getenv("NEXUS_AGENT_API_KEY", "")
 TAVILY_KEY = os.getenv("TAVILY_API_KEY", "")
 MAX_STEPS = max(1, min(int(os.getenv("NEXUS_AGENT_MAX_STEPS", "16")), 30))
 MAX_SECONDS = max(60, min(int(os.getenv("NEXUS_AGENT_MAX_TASK_SECONDS", "1800")), 7200))
+CONTINUATION_DELAY_SECONDS = max(1, min(int(os.getenv("NEXUS_AGENT_CONTINUATION_DELAY_SECONDS", "5")), 60))
 MAX_STEP_ATTEMPTS = max(1, min(int(os.getenv("NEXUS_AGENT_STEP_MAX_ATTEMPTS", "3")), 8))
 RETRY_BASE_SECONDS = max(1, min(int(os.getenv("NEXUS_AGENT_RETRY_BASE_SECONDS", "10")), 300))
 LEASE_SECONDS = MAX_SECONDS + 180
@@ -1089,7 +1090,13 @@ async def process(tid: str):
                 await run_db(_worker_event, tid, "cancelled", "Task cancellation acknowledged")
                 return
             if time.monotonic() - started > MAX_SECONDS:
-                raise TimeoutError("Task time limit reached")
+                yielded = await run_db(_yield_task_for_continuation, tid)
+                if yielded:
+                    return
+                if await run_db(_task_cancelled, tid):
+                    await run_db(_mark_task_cancelled, tid)
+                    await run_db(_worker_event, tid, "cancelled", "Task cancellation acknowledged")
+                return
             step = await run_db(_next_pending_step, tid, time.time())
             if not step:
                 waiting, unfinished, results_rows = await run_db(_step_summary, tid)
@@ -2232,6 +2239,24 @@ def _pause_task_if_requested(tid: str) -> bool:
         if changed:
             c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
                       (tid, now, "paused", "Task paused at a safe step boundary"))
+        return bool(changed)
+
+
+def _yield_task_for_continuation(tid: str) -> bool:
+    """Release the current lease at a completed-step boundary and requeue durable work."""
+    now = time.time()
+    next_at = now + CONTINUATION_DELAY_SECONDS
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        changed = c.execute("""UPDATE tasks SET status='retry_wait',next_attempt_at=?,
+            lease_owner='',lease_expires_at=NULL,updated_at=?
+            WHERE id=? AND status='running' AND cancel_requested=0 AND pause_requested=0
+            AND lease_owner=? AND lease_expires_at>?""",
+            (next_at, now, tid, _current_lease_owner(), now)).rowcount
+        if changed:
+            c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                      (tid, now, "continuation_scheduled",
+                       "Execution budget reached; durable task will resume automatically from its next unfinished step"))
         return bool(changed)
 
 
