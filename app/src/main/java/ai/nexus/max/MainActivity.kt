@@ -528,6 +528,12 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     var memorySuggestions by mutableStateOf<List<MemorySuggestion>>(emptyList())
         private set
     var memorySuggesting by mutableStateOf(false)
+    var nexusSkills by mutableStateOf<List<NexusSkill>>(emptyList())
+        private set
+    var skillBusy by mutableStateOf(false)
+        private set
+    var skillMessage by mutableStateOf<String?>(null)
+        private set
     var nexusAutomations by mutableStateOf<List<NexusAutomation>>(emptyList())
         private set
     var automationBusy by mutableStateOf(false)
@@ -793,6 +799,74 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+
+    fun refreshSkills() {
+        if (skillBusy || !agentServerConfigured || agentServerUrl.isBlank()) return
+        skillBusy = true
+        viewModelScope.launch {
+            try {
+                nexusSkills = withContext(Dispatchers.IO) { agentTaskClient().listSkills() }
+                skillMessage = null
+            } catch (e: Exception) {
+                skillMessage = e.message ?: "Не удалось загрузить навыки."
+            } finally { skillBusy = false }
+        }
+    }
+
+    fun saveSkill(skill: NexusSkill?) {
+        if (skillBusy || skillNameDraft.isBlank() || skillInstructionsDraft.trim().length < 10) return
+        skillBusy = true
+        val name = skillNameDraft.trim()
+        val description = skillDescriptionDraft.trim()
+        val instructions = skillInstructionsDraft.trim()
+        val category = skillCategoryDraft
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val api = agentTaskClient()
+                    if (skill == null) api.createSkill(name, description, instructions, category)
+                    else api.updateSkill(skill.copy(name=name, description=description, instructions=instructions, category=category))
+                }
+                nexusSkills = withContext(Dispatchers.IO) { agentTaskClient().listSkills() }
+                skillMessage = if (skill == null) "Навык сохранён. Он будет применяться к подходящим задачам агента." else "Навык обновлён."
+                skillNameDraft = ""; skillDescriptionDraft = ""; skillInstructionsDraft = ""; skillCategoryDraft = "general"; editingSkillId = null
+            } catch (e: Exception) {
+                skillMessage = e.message ?: "Не удалось сохранить навык."
+            } finally { skillBusy = false }
+        }
+    }
+
+    fun toggleSkill(skill: NexusSkill) {
+        if (skillBusy) return
+        skillBusy = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { agentTaskClient().updateSkill(skill.copy(enabled = !skill.enabled)) }
+                nexusSkills = withContext(Dispatchers.IO) { agentTaskClient().listSkills() }
+                skillMessage = if (skill.enabled) "Навык отключён." else "Навык включён."
+            } catch (e: Exception) { skillMessage = e.message ?: "Не удалось изменить навык." }
+            finally { skillBusy = false }
+        }
+    }
+
+    fun deleteSkill(id: String) {
+        if (skillBusy) return
+        skillBusy = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { agentTaskClient().deleteSkill(id) }
+                nexusSkills = nexusSkills.filterNot { it.id == id }
+                skillMessage = "Навык удалён."
+            } catch (e: Exception) { skillMessage = e.message ?: "Не удалось удалить навык." }
+            finally { skillBusy = false }
+        }
+    }
+
+    var skillNameDraft by mutableStateOf("")
+    var skillDescriptionDraft by mutableStateOf("")
+    var skillInstructionsDraft by mutableStateOf("")
+    var skillCategoryDraft by mutableStateOf("general")
+    var editingSkillId by mutableStateOf<String?>(null)
 
     fun refreshAutomations() {
         if (automationBusy || !agentServerConfigured || agentServerUrl.isBlank()) return
@@ -2223,6 +2297,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var showAgentConsole by remember { mutableStateOf(false) }
     var showMemoryManager by remember { mutableStateOf(false) }
     var showAutomationManager by remember { mutableStateOf(false) }
+    var showSkillManager by remember { mutableStateOf(false) }
     var showAmbientSettings by remember { mutableStateOf(false) }
     val ambientPrefs = remember(context) { context.getSharedPreferences("nexus_ambient", 0) }
     var ambientPreset by remember { mutableStateOf(ambientPrefs.getString("preset", "red") ?: "red") }
@@ -2458,6 +2533,11 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                 showAgentConsole = true
                                 topMenuExpanded = false
                                 vm.refreshAgentConsole()
+                            })
+                            DropdownMenuItem(text = { Text("Навыки NEXUS") }, onClick = {
+                                showSkillManager = true
+                                topMenuExpanded = false
+                                vm.refreshSkills()
                             })
                             DropdownMenuItem(text = { Text("Автоматизация") }, onClick = {
                                 showAutomationManager = true
@@ -3598,6 +3678,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     if (showAgentConsole) AgentConsoleDialog(vm) { showAgentConsole = false }
     if (showMemoryManager) MemoryManagerDialog(vm) { showMemoryManager = false }
     if (showAutomationManager) AutomationManagerDialog(vm) { showAutomationManager = false }
+    if (showSkillManager) SkillManagerDialog(vm) { showSkillManager = false }
 
     renameTarget?.let { target ->
         AlertDialog(
@@ -3822,6 +3903,85 @@ private fun MemoryManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
             },
             dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Отмена", color = Muted) } }
         )
+    }
+}
+
+@Composable
+private fun SkillManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
+    var categoryMenu by remember { mutableStateOf(false) }
+    var deleteTarget by remember { mutableStateOf<NexusSkill?>(null) }
+    LaunchedEffect(Unit) { vm.refreshSkills() }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxWidth(0.96f).fillMaxHeight(0.88f), color = Panel, shape = RoundedCornerShape(20.dp)) {
+            Column(Modifier.fillMaxSize().padding(15.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("НАВЫКИ NEXUS", color = MainText, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    TextButton(onClick = onDismiss) { Text("Закрыть", color = Muted) }
+                }
+                Text("Создавай постоянные инструкции для NEXUS: стиль исследований, формат анализа, правила работы над проектами. Включённые навыки автоматически учитываются при планировании подходящих задач автономного агента.",
+                    color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
+                OutlinedTextField(vm.skillNameDraft, { vm.skillNameDraft = it.take(80) }, Modifier.fillMaxWidth(),
+                    singleLine = true, label = { Text("Название навыка") })
+                OutlinedTextField(vm.skillDescriptionDraft, { vm.skillDescriptionDraft = it.take(300) }, Modifier.fillMaxWidth(),
+                    singleLine = true, label = { Text("Краткое описание") })
+                OutlinedTextField(vm.skillInstructionsDraft, { vm.skillInstructionsDraft = it.take(6000) },
+                    Modifier.fillMaxWidth(), minLines = 3, maxLines = 5, label = { Text("Инструкции и алгоритм работы (от 10 символов)") })
+                Box {
+                    TextButton(onClick = { categoryMenu = true }) { Text("Категория: ${vm.skillCategoryDraft}", color = Blue) }
+                    DropdownMenu(expanded = categoryMenu, onDismissRequest = { categoryMenu = false }) {
+                        listOf("general", "writing", "research", "coding", "planning", "business", "study", "other").forEach { value ->
+                            DropdownMenuItem(text = { Text(value) }, onClick = { vm.skillCategoryDraft = value; categoryMenu = false })
+                        }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { vm.saveSkill(vm.nexusSkills.firstOrNull { it.id == vm.editingSkillId }) },
+                        enabled = !vm.skillBusy && vm.agentServerConfigured && vm.skillNameDraft.isNotBlank() && vm.skillInstructionsDraft.trim().length >= 10) {
+                        Text(if (vm.editingSkillId == null) "Создать навык" else "Сохранить изменения")
+                    }
+                    if (vm.editingSkillId != null) TextButton(onClick = {
+                        vm.editingSkillId = null; vm.skillNameDraft = ""; vm.skillDescriptionDraft = ""
+                        vm.skillInstructionsDraft = ""; vm.skillCategoryDraft = "general"
+                    }) { Text("Отмена", color = Muted) }
+                }
+                vm.skillMessage?.let { Text(it, color = Muted, fontSize = 10.sp) }
+                Divider(color = DividerTone)
+                Text("МОИ НАВЫКИ · ${vm.nexusSkills.size}", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    items(vm.nexusSkills, key = { it.id }) { skill ->
+                        Column(Modifier.fillMaxWidth().background(PanelRaised, RoundedCornerShape(10.dp)).padding(10.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(skill.name, color = MainText, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                                Text(if (skill.enabled) "ВКЛЮЧЁН" else "ОТКЛЮЧЁН",
+                                    color = if (skill.enabled) Color(0xFF8FC6A0) else Muted, fontSize = 8.sp)
+                            }
+                            Text("${skill.category} · ${skill.description}", color = Muted, fontSize = 9.sp)
+                            Text(skill.instructions, color = MainText, fontSize = 10.sp, maxLines = 4)
+                            Row {
+                                TextButton(onClick = {
+                                    vm.editingSkillId = skill.id; vm.skillNameDraft = skill.name
+                                    vm.skillDescriptionDraft = skill.description; vm.skillInstructionsDraft = skill.instructions
+                                    vm.skillCategoryDraft = skill.category
+                                }, enabled = !vm.skillBusy) { Text("Изменить", color = Blue, fontSize = 10.sp) }
+                                TextButton(onClick = { vm.toggleSkill(skill) }, enabled = !vm.skillBusy) {
+                                    Text(if (skill.enabled) "Отключить" else "Включить", color = Blue, fontSize = 10.sp)
+                                }
+                                TextButton(onClick = { deleteTarget = skill }, enabled = !vm.skillBusy) {
+                                    Text("Удалить", color = Color(0xFFE5A0A0), fontSize = 10.sp)
+                                }
+                            }
+                        }
+                    }
+                    if (vm.nexusSkills.isEmpty()) item { Text("Навыков пока нет. Создай первый выше.", color = Muted, fontSize = 10.sp) }
+                }
+            }
+        }
+    }
+    deleteTarget?.let { skill ->
+        AlertDialog(onDismissRequest = { deleteTarget = null }, containerColor = Panel,
+            title = { Text("Удалить навык?", color = MainText) }, text = { Text(skill.name, color = Muted) },
+            confirmButton = { TextButton(onClick = { vm.deleteSkill(skill.id); deleteTarget = null }) { Text("Удалить", color = Color(0xFFE5A0A0)) } },
+            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Отмена", color = Muted) } })
     }
 }
 
