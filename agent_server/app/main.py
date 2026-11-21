@@ -1098,7 +1098,7 @@ def _list_memories(owner_id: str, query: str = "", limit: int = 100) -> list[dic
             rows = [item[1] for item in ranked]
         else:
             rows = []
-    return [_memory_row(row) for row in rows[:max(1, min(limit, 100))]]
+    return [_memory_row(row) for row in rows[:max(1, min(limit, 500))]]
 
 
 def _memory_user_text(messages: list[dict[str, Any]]) -> str:
@@ -1154,6 +1154,8 @@ def _retrieve_relevant_memories(owner_id: str, messages: list[dict[str, Any]]) -
         with db() as c:
             c.executemany("UPDATE memories SET last_accessed_at=? WHERE id=? AND owner_id=?",
                           [(now, item["id"], owner_id) for item in selected])
+        for item in selected:
+            item["last_accessed_at"] = now
     return selected
 
 
@@ -1166,6 +1168,8 @@ def list_memories(q: str = "", limit: int = 100, owner_id: str = Depends(auth)):
 
 @app.post("/v1/memories", dependencies=[Depends(auth)])
 def create_memory(body: MemoryInput, owner_id: str = Depends(auth)):
+    if not body.title.strip() or not body.content.strip():
+        raise HTTPException(422, "Memory title and content cannot be blank")
     now = time.time()
     memory_id = str(uuid.uuid4())
     with db() as c:
@@ -1195,6 +1199,8 @@ def update_memory(memory_id: str, body: MemoryUpdateInput, owner_id: str = Depen
             "category": changes.get("category", row["category"]),
             "pinned": 1 if changes.get("pinned", bool(row["pinned"])) else 0,
         }
+        if not values["title"].strip() or not values["content"].strip():
+            raise HTTPException(422, "Memory title and content cannot be blank")
         now = time.time()
         c.execute("""UPDATE memories SET title=?,content=?,category=?,pinned=?,updated_at=?
             WHERE id=? AND owner_id=?""",
