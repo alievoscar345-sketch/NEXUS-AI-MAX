@@ -1926,6 +1926,33 @@ class DurableTaskTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(payload).hexdigest(), rows[0]["sha256"])
         self.assertEqual(rows[0]["size_bytes"], len(payload))
 
+    def test_binary_project_file_restore_preserves_binary_metadata(self):
+        project_id = self._create_test_project()
+        main._write_project_file_bytes(
+            project_id, "tenant-project", "assets/data.bin", b"\\x00\\xff",
+            "Original binary", "image/png", True,
+        )
+        main._write_project_file_bytes(
+            project_id, "tenant-project", "assets/data.bin", b"replacement",
+            "Replacement", "application/octet-stream", True,
+        )
+        restored = main.restore_project_file(
+            project_id, "assets/data.bin",
+            main.ProjectFileRestoreInput(revision=1),
+            owner_id="tenant-project",
+        )
+        self.assertEqual(restored["file"]["revision"], 3)
+        self.assertTrue(restored["file"]["is_binary"])
+        self.assertEqual(restored["file"]["content_type"], "image/png")
+        with main.db() as conn:
+            row = conn.execute(
+                "SELECT content,sha256 FROM project_file_versions WHERE project_id=? "
+                "AND path=? AND revision=3",
+                (project_id, "assets/data.bin"),
+            ).fetchone()
+        self.assertEqual(bytes(row["content"]), b"\\x00\\xff")
+        self.assertEqual(hashlib.sha256(b"\\x00\\xff").hexdigest(), row["sha256"])
+
     def test_binary_project_file_write_is_owner_scoped_and_size_limited(self):
         project_id = self._create_test_project()
         with self.assertRaises(main.HTTPException) as raised:
