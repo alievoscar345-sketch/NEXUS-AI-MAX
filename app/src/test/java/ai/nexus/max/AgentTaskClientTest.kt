@@ -100,10 +100,12 @@ class AgentTaskClientTest {
     }
 
     @Test fun uploadProjectBinaryFileSendsRawBytesAndContentType() {
-        transport.responseBody = """{"file":{"path":"assets/photo.png","revision":3,"bytes":4,"sha256":"abcd","message":"upload","created_at":12.0}}"""
+        transport.responseBody = """{"file":{"path":"assets/photo.png","revision":3,"bytes":4,"sha256":"abcd","message":"upload","created_at":12.0,"content_type":"image/png","is_binary":true}}"""
         val payload = byteArrayOf(0, 1, -1, 42)
         val file = client.uploadProjectBinaryFile("project-1", "assets/photo.png", payload, "image/png")
         assertEquals(3, file.revision)
+        assertTrue(file.isBinary)
+        assertEquals("image/png", file.contentType)
         val request = transport.lastRequest!!
         assertEquals("PUT", request.method)
         assertEquals("Bearer test-token", request.header("Authorization"))
