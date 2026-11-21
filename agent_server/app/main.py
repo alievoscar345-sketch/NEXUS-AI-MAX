@@ -11,8 +11,10 @@ import json
 import os
 import socket
 import sqlite3
+import struct
 import time
 import uuid
+import zlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -1362,6 +1364,67 @@ async def test_provider(provider_id: str, owner_id: str = Depends(auth)):
         raise HTTPException(502, str(exc)) from exc
     return {"provider_id": provider_id, "model": result.model,
             "status": "connected", "latency_ms": round((time.monotonic() - started) * 1000)}
+
+
+def _vision_test_data_url() -> str:
+    """Build a tiny deterministic green PNG without external image dependencies."""
+    width = height = 16
+    pixels = b"".join(b"\\x00" + (b"\\x00\\xff\\x00" * width) for _ in range(height))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    png = b"\\x89PNG\\r\\n\\x1a\\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b"")
+    return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+
+
+@app.post("/v1/providers/{provider_id}/test-vision", dependencies=[Depends(auth)])
+async def test_provider_vision(provider_id: str, owner_id: str = Depends(auth)):
+    models = [m for m in await run_db(provider_models_for_owner, owner_id) if m.id == "user-" + provider_id]
+    if not models:
+        raise HTTPException(404, "Provider not found")
+    model = models[0]
+    # Temporarily permit the probe to route to this exact provider even if vision
+    # has not yet been enabled in its saved capability metadata.
+    probe_model = ModelConfig(
+        id=model.id, base_url=model.base_url, model=model.model, api_key=model.api_key,
+        priority=model.priority, purposes=model.purposes, enabled=model.enabled,
+        capabilities=tuple(set(model.capabilities) | {"vision"}),
+        benchmark_scores=model.benchmark_scores,
+        cost_per_million_tokens=model.cost_per_million_tokens,
+        latency_ms=model.latency_ms,
+        ranking_source=model.ranking_source,
+        ranking_updated_at=model.ranking_updated_at,
+    )
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": "What is the color of the square in this image? Reply with exactly one color word."},
+        {"type": "image_url", "image_url": {"url": _vision_test_data_url()}},
+    ]}]
+    started = time.monotonic()
+    try:
+        result = await ModelGateway(models=[probe_model]).complete_messages(messages, purpose="general")
+    except ModelGatewayError as exc:
+        raise HTTPException(502, "Vision test failed: " + str(exc)) from exc
+    confirmed = bool(re.search(r"\\bgreen\\b", result.content, flags=re.IGNORECASE))
+    if confirmed:
+        await run_db(_enable_provider_vision, owner_id, provider_id)
+    return {
+        "provider_id": provider_id,
+        "model": result.model,
+        "status": "vision_confirmed" if confirmed else "vision_not_confirmed",
+        "supports_vision": confirmed,
+        "response": result.content[:300],
+        "latency_ms": round((time.monotonic() - started) * 1000),
+    }
+
+
+def _enable_provider_vision(owner_id: str, provider_id: str) -> None:
+    with db() as c:
+        c.execute(
+            "UPDATE provider_credentials SET supports_vision=1,updated_at=? WHERE owner_id=? AND provider_id=?",
+            (time.time(), owner_id, provider_id),
+        )
 
 
 def _create_task_record(body: NewTask, owner_id: str) -> dict[str, Any]:
