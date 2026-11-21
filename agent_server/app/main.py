@@ -951,6 +951,11 @@ def _create_task_checkpoint(tid: str, reason: str = "step_completed",
                     relative = source.relative_to(root).as_posix()
                     bundle.write(source, relative)
             for artifact_name, artifact_source in artifact_sources:
+                artifact_size = artifact_source.stat().st_size
+                total_bytes += artifact_size
+                file_count += 1
+                if total_bytes > MAX_TASK_CHECKPOINT_BYTES or file_count > MAX_TASK_CHECKPOINT_FILES:
+                    raise ValueError("Task workspace and published artifacts exceed checkpoint safety limits")
                 bundle.write(artifact_source, "__nexus_internal_artifacts__/" + artifact_name)
         with temporary.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -2590,6 +2595,7 @@ def _project_file_dict(row: sqlite3.Row) -> dict[str, Any]:
         "message": row["message"], "created_at": row["created_at"],
         "content_type": row["content_type"] if "content_type" in row.keys() else "text/plain; charset=utf-8",
         "is_binary": bool(row["is_binary"]) if "is_binary" in row.keys() else False,
+        "is_deleted": bool(row["is_deleted"]) if "is_deleted" in row.keys() else False,
     }
 
 
@@ -2732,7 +2738,7 @@ def list_project_file_versions(project_id: str, path: str, owner_id: str = Depen
                             (project_id, owner_id)).fetchone()
         if not project:
             raise HTTPException(404, "Project not found")
-        rows = c.execute("""SELECT path,revision,sha256,size_bytes,message,created_at,content_type,is_binary
+        rows = c.execute("""SELECT path,revision,sha256,size_bytes,message,created_at,content_type,is_binary,is_deleted
             FROM project_file_versions WHERE project_id=? AND owner_id=? AND path=?
             ORDER BY revision DESC""", (project_id, owner_id, safe_path)).fetchall()
     return {"versions": [_project_file_dict(row) for row in rows]}
