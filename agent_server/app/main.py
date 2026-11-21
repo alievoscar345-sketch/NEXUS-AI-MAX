@@ -1488,18 +1488,27 @@ def _dispatch_due_automations() -> int:
 
 
 async def worker():
+    logger = __import__("logging").getLogger("nexus.worker")
     while True:
-        await run_db(_dispatch_due_automations)
-        claimed = await run_db(_claim_task_with_lease)
-        if claimed:
-            tid, owner = claimed
-            context_token = _LEASE_OWNER.set(owner)
-            try:
-                await process(tid)
-            finally:
-                _LEASE_OWNER.reset(context_token)
-        else:
-            await asyncio.sleep(2)
+        try:
+            await run_db(_dispatch_due_automations)
+            claimed = await run_db(_claim_task_with_lease)
+            if claimed:
+                tid, owner = claimed
+                context_token = _LEASE_OWNER.set(owner)
+                try:
+                    await process(tid)
+                finally:
+                    _LEASE_OWNER.reset(context_token)
+            else:
+                await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Keep the durable worker alive through transient DB/provider/runtime faults.
+            # Any task left with an expired lease is recovered on the next worker startup.
+            logger.exception("Unexpected durable worker loop failure")
+            await asyncio.sleep(5)
 
 
 @asynccontextmanager
