@@ -148,6 +148,19 @@ class AgentTaskClientTest {
         assertEquals("hello", payload.getString("content"))
     }
 
+    @Test fun listArtifactsAndReadArtifactUseTaskScopedAuthenticatedRoutes() {
+        transport.responseBody = """{"artifacts":[{"name":"summary.md","bytes":128}]}"""
+        val artifacts = client.listArtifacts("task-9")
+        assertEquals("summary.md", artifacts.single().name)
+        assertEquals(128L, artifacts.single().bytes)
+        assertEquals("/v1/tasks/task-9/artifacts", transport.lastRequest!!.url.encodedPath)
+        transport.responseBody = """{"name":"summary.md","content":"NEXUS result"}"""
+        assertEquals("NEXUS result", client.readArtifact("task-9", "summary.md"))
+        assertEquals("/v1/tasks/task-9/artifacts/file", transport.lastRequest!!.url.encodedPath)
+        assertEquals("summary.md", transport.lastRequest!!.url.queryParameter("name"))
+        assertEquals("Bearer test-token", transport.lastRequest!!.header("Authorization"))
+    }
+
     @Test fun rejectsNonHttpsServer() {
         try {
             AgentTaskClient("http://example.com", "token")
