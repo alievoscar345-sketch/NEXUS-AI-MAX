@@ -1616,6 +1616,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     val uiScope = rememberCoroutineScope()
     var showHistory by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showAgentConsole by remember { mutableStateOf(false) }
     var showAmbientSettings by remember { mutableStateOf(false) }
     val ambientPrefs = remember(context) { context.getSharedPreferences("nexus_ambient", 0) }
     var ambientPreset by remember { mutableStateOf(ambientPrefs.getString("preset", "red") ?: "red") }
@@ -1847,6 +1848,12 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         DropdownMenu(expanded = topMenuExpanded, onDismissRequest = { topMenuExpanded = false }) {
                             DropdownMenuItem(text = { Text(if (vm.activeChat?.isPinned == true) "Открепить чат" else "Закрепить чат") }, leadingIcon = { Icon(Icons.Filled.PushPin, null, tint = ambientAccent) }, onClick = { vm.activeChatId?.let { vm.togglePinChat(it) }; topMenuExpanded = false })
 
+                            DropdownMenuItem(text = { Text("Автономный агент") }, onClick = {
+                                showAgentConsole = true
+                                topMenuExpanded = false
+                                vm.refreshAgentTasks()
+                                vm.refreshAgentApprovals()
+                            })
                             DropdownMenuItem(text = { Text("Поделиться") }, leadingIcon = { Icon(Icons.Filled.Share, null, tint = ambientAccent) }, onClick = {
                                 val chat = vm.activeChat
                                 if (chat != null) {
@@ -2961,6 +2968,8 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
         )
     }
 
+    if (showAgentConsole) AgentConsoleDialog(vm) { showAgentConsole = false }
+
     renameTarget?.let { target ->
         AlertDialog(
             onDismissRequest = { renameTarget = null },
@@ -3034,4 +3043,102 @@ private fun extractMarkdownCode(content: String, node: ASTNode, fenced: Boolean)
     }
     if (start < 0 || end < start || end > content.length) return ""
     return content.substring(start, end).replaceIndent()
+}
+
+@Composable
+private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
+    var prompt by remember { mutableStateOf("") }
+    var selectedTask by remember { mutableStateOf<String?>(null) }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(0.96f).fillMaxHeight(0.88f),
+            color = Panel,
+            shape = RoundedCornerShape(20.dp)
+        ) {
+            Column(Modifier.fillMaxSize().padding(15.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("АВТОНОМНЫЙ АГЕНТ", color = MainText, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    TextButton(onClick = onDismiss) { Text("Закрыть", color = Muted) }
+                }
+                OutlinedTextField(
+                    value = prompt,
+                    onValueChange = { prompt = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Опиши задачу") },
+                    minLines = 2,
+                    maxLines = 4,
+                    enabled = !vm.agentBusy
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { vm.createAgentTask(prompt); prompt = "" },
+                        enabled = prompt.trim().length >= 3 && !vm.agentBusy && vm.agentServerConfigured && vm.agentServerUrl.isNotBlank()
+                    ) { Text("Запустить") }
+                    OutlinedButton(onClick = { vm.refreshAgentTasks(); vm.refreshAgentApprovals() }, enabled = !vm.agentBusy) {
+                        Text("Обновить")
+                    }
+                }
+                if (!vm.agentServerConfigured || vm.agentServerUrl.isBlank()) {
+                    Text("Настрой HTTPS-адрес сервера и токен в Настройках.", color = Color(0xFFE5A0A0), fontSize = 10.sp)
+                }
+                vm.agentMessage?.let { Text(it, color = Muted, fontSize = 10.sp) }
+                Divider(color = DividerTone)
+                Text("ЗАДАЧИ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                LazyColumn(Modifier.weight(1f)) {
+                    items(vm.agentTasks, key = { it.id }) { task ->
+                        Column(
+                            Modifier.fillMaxWidth().clickable {
+                                selectedTask = task.id
+                                vm.refreshAgentTask(task.id)
+                            }.padding(vertical = 7.dp)
+                        ) {
+                            Text(task.status.uppercase() + " · " + task.prompt, color = MainText, fontSize = 11.sp)
+                            if (task.summary.isNotBlank()) Text(task.summary, color = Muted, fontSize = 10.sp)
+                            Divider(color = DividerTone)
+                        }
+                    }
+                    if (vm.agentTasks.isEmpty()) item { Text("Задач пока нет.", color = Muted, fontSize = 11.sp) }
+                }
+                vm.activeAgentTask?.takeIf { selectedTask == null || it.id == selectedTask }?.let { task ->
+                    Divider(color = DividerTone)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("ВЫПОЛНЕНИЕ · " + task.status.uppercase(), color = MainText, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                        if (task.status in setOf("queued", "planning", "running", "retry_wait", "waiting_for_approval")) {
+                            TextButton(onClick = { vm.cancelAgentTask(task.id) }, enabled = !vm.agentBusy) {
+                                Text("Отменить", color = Color(0xFFE5A0A0))
+                            }
+                        }
+                    }
+                    LazyColumn(Modifier.heightIn(max = 125.dp)) {
+                        items(task.steps, key = { task.id + it.index }) { step ->
+                            Text((step.index + 1).toString() + ". " + step.title + " · " + step.status, color = MainText, fontSize = 10.sp)
+                            if (step.error.isNotBlank()) Text(step.error, color = Color(0xFFE5A0A0), fontSize = 9.sp)
+                        }
+                        items(task.events.takeLast(6)) { event ->
+                            Text("· " + event.message, color = Muted, fontSize = 9.sp)
+                        }
+                    }
+                }
+                if (vm.agentApprovals.isNotEmpty()) {
+                    Divider(color = DividerTone)
+                    Text("ЗАПРОСЫ НА ПОДТВЕРЖДЕНИЕ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    LazyColumn(Modifier.heightIn(max = 110.dp)) {
+                        items(vm.agentApprovals, key = { it.id }) { approval ->
+                            Column(Modifier.padding(vertical = 5.dp)) {
+                                Text(approval.description, color = MainText, fontSize = 10.sp)
+                                Row {
+                                    TextButton(onClick = { vm.decideAgentApproval(approval.id, true) }, enabled = !vm.agentBusy) {
+                                        Text("Разрешить", color = Color(0xFF8FC6A0))
+                                    }
+                                    TextButton(onClick = { vm.decideAgentApproval(approval.id, false) }, enabled = !vm.agentBusy) {
+                                        Text("Отклонить", color = Color(0xFFE5A0A0))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
