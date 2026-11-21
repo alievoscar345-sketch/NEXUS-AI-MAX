@@ -2,6 +2,9 @@ import asyncio
 import tempfile
 import time
 import sqlite3
+import threading
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -191,6 +194,36 @@ class DurableTaskTests(unittest.TestCase):
                                  ("task-approval",)).fetchone()["n"]
         self.assertEqual(count, 1)
 
+
+    def test_run_db_executes_in_worker_thread(self):
+        loop_thread = threading.get_ident()
+        worker_thread = asyncio.run(main.run_db(threading.get_ident))
+        self.assertNotEqual(worker_thread, loop_thread)
+
+    def test_llm_json_offloads_provider_lookup_and_event_write(self):
+        loop_thread = threading.get_ident()
+        observed = {}
+
+        def provider_lookup(owner_id):
+            observed["provider_thread"] = threading.get_ident()
+            return [object()]
+
+        def write_event(*args):
+            observed["event_thread"] = threading.get_ident()
+
+        result = SimpleNamespace(provider_id="test", model="test-model", usage={})
+
+        async def run():
+            with patch.object(main, "provider_models_for_owner", side_effect=provider_lookup), \
+                 patch.object(main, "event", side_effect=write_event), \
+                 patch.object(main.ModelGateway, "complete_json",
+                              new=AsyncMock(return_value=({"ok": True}, result))):
+                return await main.llm_json("system", "user", task_id="task-thread")
+
+        parsed = asyncio.run(run())
+        self.assertEqual(parsed, {"ok": True})
+        self.assertNotEqual(observed["provider_thread"], loop_thread)
+        self.assertNotEqual(observed["event_thread"], loop_thread)
 
     def test_db_context_commits_and_closes_connection(self):
         now = time.time()
