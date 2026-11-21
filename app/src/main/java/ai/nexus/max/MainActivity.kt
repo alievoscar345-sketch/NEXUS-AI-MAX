@@ -1041,10 +1041,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         val reader = response.body?.charStream()?.buffered()
                                 ?: throw IllegalStateException("Пустой ответ API")
-                        val parser = SseDataParser()
-                        suspend fun processSseData(payload: String): Boolean {
-                            if (payload == "[DONE]") return false
-                            if (payload.isBlank()) return true
+                        val decoder = ChatCompletionSseDecoder()
+                        suspend fun processSseData(payload: String) {
+                            if (payload.isBlank()) return
                             val delta = try {
                                 JSONObject(payload).optJSONArray("choices")
                                     ?.optJSONObject(0)?.optJSONObject("delta")
@@ -1068,16 +1067,19 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                                     updateChatLive(chatId, streamedAnswer)
                                 }
                             }
-                            return true
                         }
                         reader.use { stream ->
                             while (true) {
                                 val rawLine = stream.readLine() ?: break
-                                val event = parser.acceptLine(rawLine) ?: continue
-                                if (!processSseData(event)) break
+                                val event = decoder.acceptLine(rawLine)
+                                if (event != null) processSseData(event)
+                                if (decoder.isComplete) break
                             }
-                            val trailingEvent = parser.finish()
+                            val trailingEvent = decoder.finish()
                             if (trailingEvent != null) processSseData(trailingEvent)
+                        }
+                        if (!decoder.isComplete) {
+                            throw IllegalStateException("Поток завершился до маркера [DONE].")
                         }
                         streamedAnswer
                     }
