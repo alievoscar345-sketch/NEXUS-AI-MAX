@@ -336,6 +336,47 @@ class AgentTaskClientTest {
         }
     }
 
+
+    @Test fun listTaskCheckpointsParsesWorkspaceProjectAndArtifactManifests() {
+        transport.responseBody = """{
+            "latest_sequence":2,
+            "checkpoints":[{
+                "id":"cp-2","sequence":2,"step_id":"step-1","reason":"step_completed",
+                "created_at":100.5,"archive_bytes":512,"archive_sha256":"archive-hash",
+                "is_latest":true,"plan_steps":3,"completed_steps":2,
+                "workspace_files":[{"path":"src/main.py","bytes":120,"sha256":"workspace-hash"}],
+                "project_files":[{"path":"app/Main.kt","size_bytes":240,"sha256":"project-hash","revision":4,"content_type":"text/plain","is_binary":false}],
+                "artifacts":[{"name":"release.apk","bytes":4096,"sha256":"apk-hash","content_type":"application/vnd.android.package-archive"}],
+                "legacy":false,"available":true,"error":""
+            }]
+        }"""
+        val (latest, checkpoints) = client.listTaskCheckpoints("task-checkpoints")
+        assertEquals(2, latest)
+        val checkpoint = checkpoints.single()
+        assertEquals("cp-2", checkpoint.id)
+        assertEquals(2, checkpoint.sequence)
+        assertEquals("step_completed", checkpoint.reason)
+        assertEquals("src/main.py", checkpoint.workspaceFiles.single().path)
+        assertEquals(4, checkpoint.projectFiles.single().revision)
+        assertEquals("release.apk", checkpoint.artifacts.single().name)
+        assertTrue(checkpoint.isLatest)
+        assertTrue(checkpoint.available)
+        assertFalse(checkpoint.legacy)
+        assertEquals("/v1/tasks/task-checkpoints/checkpoints", transport.lastRequest!!.url.encodedPath)
+    }
+
+    @Test fun restoreTaskCheckpointSendsExpectedLatestSequence() {
+        transport.responseBody = """{"status":"paused","sequence":1}"""
+        assertEquals("paused", client.restoreTaskCheckpoint("task-1", "checkpoint-7", 9))
+        val request = transport.lastRequest!!
+        assertEquals("POST", request.method)
+        assertEquals("/v1/tasks/task-1/checkpoints/checkpoint-7/restore", request.url.encodedPath)
+        assertEquals("Bearer test-token", request.header("Authorization"))
+        val body = Buffer()
+        request.body!!.writeTo(body)
+        assertEquals(9, org.json.JSONObject(body.readUtf8()).getInt("expected_latest_sequence"))
+    }
+
     @Test fun rejectsNonHttpsServer() {
         try {
             AgentTaskClient("http://example.com", "token")
