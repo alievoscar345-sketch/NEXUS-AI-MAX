@@ -855,7 +855,12 @@ async def run_step(step: dict[str, Any], tid: str, idempotency_key: str):
         task_row = await run_db(_get_task_row, tid)
         if not task_row:
             raise ValueError("Task not found for GitHub operation")
-        result = await _github_task_action(tid, task_row["owner_id"], action, args)
+        try:
+            result = await _github_task_action(tid, task_row["owner_id"], action, args)
+        except RuntimeError as exc:
+            if "GitHub is not connected" in str(exc):
+                return {"title": title, "status": "blocked", "detail": str(exc)}
+            raise
         return {"title": title, "status": "completed", **result}
     if action == "web_search":
         if not TAVILY_KEY:
@@ -2235,13 +2240,6 @@ async def github_read_file(path: str, branch: str | None = None, owner_id: str =
                                      {"branch": selected_branch, "path": path})
 
 
-@app.post("/v1/github/branches", dependencies=[Depends(auth)])
-async def github_create_feature_branch(owner_id: str = Depends(auth)):
-    integration = await run_db(_github_integration, owner_id)
-    task_id = "manual-" + uuid.uuid4().hex
-    return await _github_task_action(task_id, owner_id, "github_create_branch", {})
-
-
 def _github_repo_name(value: str) -> str:
     if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value):
         raise ValueError("GitHub repository must use owner/repository format")
@@ -2317,6 +2315,16 @@ async def _github_api(token: str, method: str, endpoint: str,
     return data
 
 
+def _assert_task_lease_for_github_write(tid: str) -> None:
+    now = time.time()
+    with db() as c:
+        owned = c.execute("""SELECT 1 FROM tasks WHERE id=? AND status IN ('running','planning')
+            AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
+            (tid, _current_lease_owner(), now)).fetchone()
+    if not owned:
+        raise RuntimeError("Task lease was lost; GitHub write was not started")
+
+
 async def _github_task_action(tid: str, owner_id: str, action: str,
                               args: dict[str, Any]) -> dict[str, Any]:
     integration = await run_db(_github_integration, owner_id)
@@ -2335,6 +2343,7 @@ async def _github_task_action(tid: str, owner_id: str, action: str,
         sha = str((base or {}).get("object", {}).get("sha", ""))
         if not sha:
             raise RuntimeError("GitHub default branch did not return a commit SHA")
+        await run_db(_assert_task_lease_for_github_write, tid)
         try:
             await _github_api(token, "POST", "/repos/" + repo_path + "/git/refs",
                               {"ref": "refs/heads/" + branch_name, "sha": sha})
@@ -2384,6 +2393,7 @@ async def _github_task_action(tid: str, owner_id: str, action: str,
                             "commit": existing.get("html_url")}
             except (ValueError, UnicodeDecodeError):
                 pass
+        await run_db(_assert_task_lease_for_github_write, tid)
         result = await _github_api(token, "PUT", contents_endpoint, payload)
         commit = (result or {}).get("commit", {})
         return {"branch": branch_name, "path": file_path, "unchanged": False,
