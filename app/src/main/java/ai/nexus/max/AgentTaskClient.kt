@@ -67,7 +67,7 @@ class AgentTaskClient(
                     projectId: String? = null, contextText: String = "", modelSelection: String = "auto"): String {
         require(prompt.trim().length >= 3) { "Task prompt is too short" }
         require(contextText.length <= 24000) { "Task file context exceeds 24 KB" }
-        require(modelSelection == "auto" || modelSelection.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._-]{1,159}$"))) {
+        require(modelSelection == "auto" || modelSelection.matches(Regex("^[^\\\\s]{1,159}$"))) {
             "Invalid model selection"
         }
         val body = JSONObject()
