@@ -4244,6 +4244,7 @@ def restore_task_checkpoint(tid: str, checkpoint_id: str, body: dict[str, Any],
             raise HTTPException(409, "Pause or finish the task before restoring a checkpoint")
         if task["lease_owner"] and task["lease_expires_at"] and task["lease_expires_at"] > time.time():
             raise HTTPException(409, "Task still has an active worker lease")
+        previous_status = task["status"]
         latest = c.execute("""SELECT COALESCE(MAX(sequence),0) AS sequence
             FROM task_checkpoints WHERE task_id=? AND owner_id=?""", (tid, owner_id)).fetchone()
         if int(latest["sequence"]) != expected_latest:
@@ -4253,11 +4254,16 @@ def restore_task_checkpoint(tid: str, checkpoint_id: str, body: dict[str, Any],
             (checkpoint_id, tid, owner_id)).fetchone()
         if not selected:
             raise HTTPException(404, "Checkpoint not found")
+        c.execute("""UPDATE tasks SET status='restoring',updated_at=?
+            WHERE id=? AND owner_id=?""", (time.time(), tid, owner_id))
     try:
         restored = _restore_latest_task_checkpoint(tid, restore_state=True,
                                                    checkpoint_id=checkpoint_id, manual=True)
     except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile,
             json.JSONDecodeError, sqlite3.Error) as exc:
+        with db() as c:
+            c.execute("UPDATE tasks SET status=?,updated_at=? WHERE id=? AND owner_id=? AND status='restoring'",
+                      (previous_status, time.time(), tid, owner_id))
         raise HTTPException(422, f"Checkpoint restore failed: {exc}") from exc
     if not restored:
         raise HTTPException(404, "Checkpoint not found")
@@ -4265,9 +4271,8 @@ def restore_task_checkpoint(tid: str, checkpoint_id: str, body: dict[str, Any],
         c.execute("BEGIN IMMEDIATE")
         changed = c.execute("""UPDATE tasks SET status='paused',cancel_requested=0,
             pause_requested=0,lease_owner='',lease_expires_at=NULL,updated_at=?
-            WHERE id=? AND owner_id=? AND status IN ('paused','completed','failed','cancelled')
-            AND (lease_owner='' OR lease_expires_at IS NULL OR lease_expires_at<=?)""",
-            (time.time(), tid, owner_id, time.time())).rowcount
+            WHERE id=? AND owner_id=? AND status='restoring'""",
+            (time.time(), tid, owner_id)).rowcount
         if not changed:
             raise HTTPException(409, "Task state changed during checkpoint restore")
     return {**restored, "status": "paused"}
