@@ -2476,6 +2476,12 @@ class DurableTaskTests(unittest.TestCase):
                                  main.hashlib.sha256(b"print('checkpoint')").hexdigest())
                 self.assertEqual(item["plan_steps"], 1)
                 self.assertEqual(item["reason"], "step_completed")
+                incremental = main.list_task_checkpoints(task_id, after_sequence=1, owner_id="owner-a")
+                self.assertEqual(incremental["latest_sequence"], 1)
+                self.assertEqual(incremental["checkpoints"], [])
+                with self.assertRaises(main.HTTPException) as invalid_cursor:
+                    main.list_task_checkpoints(task_id, after_sequence=-1, owner_id="owner-a")
+                self.assertEqual(invalid_cursor.exception.status_code, 422)
                 with self.assertRaises(main.HTTPException) as denied:
                     main.list_task_checkpoints(task_id, owner_id="owner-b")
                 self.assertEqual(denied.exception.status_code, 404)
@@ -2523,6 +2529,43 @@ class DurableTaskTests(unittest.TestCase):
                 self.assertEqual(task["status"], "paused")
                 self.assertEqual(json.loads(task["plan_json"])[0]["title"], "Original")
                 self.assertEqual(event["kind"], "checkpoint_manually_restored")
+        finally:
+            main._LEASE_OWNER.reset(token)
+
+
+    def test_interrupted_manual_checkpoint_restore_is_replayed_on_worker_recovery(self):
+        now = time.time()
+        task_id = "crashed-manual-restore"
+        worker = main.WORKER_ID + ":manual-restore-crash"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id,plan_json,results_json,lease_owner,lease_expires_at,restore_checkpoint_id,restore_previous_status) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (task_id, "recover manual restore", "running", now, now, "owner-a",
+                 '[{"title":"Before"}]', "[]", worker, now + 600, "", ""),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        checkpoint_root = Path(self.temp.name) / "checkpoints"
+        token = main._LEASE_OWNER.set(worker)
+        try:
+            with patch.object(main, "WORKSPACE", workspace), patch.object(main, "CHECKPOINT_ROOT", checkpoint_root):
+                main._workspace_write(task_id, "state.txt", "checkpoint state")
+                saved = main._create_task_checkpoint(task_id, "manual_restore_target")
+                with main.db() as conn:
+                    conn.execute("""UPDATE tasks SET status='restoring',restore_checkpoint_id=?,
+                        restore_previous_status='completed',lease_owner='checkpoint-restore:crashed',
+                        lease_expires_at=? WHERE id=?""",
+                        (saved["id"], now - 1, task_id))
+                main._workspace_write(task_id, "state.txt", "partial restore or later mutation")
+                recovered = main._recover_interrupted_checkpoint_restores()
+                self.assertEqual(recovered, 1)
+                self.assertEqual(main._workspace_read(task_id, "state.txt")["content"], "checkpoint state")
+                with main.db() as conn:
+                    row = conn.execute("SELECT status,restore_checkpoint_id,lease_owner FROM tasks WHERE id=?",
+                                       (task_id,)).fetchone()
+                self.assertEqual(row["status"], "paused")
+                self.assertEqual(row["restore_checkpoint_id"], "")
+                self.assertEqual(row["lease_owner"], "")
         finally:
             main._LEASE_OWNER.reset(token)
 
