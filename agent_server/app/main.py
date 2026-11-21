@@ -17,6 +17,8 @@ import uuid
 import zlib
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+from .automation import AutomationScheduleError, next_occurrence
 from typing import Any
 from urllib.parse import urlparse
 
@@ -160,6 +162,27 @@ def init_db():
         """)
         if "supports_vision" not in _columns(c, "provider_credentials"):
             c.execute("ALTER TABLE provider_credentials ADD COLUMN supports_vision INTEGER NOT NULL DEFAULT 0")
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS automations(
+            id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL,
+            prompt TEXT NOT NULL, schedule_type TEXT NOT NULL, run_at REAL,
+            local_time TEXT NOT NULL DEFAULT '', timezone TEXT NOT NULL DEFAULT 'UTC',
+            weekdays_json TEXT NOT NULL DEFAULT '[]', interval_minutes INTEGER,
+            enabled INTEGER NOT NULL DEFAULT 1, next_run_at REAL,
+            last_run_at REAL, created_at REAL NOT NULL, updated_at REAL NOT NULL
+        )
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS automation_runs(
+            id TEXT PRIMARY KEY, automation_id TEXT NOT NULL, owner_id TEXT NOT NULL,
+            task_id TEXT NOT NULL, scheduled_for REAL NOT NULL, created_at REAL NOT NULL,
+            UNIQUE(automation_id, scheduled_for),
+            FOREIGN KEY(automation_id) REFERENCES automations(id) ON DELETE CASCADE,
+            FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_automations_due ON automations(enabled,next_run_at)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_automation_runs_owner ON automation_runs(owner_id,created_at DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_provider_credentials_owner ON provider_credentials(owner_id,provider_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_memories_owner_updated ON memories(owner_id,pinned DESC,updated_at DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(status,next_attempt_at,created_at)")
@@ -239,6 +262,18 @@ class MemoryUpdateInput(BaseModel):
     content: str | None = Field(default=None, min_length=1, max_length=2000)
     category: str | None = Field(default=None, pattern="^(general|preference|project|goal|fact|instruction)$")
     pinned: bool | None = None
+
+
+class AutomationInput(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    prompt: str = Field(min_length=3, max_length=12000)
+    schedule_type: str = Field(pattern="^(once|daily|weekly|interval)$")
+    run_at: float | None = None
+    local_time: str = Field(default="", max_length=5)
+    timezone: str = Field(default="UTC", min_length=1, max_length=80)
+    weekdays: list[int] = Field(default_factory=list, max_length=7)
+    interval_minutes: int | None = Field(default=None, ge=5, le=10080)
+    enabled: bool = True
 
 
 class ProviderCredentialInput(BaseModel):
@@ -997,8 +1032,59 @@ def claim_task() -> str | None:
     return claimed[0] if claimed else None
 
 
+def _automation_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"], "name": row["name"], "prompt": row["prompt"],
+        "schedule_type": row["schedule_type"], "run_at": row["run_at"],
+        "local_time": row["local_time"], "timezone": row["timezone"],
+        "weekdays": json.loads(row["weekdays_json"]),
+        "interval_minutes": row["interval_minutes"], "enabled": bool(row["enabled"]),
+        "next_run_at": row["next_run_at"], "last_run_at": row["last_run_at"],
+        "created_at": row["created_at"], "updated_at": row["updated_at"],
+    }
+
+
+def _dispatch_due_automations() -> int:
+    """Convert due schedules into ordinary durable tasks; the task worker executes them."""
+    now = time.time()
+    dispatched = 0
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        rows = c.execute("""SELECT * FROM automations WHERE enabled=1 AND next_run_at IS NOT NULL
+            AND next_run_at<=? ORDER BY next_run_at LIMIT 25""", (now,)).fetchall()
+        for row in rows:
+            scheduled_for = float(row["next_run_at"])
+            run_key = f"automation:{row['id']}:{int(scheduled_for * 1000)}"
+            existing = c.execute("SELECT id FROM tasks WHERE owner_id=? AND client_request_key=?",
+                                 (row["owner_id"], run_key)).fetchone()
+            if existing:
+                task_id = existing["id"]
+            else:
+                task_id = str(uuid.uuid4())
+                c.execute("""INSERT INTO tasks(id,prompt,status,created_at,updated_at,max_attempts,
+                    max_steps,client_request_key,owner_id) VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (task_id, row["prompt"], "queued", now, now, MAX_STEP_ATTEMPTS,
+                     min(8, MAX_STEPS), run_key, row["owner_id"]))
+                c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                          (task_id, now, "created", "Scheduled automation dispatched"))
+            c.execute("INSERT OR IGNORE INTO automation_runs(id,automation_id,owner_id,task_id,scheduled_for,created_at) VALUES(?,?,?,?,?,?)",
+                      (str(uuid.uuid4()), row["id"], row["owner_id"], task_id, scheduled_for, now))
+            try:
+                next_at = next_occurrence(row["schedule_type"], scheduled_for + 0.001,
+                    row["timezone"], row["local_time"], json.loads(row["weekdays_json"]),
+                    row["interval_minutes"], row["run_at"])
+            except AutomationScheduleError:
+                next_at = None
+            c.execute("""UPDATE automations SET next_run_at=?,enabled=?,last_run_at=?,updated_at=?
+                WHERE id=? AND owner_id=?""",
+                (next_at, 0 if next_at is None else 1, scheduled_for, now, row["id"], row["owner_id"]))
+            dispatched += 1
+    return dispatched
+
+
 async def worker():
     while True:
+        await run_db(_dispatch_due_automations)
         claimed = await run_db(_claim_task_with_lease)
         if claimed:
             tid, owner = claimed
@@ -1230,6 +1316,134 @@ def _chat_gateway_error_message(exc: ModelGatewayError, requires_vision: bool) -
             "save a provider, and run its image-understanding test."
         )
     return str(exc)
+
+
+def _validate_automation(body: AutomationInput, after_ts: float) -> float:
+    if not body.name.strip() or not body.prompt.strip():
+        raise HTTPException(422, "Automation name and task cannot be blank")
+    if body.schedule_type == "once" and (body.run_at is None or body.run_at <= after_ts):
+        raise HTTPException(422, "One-time automation must have a future run_at timestamp")
+    if body.schedule_type == "interval" and body.interval_minutes is None:
+        raise HTTPException(422, "Interval automation requires interval_minutes")
+    if body.schedule_type in {"daily", "weekly"} and not re.fullmatch(r"(?:[01]\\d|2[0-3]):[0-5]\\d", body.local_time):
+        raise HTTPException(422, "Daily and weekly automations require local_time in HH:MM format")
+    if body.schedule_type == "weekly" and (not body.weekdays or any(day < 1 or day > 7 for day in body.weekdays)):
+        raise HTTPException(422, "Weekly automation requires weekdays from 1 (Monday) to 7 (Sunday)")
+    try:
+        next_at = next_occurrence(body.schedule_type, after_ts, body.timezone, body.local_time,
+                                  body.weekdays, body.interval_minutes, body.run_at)
+    except AutomationScheduleError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if next_at is None:
+        raise HTTPException(422, "Automation has no future execution time")
+    return next_at
+
+
+@app.get("/v1/automations", dependencies=[Depends(auth)])
+def list_automations(owner_id: str = Depends(auth)):
+    with db() as c:
+        rows = c.execute("""SELECT a.*, t.status AS last_task_status, t.summary AS last_task_summary
+            FROM automations a
+            LEFT JOIN automation_runs r ON r.id=(SELECT id FROM automation_runs
+                WHERE automation_id=a.id ORDER BY created_at DESC LIMIT 1)
+            LEFT JOIN tasks t ON t.id=r.task_id
+            WHERE a.owner_id=? ORDER BY a.created_at DESC""", (owner_id,)).fetchall()
+    return {"automations": [{**_automation_row(row),
+        "last_task_status": row["last_task_status"], "last_task_summary": row["last_task_summary"]}
+        for row in rows]}
+
+
+@app.post("/v1/automations", dependencies=[Depends(auth)])
+def create_automation(body: AutomationInput, owner_id: str = Depends(auth)):
+    now = time.time()
+    next_at = _validate_automation(body, now) if body.enabled else None
+    automation_id = str(uuid.uuid4())
+    with db() as c:
+        c.execute("""INSERT INTO automations(id,owner_id,name,prompt,schedule_type,run_at,local_time,
+            timezone,weekdays_json,interval_minutes,enabled,next_run_at,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (automation_id, owner_id, body.name.strip(), body.prompt.strip(), body.schedule_type,
+             body.run_at, body.local_time, body.timezone, json.dumps(sorted(set(body.weekdays))),
+             body.interval_minutes, 1 if body.enabled else 0, next_at, now, now))
+        row = c.execute("SELECT * FROM automations WHERE id=? AND owner_id=?", (automation_id, owner_id)).fetchone()
+    return {"automation": _automation_row(row)}
+
+
+@app.put("/v1/automations/{automation_id}", dependencies=[Depends(auth)])
+def update_automation(automation_id: str, body: AutomationInput, owner_id: str = Depends(auth)):
+    now = time.time()
+    next_at = _validate_automation(body, now) if body.enabled else None
+    with db() as c:
+        changed = c.execute("""UPDATE automations SET name=?,prompt=?,schedule_type=?,run_at=?,
+            local_time=?,timezone=?,weekdays_json=?,interval_minutes=?,enabled=?,next_run_at=?,updated_at=?
+            WHERE id=? AND owner_id=?""",
+            (body.name.strip(), body.prompt.strip(), body.schedule_type, body.run_at,
+             body.local_time, body.timezone, json.dumps(sorted(set(body.weekdays))),
+             body.interval_minutes, 1 if body.enabled else 0, next_at, now, automation_id, owner_id)).rowcount
+        if not changed:
+            raise HTTPException(404, "Automation not found")
+        row = c.execute("SELECT * FROM automations WHERE id=? AND owner_id=?", (automation_id, owner_id)).fetchone()
+    return {"automation": _automation_row(row)}
+
+
+@app.post("/v1/automations/{automation_id}/pause", dependencies=[Depends(auth)])
+def pause_automation(automation_id: str, owner_id: str = Depends(auth)):
+    with db() as c:
+        changed = c.execute("UPDATE automations SET enabled=0,next_run_at=NULL,updated_at=? WHERE id=? AND owner_id=?",
+                            (time.time(), automation_id, owner_id)).rowcount
+    if not changed:
+        raise HTTPException(404, "Automation not found")
+    return {"id": automation_id, "status": "paused"}
+
+
+@app.post("/v1/automations/{automation_id}/resume", dependencies=[Depends(auth)])
+def resume_automation(automation_id: str, owner_id: str = Depends(auth)):
+    now = time.time()
+    with db() as c:
+        row = c.execute("SELECT * FROM automations WHERE id=? AND owner_id=?", (automation_id, owner_id)).fetchone()
+        if not row:
+            raise HTTPException(404, "Automation not found")
+        try:
+            next_at = next_occurrence(row["schedule_type"], now, row["timezone"], row["local_time"],
+                json.loads(row["weekdays_json"]), row["interval_minutes"], row["run_at"])
+        except AutomationScheduleError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        if next_at is None:
+            raise HTTPException(409, "One-time automation has expired; edit it to set a new run time")
+        c.execute("UPDATE automations SET enabled=1,next_run_at=?,updated_at=? WHERE id=? AND owner_id=?",
+                  (next_at, now, automation_id, owner_id))
+    return {"id": automation_id, "status": "active", "next_run_at": next_at}
+
+
+@app.post("/v1/automations/{automation_id}/run", dependencies=[Depends(auth)])
+def run_automation_now(automation_id: str, owner_id: str = Depends(auth)):
+    now = time.time()
+    task_id = str(uuid.uuid4())
+    request_key = "automation-manual:" + automation_id + ":" + str(uuid.uuid4())
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT * FROM automations WHERE id=? AND owner_id=?", (automation_id, owner_id)).fetchone()
+        if not row:
+            raise HTTPException(404, "Automation not found")
+        c.execute("""INSERT INTO tasks(id,prompt,status,created_at,updated_at,max_attempts,max_steps,
+            client_request_key,owner_id) VALUES(?,?,?,?,?,?,?,?,?)""",
+            (task_id, row["prompt"], "queued", now, now, MAX_STEP_ATTEMPTS, min(8, MAX_STEPS), request_key, owner_id))
+        c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                  (task_id, now, "created", "Automation manually triggered"))
+        c.execute("INSERT INTO automation_runs(id,automation_id,owner_id,task_id,scheduled_for,created_at) VALUES(?,?,?,?,?,?)",
+                  (str(uuid.uuid4()), automation_id, owner_id, task_id, now, now))
+        c.execute("UPDATE automations SET last_run_at=?,updated_at=? WHERE id=? AND owner_id=?",
+                  (now, now, automation_id, owner_id))
+    return {"automation_id": automation_id, "task_id": task_id, "status": "queued"}
+
+
+@app.delete("/v1/automations/{automation_id}", dependencies=[Depends(auth)])
+def delete_automation(automation_id: str, owner_id: str = Depends(auth)):
+    with db() as c:
+        changed = c.execute("DELETE FROM automations WHERE id=? AND owner_id=?", (automation_id, owner_id)).rowcount
+    if not changed:
+        raise HTTPException(404, "Automation not found")
+    return {"id": automation_id, "status": "deleted"}
 
 
 @app.post("/v1/chat/completions", dependencies=[Depends(auth)])
