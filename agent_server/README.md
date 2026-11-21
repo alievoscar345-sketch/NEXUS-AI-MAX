@@ -1,83 +1,86 @@
 # NEXUS Agent Core
 
-First cloud backend milestone for long-running NEXUS tasks. It runs separately from Android so queued work can continue when the phone app is closed.
+Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent tasks can continue while the phone app is closed.
 
 ## Implemented
-- Persistent SQLite task queue and event log.
-- Authenticated API to create, list, inspect, and cancel tasks.
-- Background worker and task planning through a provider-agnostic Model Gateway (OpenAI-compatible chat-completions adapters).\n- Optional multi-provider registry with purpose-based routing, explicit priority, and limited fallback for transient failures. The legacy single-provider environment variables remain supported.\n- Normalized provider errors, JSON response validation, and token-usage capture when the provider returns usage metadata.
-- Allowlisted actions: optional Tavily web search, HTTPS text/JSON fetching with private-network IP blocking, and task-scoped artifact creation.
-- Approval records for external side effects. This generic worker does not send messages, publish listings, make purchases, or modify third-party accounts.
-- Docker image and persistent data directory.
 
-## Durable task execution
-
-- Plans are persisted as ordered task steps before execution; each step records status, attempts, result/error, retry time, and a deterministic idempotency key.
-- Worker startup recovers tasks left in planning/running states after a process interruption. Supported current actions are read-only (search/fetch) or idempotent artifact writes; approval records are deduplicated by the step key.
-- The SQLite worker claims due tasks in a short BEGIN IMMEDIATE transaction, records a lease owner/expiry, and uses bounded exponential backoff for transient network/HTTP failures.
-- Task inspection includes per-step status and retry metadata. Cancellation is cooperative for active work.
-- API task creation accepts an optional idempotency_key (8–128 characters) to avoid duplicate submissions; max_steps is persisted per task.
-- This remains a single-process, single-replica SQLite prototype. The lease is not distributed coordination; do not run multiple replicas. PostgreSQL plus a durable queue/locking strategy is required for multi-worker production.
+- Authenticated API for creating, listing, inspecting, and cancelling tasks.
+- Persistent SQLite task queue, ordered task steps, event log, retry scheduling, and lease-fenced worker writes.
+- Task planning and evaluation through a provider-agnostic OpenAI-compatible Model Gateway.
+- Multi-provider routing using task category, configured benchmark metadata, cost/latency metadata, and provider priority.
+- Limited provider fallback for network failures, timeouts, and transient HTTP errors. No fallback after streamed output has started.
+- Server-sent event streams for chat responses and task events.
+- Encrypted per-owner provider credentials; API keys are never returned by provider or model listing endpoints.
+- Standard chat endpoint with bounded text and inline image payloads. The Android app extracts supported document text locally and sends it as message context.
+- Provider connectivity checks and an image-understanding probe that can confirm and enable the provider's vision capability.
+- Task-scoped workspace files, artifact creation/listing/reading, and Android agent-console integration.
+- Optional Tavily search and HTTPS text/JSON fetching with private-network destination protections.
+- Approval records for proposed external side effects.
 
 ## Not yet implemented
-Avito Messenger/listing connectors, browser automation, isolated code execution, Android task dashboard, push notifications, and automatic execution of approved external actions (approval records currently pause the task; the generic backend does not execute third-party side effects). Do not connect a real Avito account until official API credentials and permissions are configured.
 
-## Model Gateway configuration\n\nThe default configuration remains the legacy AnyModel endpoint in `.env.example`. To register multiple compatible providers, set `NEXUS_MODEL_PROVIDERS` to a JSON array. Each entry requires `id`, `base_url`, `model`, and `api_key_env`; optional fields are `priority`, `purposes`, and `enabled`. The API key is read from the named server environment variable and is never included in the registry JSON. Purpose routing can be overridden with `NEXUS_MODEL_ROUTE_PLANNING` and `NEXUS_MODEL_ROUTE_EVALUATION` (comma-separated provider IDs).\n\nFallback is attempted only for network failures, timeouts, and transient HTTP statuses (408, 429, 5xx). Authentication and other permanent HTTP errors stop routing to avoid hiding configuration problems. This first gateway milestone does not yet provide provider price accounting, hard token budgets, streaming, vision, or vendor-specific tool calling; those require verified provider metadata and separate tests.\n\n## Deploy
-1. Deploy this directory as a Docker service on a host with persistent volumes.
-2. Mount persistent storage at /data.
-3. Configure environment variables from .env.example. Set a strong random NEXUS_AGENT_API_KEY and NEXUS_LLM_API_KEY. Set model and base URL; add TAVILY_API_KEY for search.
-4. Expose port 8080 over HTTPS only.
-5. Verify GET /health.
+Avito Messenger/listing connectors, general browser automation, isolated arbitrary code execution, push notifications, and automatic execution of approved external actions. Approval currently records the decision and resumes the task; it does not send messages, publish listings, make purchases, or modify third-party accounts. Do not connect a real Avito account until official API credentials and permissions are configured.
 
-Keep model provider credentials on the server; never embed them in the APK or commit them to Git.
+## Deployment and security
 
-## API
-Every /v1 route requires Authorization: Bearer with NEXUS_AGENT_API_KEY.
-- POST /v1/tasks with JSON {"prompt":"Research competitors and prepare a report","autonomy":"level3","max_steps":8}
-- GET /v1/tasks
-- GET /v1/tasks/{id} (includes event log)
-- POST /v1/tasks/{id}/cancel
-- GET /v1/approvals
-- POST /v1/approvals/{id} with JSON {"approved":true,"note":"Reviewed"}
+1. Deploy this directory as a Docker service with persistent storage mounted at `/data`.
+2. Configure environment variables from `.env.example`.
+3. Set a strong random `NEXUS_AGENT_API_KEY` and `NEXUS_CREDENTIAL_ENCRYPTION_KEY`.
+4. Expose port 8080 over HTTPS only and verify `GET /health`.
+5. Back up the database and encryption key separately. If the encryption key is lost, stored provider credentials cannot be recovered.
 
-## Operations and security
-Use persistent disk, HTTPS, strong API key, provider spend limits, backups, and host resource limits. The worker is single-process and SQLite-backed; use one service replica until shared queue/database and distributed locking exist. The service is not an arbitrary shell sandbox and must not be exposed to untrusted users.
+The worker is a single-process, single-replica SQLite prototype. Do not run multiple replicas. PostgreSQL plus a durable queue and distributed locking are required before multi-worker production deployment. The service is not an arbitrary shell sandbox and must not be exposed to untrusted users.
 
-## Benchmark-aware model selection
+## Model Gateway configuration
 
-The gateway now infers a coarse task category (coding, research, math, vision, writing, or general) without an extra model call. It ranks eligible providers using configured category benchmark scores, then cost and latency metadata. Quality has the dominant weight; cost and latency help choose between similarly capable candidates. Existing explicit purpose-route environment variables remain manual overrides, and provider priority remains the deterministic tie-breaker.
+The legacy single-provider configuration remains supported through `NEXUS_LLM_BASE_URL`, `NEXUS_LLM_MODEL`, and `NEXUS_LLM_API_KEY`. The default endpoint is the compatible AnyModel gateway.
 
-Add `benchmark_scores` (0..100), `cost_per_million_tokens`, `latency_ms`, `ranking_source`, and `ranking_updated_at` to each provider entry in `NEXUS_MODEL_PROVIDERS`. Scores must be traceable to named, dated public benchmarks or NEXUS internal evaluations. The gateway does not currently fetch leaderboard data live, validate benchmark methodology, or automatically refresh model rankings. Missing metadata falls back to neutral scoring and then configured priority; it must not be interpreted as evidence that a model is objectively better. Vision routing metadata is preparatory: image payload handling is not implemented yet.
+For multiple server-configured providers, set `NEXUS_MODEL_PROVIDERS` to a JSON array. Each entry requires `id`, `base_url`, `model`, and `api_key_env`. Optional fields include `priority`, `purposes`, `enabled`, `capabilities`, `benchmark_scores`, `cost_per_million_tokens`, `latency_ms`, `ranking_source`, and `ranking_updated_at`. Never place API keys directly in this JSON; the gateway reads them from the named environment variables.
 
-A benchmark score is not a universal intelligence score. Maintain separate measurements by task category, account for benchmark freshness and contamination risk, and run NEXUS-specific evaluations before promoting a model. Never put provider API keys in the registry JSON or commit secrets.
+Use `"capabilities":["vision"]` only when the selected model is confirmed to accept image input. User-managed providers can be tested from Android settings; a successful green-square vision probe enables the saved vision capability. The probe makes a small provider request and may incur token charges.
 
-Retry controls: NEXUS_AGENT_STEP_MAX_ATTEMPTS (default 3, capped at 8) and NEXUS_AGENT_RETRY_BASE_SECONDS (default 10 seconds, exponential backoff capped at 15 minutes). Only transient network failures and selected HTTP statuses are retried. Permanent HTTP/authentication errors and validation failures are terminal.
+Task routing infers a coarse category (coding, research, math, vision, writing, or general) without an additional model call. Quality benchmark scores dominate the ranking; cost and latency help break ties. These scores are configuration metadata, not a universal intelligence score. Record the benchmark name, date, and methodology. Missing scores are neutral, not evidence of model quality.
 
+Purpose routing can be overridden with `NEXUS_MODEL_ROUTE_PLANNING` and `NEXUS_MODEL_ROUTE_EVALUATION` (comma-separated provider IDs). Retry controls are `NEXUS_AGENT_STEP_MAX_ATTEMPTS` (default 3, capped at 8) and `NEXUS_AGENT_RETRY_BASE_SECONDS` (default 10 seconds, exponential backoff capped at 15 minutes).
 
 ## User-managed provider credentials
 
-The backend supports encrypted per-owner provider credentials through:
-- `GET /v1/providers` — list provider metadata only; API keys are never returned.
-- `GET /v1/models` — list built-in and user-managed model IDs, sources, purposes, and declared capabilities without exposing credentials.
-- `POST /v1/chat/completions` — normalized standard chat endpoint; supports text and bounded inline image data URLs.
-- `supports_vision` may be enabled per provider only after confirming the selected model accepts image input.
+The backend supports encrypted per-owner credentials through:
+
+- `GET /v1/providers` — provider metadata only; secrets are never returned.
+- `GET /v1/models` — configured model IDs, source, purpose, and declared capabilities.
 - `POST /v1/providers` — add or replace a credential using `provider_id`, `base_url`, `model`, and `api_key`.
-- `POST /v1/providers/{provider_id}/test` — make a minimal completion request to verify connectivity.
-- `DELETE /v1/providers/{provider_id}` — remove the stored credential.
+- `POST /v1/providers/{provider_id}/test` — verify ordinary text connectivity.
+- `POST /v1/providers/{provider_id}/test-vision` — submit a small generated image and verify that the model identifies its color. Only a confirmed result enables `supports_vision`.
+- `DELETE /v1/providers/{provider_id}` — remove a stored credential.
 
-The supported provider hosts are allowlisted to reduce SSRF exposure: AnyModel, OpenRouter, OpenAI, Google Gemini OpenAI-compatible endpoint, DeepSeek, xAI, and Mistral. Direct Anthropic Messages API is not yet supported by this OpenAI-compatible gateway; Claude models can currently be reached through compatible gateways such as AnyModel or OpenRouter. Custom hosts are intentionally rejected until a stricter egress policy exists.
+Provider base URLs are HTTPS-only and host-allowlisted: AnyModel, OpenRouter, OpenAI, Google Gemini OpenAI-compatible endpoint, DeepSeek, xAI, and Mistral. Direct Anthropic Messages API is not supported by this OpenAI-compatible gateway; Claude models can be reached through compatible gateways such as AnyModel or OpenRouter.
 
-Provider API keys are encrypted in SQLite using AES-256-GCM with a fresh 96-bit nonce per write. Set `NEXUS_CREDENTIAL_ENCRYPTION_KEY` to a base64-encoded 32-byte random key (for example, generate it with `openssl rand -base64 32`). Keep this encryption key outside the database and repository, back it up separately, and never log it. If it is lost, stored provider credentials cannot be recovered. HTTPS is required for all provider calls.
+Provider API keys are encrypted in SQLite using AES-256-GCM with a fresh 96-bit nonce per write. Set `NEXUS_CREDENTIAL_ENCRYPTION_KEY` to a base64-encoded 32-byte random key (for example, generate one with `openssl rand -base64 32`). Keep it outside the database and repository.
 
-User-managed credentials are merged with server-configured built-in providers inside the Model Gateway, so task planning and evaluation can use either source. Credential metadata is owner-scoped; tasks, task reads, cancellations, and approvals are also filtered by owner. In this single-user prototype, the existing server bearer key maps to the fixed owner `personal`. A verified account/JWT authentication layer must replace that mapping before opening the service to multiple users; a client-supplied owner ID is never trusted.
+The current bearer-token authentication maps requests to the fixed owner `personal`. This is a single-user prototype, not multi-account authentication. A verified account/JWT layer must replace this mapping before the service is opened to multiple users; client-supplied owner IDs are never trusted.
 
-The provider credential API is not exposed to Android yet. Android settings integration and account authentication remain separate milestones. Provider connectivity testing sends a minimal prompt to the selected provider and may incur a small token charge.
+## Chat and attachments
 
+`POST /v1/chat/completions` accepts OpenAI-style message history and returns a normalized completion. Set `stream=true` for an SSE response. The endpoint uses the same Model Gateway and merges built-in server providers with the authenticated owner's encrypted credentials.
 
-## Standard chat gateway
+Images are accepted only as base64 data URLs for PNG, JPEG, WEBP, or GIF, with an 8 MB decoded limit per image and a 12 MB total request limit. Remote image URLs are rejected to prevent server-side URL fetching. Vision requests are routed only to providers declaring the `vision` capability.
 
-The authenticated `POST /v1/chat/completions` endpoint accepts OpenAI-style message history and returns a normalized chat completion. It uses the same Model Gateway and merges server-configured built-in providers with the authenticated owner's encrypted provider credentials. The Android client can route ordinary text chat and inline image attachments through this endpoint after the Agent Server URL and access token are configured.
+The Android app currently extracts text locally from TXT, MD, CSV, JSON, XML, PDF, and DOCX files. Scanned PDFs use on-device OCR. Extracted document text is bounded before being sent to the model; the app displays a truncation notice when the limit is reached. Image and document files are not uploaded to a generic server-side file store.
 
-Image input is accepted only as base64 data URLs for PNG, JPEG, WEBP, or GIF, with an 8 MB decoded limit per image and a 12 MB total chat payload limit. Remote image URLs are rejected to prevent server-side URL fetching. A provider must explicitly declare the `vision` capability before it can be selected for image requests. User-managed providers expose this as the `supports_vision` setting; environment-defined providers use `"capabilities":["vision"]`. This flag is an operator assertion, not automatic model capability discovery, so enable it only for models whose provider documentation confirms image input.
+The chat gateway does not yet proxy provider-specific web-search or reasoning tools. Those remain in the direct-provider mode until compatible server-side tool adapters are implemented.
 
-The first chat gateway version is non-streaming and does not yet proxy provider-specific web-search or reasoning controls. Those paths remain in the existing direct-provider mode until compatible server-side tool adapters are implemented.
+## Task API
+
+Every `/v1` route requires `Authorization: Bearer` with `NEXUS_AGENT_API_KEY`.
+
+- `POST /v1/tasks` — create a task; accepts an optional idempotency key and bounded max_steps.
+- `GET /v1/tasks` — list tasks for the authenticated owner.
+- `GET /v1/tasks/{id}` — inspect a task and its event log.
+- `GET /v1/tasks/{id}/events?after_event_id=N` — resume the task event stream from a cursor.
+- `POST /v1/tasks/{id}/cancel` — request cooperative cancellation.
+- `GET /v1/approvals` — list pending approvals.
+- `POST /v1/approvals/{id}` — record an approval decision.
+- Task workspace and artifact endpoints are task- and owner-scoped.
+
+The supported worker actions are deliberately constrained. Do not interpret approval records as evidence that an external action was executed.
