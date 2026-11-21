@@ -150,7 +150,7 @@ def init_db():
         for name, definition in migrations.items():
             if name not in existing:
                 c.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
-        c.execute("""
+        c.executescript("""
         CREATE TABLE IF NOT EXISTS task_checkpoints(
             id TEXT PRIMARY KEY, task_id TEXT NOT NULL, owner_id TEXT NOT NULL,
             sequence INTEGER NOT NULL, step_id TEXT, reason TEXT NOT NULL,
@@ -221,7 +221,7 @@ def init_db():
         """)
         if "supports_vision" not in _columns(c, "provider_credentials"):
             c.execute("ALTER TABLE provider_credentials ADD COLUMN supports_vision INTEGER NOT NULL DEFAULT 0")
-        c.execute("""
+        c.executescript("""
         CREATE TABLE IF NOT EXISTS projects(
             id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL,
             description TEXT NOT NULL DEFAULT '', context TEXT NOT NULL DEFAULT '',
