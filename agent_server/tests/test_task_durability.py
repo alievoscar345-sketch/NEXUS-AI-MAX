@@ -1905,3 +1905,24 @@ class DurableTaskTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorkerLeaseContextTests(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_claims_keep_independent_lease_owners(self):
+        observed = []
+
+        async def capture_owner(task_id):
+            await asyncio.sleep(0)
+            observed.append((task_id, main._current_lease_owner()))
+
+        with patch.object(main, "process", new=AsyncMock(side_effect=capture_owner)):
+            await asyncio.gather(
+                main._run_claimed_task("task-a", "worker-a:lease-a"),
+                main._run_claimed_task("task-b", "worker-b:lease-b"),
+            )
+
+        self.assertCountEqual(
+            observed,
+            [("task-a", "worker-a:lease-a"), ("task-b", "worker-b:lease-b")],
+        )
+        self.assertEqual(main._current_lease_owner(), main.WORKER_ID)
