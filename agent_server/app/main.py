@@ -1344,6 +1344,50 @@ def write_task_workspace_file(tid: str, body: WorkspaceFileInput, owner_id: str 
         raise HTTPException(422, str(exc)) from exc
 
 
+
+@app.get("/v1/tasks/{tid}/artifacts", dependencies=[Depends(auth)])
+def list_task_artifacts(tid: str, owner_id: str = Depends(auth)):
+    _require_owned_task(tid, owner_id)
+    root = WORKSPACE.resolve()
+    prefix = tid + "-"
+    artifacts = []
+    if root.exists():
+        for item in root.iterdir():
+            if not item.name.startswith(prefix):
+                continue
+            try:
+                resolved = item.resolve(strict=True)
+                if resolved.parent != root or not resolved.is_file():
+                    continue
+                stat = resolved.stat()
+                artifacts.append({"name": item.name[len(prefix):], "bytes": stat.st_size})
+            except (OSError, RuntimeError):
+                continue
+    artifacts.sort(key=lambda item: item["name"].casefold())
+    return {"artifacts": artifacts[:100]}
+
+
+@app.get("/v1/tasks/{tid}/artifacts/file", dependencies=[Depends(auth)])
+def read_task_artifact(tid: str, name: str, owner_id: str = Depends(auth)):
+    _require_owned_task(tid, owner_id)
+    if (not name or len(name) > 100 or name in {".", ".."} or
+            Path(name).name != name or "/" in name or "\\" in name or "\x00" in name):
+        raise HTTPException(422, "Invalid artifact name")
+    root = WORKSPACE.resolve()
+    target = (root / (tid + "-" + name)).resolve()
+    if target.parent != root or not target.is_file():
+        raise HTTPException(404, "Artifact not found")
+    try:
+        if target.stat().st_size > 100_000:
+            raise HTTPException(413, "Artifact exceeds the 100 KB preview limit")
+        content = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(415, "Artifact is not a UTF-8 text file") from exc
+    except OSError as exc:
+        raise HTTPException(404, "Artifact not found") from exc
+    return {"name": name, "content": content}
+
+
 @app.post("/v1/tasks/{tid}/cancel", dependencies=[Depends(auth)])
 def cancel_task(tid: str, owner_id: str = Depends(auth)):
     return _cancel_task_record(tid, owner_id)
