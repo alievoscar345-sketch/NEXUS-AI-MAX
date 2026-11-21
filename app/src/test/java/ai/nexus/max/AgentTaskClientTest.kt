@@ -191,8 +191,10 @@ class AgentTaskClientTest {
 
     @Test fun downloadArtifactReturnsRawBytesAndUsesAuthenticatedDownloadRoute() {
         transport.responseBody = "APK-binary-content"
-        val bytes = client.downloadArtifact("task-10", "release.apk")
-        assertEquals("APK-binary-content", bytes.toString(Charsets.UTF_8))
+        val output = java.io.ByteArrayOutputStream()
+        val copied = client.downloadArtifact("task-10", "release.apk", output)
+        assertEquals("APK-binary-content", output.toString("UTF-8"))
+        assertEquals("APK-binary-content".length.toLong(), copied)
         val request = transport.lastRequest!!
         assertEquals("GET", request.method)
         assertEquals("/v1/tasks/task-10/artifacts/download", request.url.encodedPath)
