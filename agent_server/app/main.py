@@ -312,7 +312,7 @@ class _PinnedPublicResolver(aiohttp.abc.AbstractResolver):
             raise OSError("No validated address is compatible with the requested address family")
         return results
 
-    async def close(self):
+    def close(self):
         return None
 
 
@@ -339,7 +339,7 @@ async def _fetch_public_text(url: str) -> str:
     # in the connector. TLS still verifies the original URL hostname/SNI.
     addresses = _resolve_public_addresses(host, 443)
     resolver = _PinnedPublicResolver(addresses)
-    connector = aiohttp.TCPConnector(resolver=resolver, use_dns_cache=False, ssl=True)
+    connector = aiohttp.TCPConnector(resolver=resolver, use_dns_cache=False, ssl=True, family=socket.AF_UNSPEC)
     timeout = aiohttp.ClientTimeout(total=25, connect=10, sock_read=15)
     async with aiohttp.ClientSession(
         timeout=timeout, connector=connector,

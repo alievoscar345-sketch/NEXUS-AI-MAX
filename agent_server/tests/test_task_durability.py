@@ -782,7 +782,7 @@ class DurableTaskTests(unittest.TestCase):
         async def run():
             with patch.object(main.socket, "getaddrinfo", side_effect=AssertionError("DNS must not be repeated")):
                 results = await resolver.resolve("example.test", 443, socket.AF_UNSPEC)
-            await resolver.close()
+            resolver.close()
             return results
 
         results = asyncio.run(run())
