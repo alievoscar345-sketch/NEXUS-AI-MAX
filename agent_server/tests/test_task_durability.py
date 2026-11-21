@@ -758,6 +758,43 @@ class DurableTaskTests(unittest.TestCase):
         with self.assertRaises(main.HTTPException):
             main.validate_chat_messages(invalid)
 
+    def test_safe_url_rejects_private_and_malformed_destinations(self):
+        blocked = [
+            "http://example.com",
+            "https://example.com:8443/path",
+            "https://user:pass@example.com/path",
+            "https://localhost./",
+            "https://127.0.0.1/",
+            "https://[::1]/",
+            "https://metadata.google.internal/",
+            "https://example.com:invalid/",
+        ]
+        for url in blocked:
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                main.safe_url(url)
+
+    def test_safe_url_rejects_mixed_public_and_private_dns_answers(self):
+        records = [
+            (None, None, None, None, ("93.184.216.34", 443)),
+            (None, None, None, None, ("10.0.0.8", 443)),
+        ]
+        with patch.object(main.socket, "getaddrinfo", return_value=records):
+            with self.assertRaisesRegex(ValueError, "Private IP"):
+                main.safe_url("https://example.test/path")
+
+    def test_safe_url_accepts_public_dns_and_normalizes_hostname_for_policy(self):
+        records = [(None, None, None, None, ("93.184.216.34", 443))]
+        with patch.object(main.socket, "getaddrinfo", return_value=records):
+            self.assertEqual(main.safe_url("https://example.test./path"),
+                             "https://example.test./path")
+
+    def test_agent_auth_rejects_invalid_and_accepts_exact_bearer_token(self):
+        with patch.object(main, "API_KEY", "test-secret-token"):
+            with self.assertRaises(main.HTTPException) as raised:
+                main.auth("Bearer test-secret-tokeN")
+            self.assertEqual(raised.exception.status_code, 401)
+            self.assertEqual(main.auth("Bearer test-secret-token"), "personal")
+
     def test_rejects_unlisted_provider_hosts(self):
         with self.assertRaises(main.HTTPException):
             main.validate_provider_base_url("https://attacker.example/v1")

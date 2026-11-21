@@ -4,6 +4,7 @@ import asyncio
 import contextvars
 import base64
 import hashlib
+import hmac
 import re
 import ipaddress
 import json
@@ -189,7 +190,7 @@ def serialize(row):
 def auth(authorization: str | None = Header(default=None)) -> str:
     if not API_KEY:
         raise HTTPException(503, "Agent API is not configured")
-    if authorization != "Bearer " + API_KEY:
+    if not hmac.compare_digest(authorization or "", "Bearer " + API_KEY):
         raise HTTPException(401, "Invalid agent API key")
     # Single-user deployment identity. Replace with a verified JWT/account subject before onboarding users.
     return "personal"
@@ -273,16 +274,25 @@ async def llm_json(system: str, user: str, purpose: str = "general",
 
 
 def safe_url(value: str) -> str:
-    p = urlparse(value)
-    if p.scheme != "https" or not p.hostname or p.username or p.password:
-        raise ValueError("Only public HTTPS URLs are allowed")
-    host = p.hostname.lower()
-    if host in {"localhost", "metadata.google.internal"} or host.endswith((".local", ".internal")):
+    try:
+        p = urlparse(value)
+        port = p.port
+    except ValueError as exc:
+        raise ValueError("Malformed URL") from exc
+    if (p.scheme != "https" or not p.hostname or p.username or p.password
+            or port not in (None, 443)):
+        raise ValueError("Only public HTTPS URLs on port 443 are allowed")
+    host = p.hostname.lower().rstrip(".")
+    if not host or host in {"localhost", "metadata.google.internal"} or host.endswith((".local", ".internal")):
         raise ValueError("Private network destinations are blocked")
     try:
-        for item in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM):
-            if not ipaddress.ip_address(item[4][0]).is_global:
-                raise ValueError("Private IP destinations are blocked")
+        try:
+            addresses = [ipaddress.ip_address(host)]
+        except ValueError:
+            records = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+            addresses = [ipaddress.ip_address(item[4][0]) for item in records]
+        if not addresses or any(not address.is_global for address in addresses):
+            raise ValueError("Private IP destinations are blocked")
     except socket.gaierror as exc:
         raise ValueError("Unable to resolve destination host") from exc
     return value
