@@ -1199,6 +1199,31 @@ class DurableTaskTests(unittest.TestCase):
             )
         self.assertIsNone(main.claim_task())
 
+    def test_new_task_defaults_to_automatic_model_selection(self):
+        body = main.NewTask(prompt="Research this subject")
+        self.assertEqual(body.model_selection, "auto")
+        created = main.create_task(body, owner_id="personal")
+        with main.db() as conn:
+            row = conn.execute("SELECT model_selection FROM tasks WHERE id=?", (created["id"],)).fetchone()
+        self.assertEqual(row["model_selection"], "auto")
+
+    def test_manual_model_selection_is_validated_and_persisted(self):
+        body = main.NewTask(prompt="Build an Android application", model_selection="user-claude")
+        with patch.object(main, "provider_models_for_owner",
+                          return_value=[SimpleNamespace(id="user-claude")]):
+            created = main.create_task(body, owner_id="personal")
+        with main.db() as conn:
+            row = conn.execute("SELECT model_selection FROM tasks WHERE id=?", (created["id"],)).fetchone()
+        self.assertEqual(row["model_selection"], "user-claude")
+
+    def test_unknown_manual_model_selection_is_rejected(self):
+        body = main.NewTask(prompt="Build an Android application", model_selection="user-missing")
+        with patch.object(main, "provider_models_for_owner",
+                          return_value=[SimpleNamespace(id="user-claude")]):
+            with self.assertRaises(main.HTTPException) as raised:
+                main.create_task(body, owner_id="personal")
+        self.assertEqual(raised.exception.status_code, 422)
+
     def test_create_task_deduplicates_client_request_key(self):
         body = main.NewTask(prompt="Research this subject", idempotency_key="client-key-0001")
         first = main.create_task(body, owner_id="personal")
