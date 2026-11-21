@@ -100,6 +100,20 @@ The backend now stores owner-scoped automations and dispatches due schedules int
 
 A schedule creates ordinary NEXUS agent tasks. It does not grant new tool permissions: existing restrictions and approval gates still apply. This is a single-instance prototype scheduler, not a highly available distributed scheduler.
 
+### Isolated code execution
+
+The task worker supports the `code_execute` action through `app.sandbox`. It never evaluates task commands in the backend process or through a shell. The action accepts an argument array (not a shell string) and an execution timeout from 1 to 300 seconds. The executable must be one of: `python`, `python3`, `pytest`, `node`, `npm`, `java`, `javac`, `gradle`, or `./gradlew`.
+
+Execution is disabled unless all prerequisites are explicitly configured:
+- Docker CLI and daemon are available to the backend.
+- The backend runs as a non-root user.
+- `NEXUS_SANDBOX_IMAGE` names a preloaded image pinned by its full SHA-256 digest. The worker uses `--pull=never`; it does not download arbitrary images.
+- The selected image contains the requested executable and required dependencies.
+
+Each invocation uses a disposable container with network and IPC disabled, a read-only container root, all Linux capabilities dropped, no-new-privileges, PID/memory/CPU limits, a non-root container user matching the backend UID/GID, and only the current task workspace mounted writable. Stdout and stderr are each capped at 64 KiB; the worker attempts to stop timed-out containers. The runner image itself must be built and audited by the operator. This is a hardened Docker boundary, not a substitute for a dedicated VM/microVM isolation service against hostile multi-tenant workloads.
+
+The feature returns a blocked result instead of pretending execution occurred when Docker, the image, or safe backend-user configuration is missing. The Android app does not need Docker access.
+
 ### Autonomous software project planning
 
 For software-development tasks, the planner now prioritizes explicit requirements and acceptance criteria, workspace inspection, architecture/file layout, ordered file-level implementation, build configuration, tests, and setup documentation. It maintains a requirements-to-deliverables progress document, reviews written files, and can request independent architect/implementer/critic review before finalizing. The default plan budget is 24 steps (server maximum 30).
