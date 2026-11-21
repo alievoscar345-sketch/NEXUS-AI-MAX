@@ -251,7 +251,7 @@ private const val MAX_CHAT_ATTACHMENT_TEXT_CHARS = 180_000
  * The backend accepts at most 200,000 characters per text part; keep headroom
  * for JSON/provider metadata and make any truncation explicit to the model.
  */
-private fun buildChatTextWithAttachments(
+internal fun buildChatTextWithAttachments(
     prompt: String,
     attachments: List<ChatAttachment>
 ): String {
