@@ -1160,6 +1160,45 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun testRemoteProviderVision(providerId: String) {
+        if (providerVaultBusy) return
+        providerVaultBusy = true
+        viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val request = Request.Builder()
+                        .url(agentServerUrl.trimEnd('/') + "/v1/providers/" + Uri.encode(providerId) + "/test-vision")
+                        .header("Authorization", "Bearer " + agentAuthorization())
+                        .post(ByteArray(0).toRequestBody(null)).build()
+                    client.newCall(request).execute().use { response ->
+                        val raw = response.body?.string().orEmpty()
+                        if (!response.isSuccessful) {
+                            val detail = try { JSONObject(raw).optString("detail") } catch (_: Exception) { "" }
+                            throw IllegalStateException(detail.ifBlank { "Проверка изображений не прошла: HTTP " + response.code })
+                        }
+                        JSONObject(raw)
+                    }
+                }
+                val confirmed = result.optBoolean("supports_vision", false)
+                if (confirmed) {
+                    remoteProviders = remoteProviders.map {
+                        if (it.providerId == providerId) it.copy(supportsVision = true) else it
+                    }
+                    providerVaultMessage = "Понимание изображений подтверждено тестом · " +
+                        result.optString("model") + " · " + result.optInt("latency_ms") + " мс. Возможность включена."
+                    loadRemoteModels()
+                } else {
+                    providerVaultMessage = "Модель не подтвердила распознавание тестового изображения. Vision не включён. Ответ: " +
+                        result.optString("response").take(160)
+                }
+            } catch (e: Exception) {
+                providerVaultMessage = e.message ?: "Не удалось проверить понимание изображений."
+            } finally {
+                providerVaultBusy = false
+            }
+        }
+    }
+
     fun deleteRemoteProvider(providerId: String) {
         if (providerVaultBusy) return
         providerVaultBusy = true
@@ -3143,6 +3182,10 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                             onClick = { vm.testRemoteProvider(remote.providerId) },
                                             enabled = !vm.providerVaultBusy
                                         ) { Text("Проверить", color = Blue, fontSize = 10.sp) }
+                                        TextButton(
+                                            onClick = { vm.testRemoteProviderVision(remote.providerId) },
+                                            enabled = !vm.providerVaultBusy
+                                        ) { Text("Проверить фото", color = Blue, fontSize = 10.sp) }
                                         TextButton(
                                             onClick = { vm.deleteRemoteProvider(remote.providerId) },
                                             enabled = !vm.providerVaultBusy
