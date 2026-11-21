@@ -1413,6 +1413,12 @@ def recover_interrupted_tasks():
             (now, now, now))
 
 
+
+def _recover_expired_task_leases() -> None:
+    """Recover only tasks whose durable worker lease has actually expired."""
+    recover_interrupted_tasks()
+
+
 def _claim_task_with_lease() -> tuple[str, str] | None:
     now = time.time()
     with db() as c:
@@ -1492,6 +1498,7 @@ async def worker():
     logger = logging.getLogger("nexus.worker")
     while True:
         try:
+            await run_db(_recover_expired_task_leases)
             await run_db(_dispatch_due_automations)
             claimed = await run_db(_claim_task_with_lease)
             if claimed:
