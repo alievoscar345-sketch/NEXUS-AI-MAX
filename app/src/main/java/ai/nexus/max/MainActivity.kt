@@ -1319,10 +1319,10 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         val retainedPaths = buildSet {
             chats.forEach { chat ->
                 chat.lines.forEach { line ->
-                    line.attachments.mapNotNull { it.localPath.takeIf(String::isNotBlank) }.forEach(::add)
+                    line.attachments.mapNotNull { attachment -> attachment.localPath.takeIf { it.isNotBlank() } }.forEach { add(it) }
                 }
             }
-            pendingAttachments.mapNotNull { it.localPath.takeIf(String::isNotBlank) }.forEach(::add)
+            pendingAttachments.mapNotNull { attachment -> attachment.localPath.takeIf { it.isNotBlank() } }.forEach { add(it) }
         }
         val directory = File(getApplication<Application>().filesDir, "nexus_attachments")
         viewModelScope.launch(Dispatchers.IO) {
