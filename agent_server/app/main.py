@@ -2522,6 +2522,8 @@ async def _github_build_android(tid: str, integration: dict[str, str],
                        "nexus_task_id": tid},
         })
     while run is None:
+        if await run_db(_task_cancelled, tid):
+            return {"build_status": "cancelled_before_run_discovery", "branch": selected_branch}
         await run_db(_assert_task_lease_for_github_write, tid)
         runs = await _github_api(token, "GET",
             workflow_endpoint + "/runs?branch=" + quote(selected_branch, safe="") +
@@ -2536,11 +2538,11 @@ async def _github_build_android(tid: str, integration: dict[str, str],
     run_id = int(run["id"])
     run_url = str(run.get("html_url", ""))
     while True:
-        await run_db(_assert_task_lease_for_github_write, tid)
         if await run_db(_task_cancelled, tid):
             await _github_api(token, "POST", f"/repos/{repo_path}/actions/runs/{run_id}/cancel")
             return {"build_status": "cancellation_requested", "run_id": run_id,
                     "run_url": run_url, "branch": selected_branch}
+        await run_db(_assert_task_lease_for_github_write, tid)
         current = await _github_api(token, "GET", f"/repos/{repo_path}/actions/runs/{run_id}")
         if current and current.get("status") == "completed":
             run = current
