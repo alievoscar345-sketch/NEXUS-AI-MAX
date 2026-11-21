@@ -51,6 +51,30 @@ class DurableTaskTests(unittest.TestCase):
         self.assertTrue(row["lease_owner"].startswith(main.WORKER_ID + ":"))
         self.assertGreater(row["lease_expires_at"], now)
 
+    def test_concurrent_workers_never_claim_the_same_task(self):
+        now = time.time()
+        with main.db() as conn:
+            for index in range(2):
+                conn.execute(
+                    "INSERT INTO tasks(id,prompt,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+                    (f"task-concurrent-{index}", "concurrent claim", "queued", now, now),
+                )
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            claimed = list(pool.map(lambda _: main.claim_task(), range(8)))
+
+        claimed_ids = [task_id for task_id in claimed if task_id is not None]
+        self.assertEqual(len(claimed_ids), 2)
+        self.assertEqual(len(set(claimed_ids)), 2)
+        with main.db() as conn:
+            rows = conn.execute(
+                "SELECT id,lease_owner,status FROM tasks WHERE id LIKE 'task-concurrent-%'"
+            ).fetchall()
+        self.assertEqual({row["status"] for row in rows}, {"running"})
+        owners = [row["lease_owner"] for row in rows]
+        self.assertEqual(len(set(owners)), 2)
+        self.assertTrue(all(owner.startswith(main.WORKER_ID + ":") for owner in owners))
+
     def test_persists_steps_and_stable_idempotency_key(self):
         now = time.time()
         with main.db() as conn:
