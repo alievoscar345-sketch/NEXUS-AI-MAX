@@ -2408,6 +2408,45 @@ class DurableTaskTests(unittest.TestCase):
         finally:
             main._LEASE_OWNER.reset(token)
 
+
+    def test_legacy_checkpoint_does_not_delete_artifacts_without_a_snapshot_manifest(self):
+        now = time.time()
+        task_id = "legacy-checkpoint-task"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id) "
+                "VALUES(?,?,?,?,?,?)",
+                (task_id, "legacy restore", "retry_wait", now, now, "owner-a"),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        checkpoint_root = Path(self.temp.name) / "checkpoints"
+        task_root = workspace / task_id
+        task_root.mkdir(parents=True)
+        (task_root / "source.txt").write_text("confirmed", encoding="utf-8")
+        artifact = workspace / (task_id + "-release.apk")
+        artifact.write_bytes(b"existing artifact")
+        archive_dir = checkpoint_root / task_id
+        archive_dir.mkdir(parents=True)
+        archive = archive_dir / "000000000001.zip"
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            bundle.writestr("source.txt", "confirmed")
+        digest = main._sha256_file(archive)
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO task_checkpoints(id,task_id,owner_id,sequence,step_id,reason,"
+                "plan_json,results_json,steps_json,archive_path,archive_sha256,archive_bytes,"
+                "project_manifest_json,artifact_manifest_json,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("legacy-checkpoint-1", task_id, "owner-a", 1, None, "pre-manifest",
+                 "[]", "[]", "[]", str(archive), digest, archive.stat().st_size,
+                 "{}", "[]", now),
+            )
+        with patch.object(main, "WORKSPACE", workspace), patch.object(main, "CHECKPOINT_ROOT", checkpoint_root):
+            (task_root / "source.txt").write_text("unconfirmed", encoding="utf-8")
+            main._restore_latest_task_checkpoint(task_id)
+            self.assertEqual((task_root / "source.txt").read_text(encoding="utf-8"), "confirmed")
+            self.assertEqual(artifact.read_bytes(), b"existing artifact")
+
     def test_db_context_commits_and_closes_connection(self):
         now = time.time()
         with main.db() as conn:
