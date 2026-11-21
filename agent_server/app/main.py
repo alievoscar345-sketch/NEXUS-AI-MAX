@@ -455,7 +455,7 @@ def _task_workspace_root(tid: str) -> Path:
 def _workspace_target(tid: str, relative_path: str) -> tuple[Path, Path]:
     if not isinstance(relative_path, str) or not relative_path.strip() or len(relative_path) > 240:
         raise ValueError("Workspace path must be a non-empty relative path up to 240 characters")
-    if "\\x00" in relative_path or relative_path.startswith(("/", "\\")) or "\\" in relative_path:
+    if "\x00" in relative_path or relative_path.startswith(("/", "\\")) or "\\" in relative_path:
         raise ValueError("Workspace path must be a safe relative POSIX path")
     parts = relative_path.split("/")
     if any(part in {"", ".", ".."} for part in parts):
@@ -505,6 +505,7 @@ def _workspace_read(tid: str, relative_path: str) -> dict[str, Any]:
 def _workspace_list(tid: str, relative_path: str = ".") -> dict[str, Any]:
     if relative_path == ".":
         root = _task_workspace_root(tid)
+        root.mkdir(parents=True, exist_ok=True)
         target = root
     else:
         _, target = _workspace_target(tid, relative_path)
