@@ -434,6 +434,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var agentMessage by mutableStateOf<String?>(null)
         private set
+
+    @Volatile private var agentEventStreamCall: okhttp3.Call? = null
+    @Volatile private var agentEventStreamTaskId: String? = null
     var remoteProviders by mutableStateOf<List<RemoteProvider>>(emptyList())
         private set
     var remoteModels by mutableStateOf<List<RemoteModel>>(emptyList())
@@ -569,6 +572,59 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         activeAgentTaskId = taskId
         prefs.edit().putString("agent_active_task_id", taskId).apply()
         if (taskId == null) activeAgentTask = null
+    }
+
+    fun startAgentEventStream(taskId: String) {
+        if (!agentServerConfigured || agentServerUrl.isBlank()) return
+        if (agentEventStreamTaskId == taskId && agentEventStreamCall?.isCanceled == false) return
+        stopAgentEventStream()
+        val cursor = activeAgentTask?.takeIf { it.id == taskId }?.events?.maxOfOrNull { it.id } ?: 0L
+        agentEventStreamTaskId = taskId
+        try {
+            val api = agentTaskClient()
+            agentEventStreamCall = api.streamTaskEvents(
+                taskId = taskId,
+                afterEventId = cursor,
+                onEvent = { event ->
+                    viewModelScope.launch {
+                        if (agentEventStreamTaskId != taskId) return@launch
+                        val current = activeAgentTask?.takeIf { it.id == taskId }
+                        if (current != null && current.events.none { it.id == event.id }) {
+                            activeAgentTask = current.copy(
+                                events = (current.events + event).distinctBy { it.id }
+                                    .sortedBy { it.id }.takeLast(500)
+                            )
+                        }
+                        refreshAgentConsole(taskId)
+                    }
+                },
+                onError = { error ->
+                    viewModelScope.launch {
+                        if (agentEventStreamTaskId == taskId) {
+                            agentMessage = "Поток событий прерван: ${error.message ?: "ошибка соединения"}"
+                        }
+                    }
+                },
+                onClosed = {
+                    viewModelScope.launch {
+                        if (agentEventStreamTaskId == taskId) {
+                            agentEventStreamCall = null
+                            refreshAgentConsole(taskId)
+                        }
+                    }
+                }
+            )
+        } catch (error: Exception) {
+            agentEventStreamCall = null
+            agentEventStreamTaskId = null
+            agentMessage = error.message ?: "Не удалось открыть поток событий агента."
+        }
+    }
+
+    fun stopAgentEventStream() {
+        agentEventStreamTaskId = null
+        agentEventStreamCall?.cancel()
+        agentEventStreamCall = null
     }
 
     fun refreshAgentConsole(taskId: String? = null) {
@@ -3094,9 +3150,14 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
     var selectedTask by remember { mutableStateOf(vm.activeAgentTaskId) }
     LaunchedEffect(vm.agentServerUrl, vm.agentServerConfigured, selectedTask) {
         if (vm.agentServerConfigured && vm.agentServerUrl.isNotBlank()) {
-            while (true) {
-                delay(3000)
-                vm.refreshAgentConsole(selectedTask)
+            try {
+                while (true) {
+                    if (selectedTask != null) vm.startAgentEventStream(selectedTask)
+                    vm.refreshAgentConsole(selectedTask)
+                    delay(if (selectedTask == null) 10000 else 15000)
+                }
+            } finally {
+                vm.stopAgentEventStream()
             }
         }
     }
