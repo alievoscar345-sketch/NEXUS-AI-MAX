@@ -1,6 +1,6 @@
 # NEXUS Agent Core
 
-Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent tasks can continue while the phone app is closed.
+Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent tasks can continue while the phone app is closed. The API and durable task worker can run as separate restartable services.
 
 ## Implemented
 
@@ -23,6 +23,20 @@ Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent 
 ## Not yet implemented
 
 Avito Messenger/listing connectors, general browser automation, automatic pull-request creation, production-grade VM/microVM isolation, push notifications, and automatic execution of approved external actions. Approval currently records the decision and resumes the task; it does not send messages, publish listings, make purchases, or modify third-party accounts. Do not connect a real Avito account until official API credentials and permissions are configured.
+
+## Always-on background worker
+
+For phone-independent execution, deploy both services from `docker-compose.yml` on an always-on Docker host with a persistent disk:
+
+1. Copy `.env.example` to `.env` and set the API key, credential-encryption key, and model-provider credentials. Keep `.env` private and out of Git.
+2. Start both services with `docker compose up -d --build`.
+3. Confirm the API health check is healthy and the `worker` service remains running: `docker compose ps`.
+4. Keep the named `nexus_data` volume. It contains the SQLite database, task checkpoints, workspace files, and artifacts.
+5. Configure host-level backups for that volume and securely back up the encryption key separately.
+
+The API service has `NEXUS_AGENT_WORKER_ENABLED=false`; it accepts requests but does not execute tasks. The separate `worker` service runs `python -m app.worker`, claims durable tasks, renews leases, and recovers expired in-progress tasks after restart. Both services must use the same persistent volume and identical environment configuration. Run exactly one worker replica with this SQLite deployment. Do not deploy this Compose file to a scale-to-zero/serverless platform: both services must remain running. Android is only a client; closing or powering off the phone does not stop work already accepted by the server. Tasks that require files or hardware available only on the phone cannot continue while it is offline.
+
+This is a single-host deployment profile, not high availability. A host outage pauses execution until the host returns. Multi-host workers require moving from SQLite/local volume to PostgreSQL and a shared durable workspace/object store before enabling replicas.
 
 ## Deployment and security
 
