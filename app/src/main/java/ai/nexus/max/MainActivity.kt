@@ -446,6 +446,13 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var agentWorkspaceBusy by mutableStateOf(false)
         private set
+    var agentArtifacts by mutableStateOf<List<AgentArtifact>>(emptyList())
+        private set
+    var agentArtifactFileName by mutableStateOf<String?>(null)
+        private set
+    var agentArtifactContent by mutableStateOf("")
+        private set
+
 
 
     @Volatile private var agentEventStreamCall: okhttp3.Call? = null
@@ -678,7 +685,14 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         agentWorkspaceBusy = true
         viewModelScope.launch {
             try {
-                val entries = withContext(Dispatchers.IO) { agentTaskClient().listWorkspace(taskId, path) }
+                val api = agentTaskClient()
+                val entries = withContext(Dispatchers.IO) { api.listWorkspace(taskId, path) }
+                val artifacts = withContext(Dispatchers.IO) { api.listArtifacts(taskId) }
+                if (agentWorkspaceTaskId != taskId) {
+                    agentArtifactFileName = null
+                    agentArtifactContent = ""
+                }
+                agentArtifacts = artifacts
                 if (agentWorkspaceTaskId != taskId) {
                     agentWorkspaceFilePath = null
                     agentWorkspaceFileContent = ""
@@ -745,6 +759,42 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 agentMessage = "Файл сохранён на устройстве."
             } catch (e: Exception) {
                 agentMessage = e.message ?: "Не удалось экспортировать файл."
+            } finally {
+                agentWorkspaceBusy = false
+            }
+        }
+    }
+    fun openAgentArtifact(taskId: String, name: String) {
+        if (agentWorkspaceBusy) return
+        agentWorkspaceBusy = true
+        viewModelScope.launch {
+            try {
+                val content = withContext(Dispatchers.IO) { agentTaskClient().readArtifact(taskId, name) }
+                agentArtifactFileName = name
+                agentArtifactContent = content
+                agentMessage = null
+            } catch (e: Exception) {
+                agentMessage = e.message ?: "Не удалось открыть результат агента."
+            } finally {
+                agentWorkspaceBusy = false
+            }
+        }
+    }
+
+    fun exportAgentArtifactFile(uri: Uri) {
+        if (agentWorkspaceBusy || agentArtifactFileName == null) return
+        val content = agentArtifactContent
+        agentWorkspaceBusy = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val output = getApplication<Application>().contentResolver.openOutputStream(uri)
+                        ?: throw IllegalStateException("Не удалось открыть файл для сохранения.")
+                    output.use { it.write(content.toByteArray(Charsets.UTF_8)) }
+                }
+                agentMessage = "Результат агента сохранён на устройстве."
+            } catch (e: Exception) {
+                agentMessage = e.message ?: "Не удалось экспортировать результат."
             } finally {
                 agentWorkspaceBusy = false
             }
@@ -3244,6 +3294,11 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
     ) { uri ->
         uri?.let { vm.exportAgentWorkspaceFile(it) }
     }
+    val artifactExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        uri?.let { vm.exportAgentArtifactFile(it) }
+    }
     var selectedTask by remember { mutableStateOf(vm.activeAgentTaskId) }
     LaunchedEffect(vm.activeAgentTaskId) {
         selectedTask = vm.activeAgentTaskId
@@ -3369,6 +3424,34 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                         if (vm.agentWorkspaceEntries.isEmpty()) item {
                             Text(if (vm.agentWorkspaceBusy) "Загрузка…" else "В этой папке пока нет файлов.", color = Muted, fontSize = 9.sp)
                         }
+                    }
+                    Text("РЕЗУЛЬТАТЫ АГЕНТА", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    LazyColumn(Modifier.heightIn(max = 75.dp)) {
+                        items(vm.agentArtifacts, key = { it.name }) { artifact ->
+                            Row(
+                                Modifier.fillMaxWidth().clickable(enabled = !vm.agentWorkspaceBusy) { vm.openAgentArtifact(task.id, artifact.name) }.padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(artifact.name, color = MainText, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                                Text("${artifact.bytes} Б", color = Muted, fontSize = 9.sp)
+                            }
+                        }
+                        if (vm.agentArtifacts.isEmpty()) item { Text("Агент пока не создал отдельных файлов-результатов.", color = Muted, fontSize = 9.sp) }
+                    }
+                    if (vm.agentArtifactFileName != null) {
+                        Text("РЕЗУЛЬТАТ · " + vm.agentArtifactFileName, color = Muted, fontSize = 9.sp)
+                        OutlinedTextField(
+                            value = vm.agentArtifactContent,
+                            onValueChange = {},
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 2,
+                            maxLines = 5,
+                            readOnly = true
+                        )
+                        TextButton(
+                            onClick = { artifactExportLauncher.launch(vm.agentArtifactFileName ?: "nexus-result.txt") },
+                            enabled = !vm.agentWorkspaceBusy
+                        ) { Text("Скачать результат", color = Blue, fontSize = 10.sp) }
                     }
                     if (vm.agentWorkspaceTaskId == task.id && vm.agentWorkspaceFilePath != null) {
                         var draft by remember(vm.agentWorkspaceFilePath, vm.agentWorkspaceFileContent) { mutableStateOf(vm.agentWorkspaceFileContent) }
