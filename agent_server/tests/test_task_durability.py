@@ -1980,6 +1980,82 @@ class DurableTaskTests(unittest.TestCase):
             ).fetchone()["n"]
         self.assertEqual(count, 0)
 
+    def test_project_files_are_materialized_into_attached_task_workspace(self):
+        project_id = self._create_test_project()
+        main.write_project_file(
+            project_id,
+            main.ProjectFileWriteInput(path="src/app.py", content="print('project source')"),
+            owner_id="tenant-project",
+        )
+        task = main._create_task_record(
+            main.NewTask(prompt="Improve the project", project_id=project_id),
+            "tenant-project",
+        )
+        workspace = Path(self.temp.name) / "workspace"
+        with patch.object(main, "WORKSPACE", workspace):
+            first = main._materialize_project_files(task["id"], "tenant-project", project_id)
+            second = main._materialize_project_files(task["id"], "tenant-project", project_id)
+            content = (workspace / task["id"] / "src" / "app.py").read_text(encoding="utf-8")
+        self.assertEqual(first["files"], 1)
+        self.assertTrue(second["already_materialized"])
+        self.assertEqual(content, "print('project source')")
+
+    def test_task_can_save_workspace_file_as_a_new_project_revision(self):
+        project_id = self._create_test_project()
+        task = main._create_task_record(
+            main.NewTask(prompt="Edit the project", project_id=project_id),
+            "tenant-project",
+        )
+        owner = "worker:project-save-test"
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "UPDATE tasks SET status='running',lease_owner=?,lease_expires_at=? WHERE id=?",
+                (owner, now + 300, task["id"]),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        task_root = workspace / task["id"]
+        task_root.mkdir(parents=True)
+        (task_root / "README.md").write_text("saved from task", encoding="utf-8")
+        with patch.object(main, "WORKSPACE", workspace):
+            token = main._LEASE_OWNER.set(owner)
+            try:
+                saved = main._save_project_workspace_file(
+                    task["id"], "README.md", "Task result"
+                )
+            finally:
+                main._LEASE_OWNER.reset(token)
+        current = main.read_project_file(project_id, "README.md", owner_id="tenant-project")
+        self.assertEqual(saved["revision"], 1)
+        self.assertEqual(current["content"], "saved from task")
+        self.assertEqual(current["message"], "Task result")
+
+    def test_stale_task_lease_cannot_save_project_file(self):
+        project_id = self._create_test_project()
+        task = main._create_task_record(
+            main.NewTask(prompt="Stale writer", project_id=project_id),
+            "tenant-project",
+        )
+        with main.db() as conn:
+            conn.execute(
+                "UPDATE tasks SET status='running',lease_owner=?,lease_expires_at=? WHERE id=?",
+                ("new-owner", time.time() + 300, task["id"]),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        task_root = workspace / task["id"]
+        task_root.mkdir(parents=True)
+        (task_root / "README.md").write_text("stale write", encoding="utf-8")
+        with patch.object(main, "WORKSPACE", workspace):
+            token = main._LEASE_OWNER.set("stale-owner")
+            try:
+                saved = main._save_project_workspace_file(task["id"], "README.md")
+            finally:
+                main._LEASE_OWNER.reset(token)
+        self.assertIsNone(saved)
+        self.assertEqual(
+            main.list_project_files(project_id, owner_id="tenant-project")["files"], []
+        )
+
     def test_db_context_commits_and_closes_connection(self):
         now = time.time()
         with main.db() as conn:
