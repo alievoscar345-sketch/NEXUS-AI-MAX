@@ -10,6 +10,7 @@ import stat
 import zipfile
 import ipaddress
 import json
+import logging
 import math
 import mimetypes
 import os
@@ -1488,7 +1489,7 @@ def _dispatch_due_automations() -> int:
 
 
 async def worker():
-    logger = __import__("logging").getLogger("nexus.worker")
+    logger = logging.getLogger("nexus.worker")
     while True:
         try:
             await run_db(_dispatch_due_automations)
