@@ -2189,7 +2189,8 @@ class DurableTaskTests(unittest.TestCase):
                 (task_root / "src" / "main.py").write_text("uncommitted mutation", encoding="utf-8")
                 (task_root / "untracked.tmp").write_text("must disappear", encoding="utf-8")
                 with main.db() as conn:
-                    conn.execute("UPDATE tasks SET plan_json='[{\\"title\\":\\"corrupt future plan\\"}]' WHERE id='checkpoint-task'")
+                    conn.execute("UPDATE tasks SET plan_json=? WHERE id='checkpoint-task'",
+                                 ('[{"title":"corrupt future plan"}]',))
                     conn.execute("UPDATE task_steps SET status='running',result_json='' WHERE id='step-1'")
                 restored = main._restore_latest_task_checkpoint("checkpoint-task")
                 self.assertEqual(restored["sequence"], 1)
