@@ -547,6 +547,17 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     var projectDescriptionDraft by mutableStateOf("")
     var projectContextDraft by mutableStateOf("")
     var editingProjectId by mutableStateOf<String?>(null)
+    var projectFiles by mutableStateOf<List<NexusProjectFile>>(emptyList())
+        private set
+    var projectFileVersions by mutableStateOf<List<NexusProjectFile>>(emptyList())
+        private set
+    var projectFilesBusy by mutableStateOf(false)
+        private set
+    var projectFilesMessage by mutableStateOf<String?>(null)
+        private set
+    var projectFilePathDraft by mutableStateOf("")
+    var projectFileContentDraft by mutableStateOf("")
+    var selectedProjectFilePath by mutableStateOf<String?>(null)
     var nexusSkills by mutableStateOf<List<NexusSkill>>(emptyList())
         private set
     var skillBusy by mutableStateOf(false)
@@ -977,6 +988,83 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 projectMessage = "Проект удалён. История задач сохранена без привязки к проекту."
             } catch (e: Exception) { projectMessage = e.message ?: "Не удалось удалить проект." }
             finally { projectBusy = false }
+        }
+    }
+
+    fun refreshProjectFiles(projectId: String) {
+        if (projectFilesBusy || !agentServerConfigured || agentServerUrl.isBlank()) return
+        projectFilesBusy = true
+        viewModelScope.launch {
+            try {
+                projectFiles = withContext(Dispatchers.IO) { agentTaskClient().listProjectFiles(projectId) }
+                projectFilesMessage = null
+            } catch (e: Exception) {
+                projectFilesMessage = e.message ?: "Не удалось загрузить файлы проекта."
+            } finally { projectFilesBusy = false }
+        }
+    }
+
+    fun openProjectFile(projectId: String, path: String) {
+        if (projectFilesBusy) return
+        projectFilesBusy = true
+        viewModelScope.launch {
+            try {
+                val loaded = withContext(Dispatchers.IO) { agentTaskClient().readProjectFile(projectId, path) }
+                projectFilePathDraft = loaded.file.path
+                projectFileContentDraft = loaded.content
+                selectedProjectFilePath = loaded.file.path
+                projectFileVersions = withContext(Dispatchers.IO) {
+                    agentTaskClient().listProjectFileVersions(projectId, loaded.file.path)
+                }
+                projectFilesMessage = "Загружена версия ${loaded.file.revision}."
+            } catch (e: Exception) {
+                projectFilesMessage = e.message ?: "Не удалось открыть файл проекта."
+            } finally { projectFilesBusy = false }
+        }
+    }
+
+    fun saveProjectFile(projectId: String) {
+        val path = projectFilePathDraft.trim()
+        if (projectFilesBusy || path.isBlank()) return
+        projectFilesBusy = true
+        val content = projectFileContentDraft
+        viewModelScope.launch {
+            try {
+                val revision = withContext(Dispatchers.IO) {
+                    agentTaskClient().writeProjectFile(projectId, path, content)
+                }
+                selectedProjectFilePath = path
+                projectFiles = withContext(Dispatchers.IO) { agentTaskClient().listProjectFiles(projectId) }
+                projectFileVersions = withContext(Dispatchers.IO) {
+                    agentTaskClient().listProjectFileVersions(projectId, path)
+                }
+                projectFilesMessage = "Сохранена версия ${revision.revision}. SHA-256: ${revision.sha256.take(12)}…"
+            } catch (e: Exception) {
+                projectFilesMessage = e.message ?: "Не удалось сохранить файл проекта."
+            } finally { projectFilesBusy = false }
+        }
+    }
+
+    fun restoreProjectFile(projectId: String, revision: Int) {
+        val path = selectedProjectFilePath ?: return
+        if (projectFilesBusy) return
+        projectFilesBusy = true
+        viewModelScope.launch {
+            try {
+                val restored = withContext(Dispatchers.IO) {
+                    agentTaskClient().restoreProjectFile(projectId, path, revision)
+                }
+                val loaded = withContext(Dispatchers.IO) { agentTaskClient().readProjectFile(projectId, path) }
+                projectFileContentDraft = loaded.content
+                projectFilePathDraft = loaded.file.path
+                projectFiles = withContext(Dispatchers.IO) { agentTaskClient().listProjectFiles(projectId) }
+                projectFileVersions = withContext(Dispatchers.IO) {
+                    agentTaskClient().listProjectFileVersions(projectId, path)
+                }
+                projectFilesMessage = "Создана версия ${restored.revision} из версии ${revision}."
+            } catch (e: Exception) {
+                projectFilesMessage = e.message ?: "Не удалось восстановить версию."
+            } finally { projectFilesBusy = false }
         }
     }
 
