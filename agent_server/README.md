@@ -116,7 +116,7 @@ This is bounded, resumable background execution—not an unlimited promise that 
 
 Every `/v1` route requires `Authorization: Bearer` with `NEXUS_AGENT_API_KEY`.
 
-- `POST /v1/tasks` — create a task; accepts an optional idempotency key and bounded max_steps.
+- `POST /v1/tasks` — create a task; accepts an optional idempotency key, bounded max_steps, optional active `project_id`, and up to 24 KB of separate user-supplied text-file context (`context_text`). The file context is treated as untrusted content during planning.
 - `GET /v1/tasks` — list tasks for the authenticated owner.
 - `GET /v1/tasks/{id}` — inspect a task and its event log.
 - `GET /v1/tasks/{id}/events?after_event_id=N` — resume the task event stream from a cursor.
