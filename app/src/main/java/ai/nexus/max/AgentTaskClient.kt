@@ -31,6 +31,7 @@ data class AgentApproval(val id: String, val taskId: String, val description: St
 data class AgentWorkspaceEntry(val name: String, val type: String, val bytes: Long?)
 data class AgentArtifact(val name: String, val bytes: Long)
 data class NexusMemory(val id: String, val title: String, val content: String, val category: String, val pinned: Boolean, val updatedAt: Double)
+data class MemorySuggestion(val title: String, val content: String, val category: String)
 data class NexusAutomation(
     val id: String, val name: String, val prompt: String, val scheduleType: String,
     val localTime: String, val timezone: String, val weekdays: List<Int>,
@@ -197,6 +198,22 @@ class AgentTaskClient(
     fun readArtifact(taskId: String, name: String): String =
         request("GET", listOf("v1", "tasks", taskId, "artifacts", "file"),
             query = mapOf("name" to name)).optString("content")
+
+    fun suggestMemories(userMessages: List<String>): List<MemorySuggestion> {
+        val messages = JSONArray()
+        userMessages.takeLast(20).forEach { text ->
+            if (text.isNotBlank()) messages.put(JSONObject().put("role", "user").put("content", text.take(4000)))
+        }
+        val items = request("POST", listOf("v1", "memories", "suggest"),
+            JSONObject().put("messages", messages)).optJSONArray("suggestions") ?: JSONArray()
+        return (0 until items.length()).mapNotNull { index ->
+            val item = items.optJSONObject(index) ?: return@mapNotNull null
+            val title = item.optString("title").trim()
+            val content = item.optString("content").trim()
+            val category = item.optString("category", "fact")
+            if (title.isBlank() || content.isBlank()) null else MemorySuggestion(title, content, category)
+        }
+    }
 
     fun listAutomations(): List<NexusAutomation> {
         val items = request("GET", listOf("v1", "automations")).optJSONArray("automations") ?: JSONArray()
