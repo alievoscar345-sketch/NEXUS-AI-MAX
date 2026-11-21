@@ -3694,7 +3694,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     Divider(color = DividerTone, modifier = Modifier.padding(vertical = 4.dp))
                     Text("GITHUB · ДОСТУП К РЕПОЗИТОРИЮ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     Text(
-                        "Создай Fine-grained personal access token в GitHub и разреши только выбранный репозиторий: Metadata · Read-only, Contents · Read and write. Токен отправляется только на твой HTTPS NEXUS Server и хранится там зашифрованным. Не отправляй его в чат.",
+                        "Создай Fine-grained personal access token в GitHub и разреши только выбранный репозиторий: Metadata · Read-only, Contents · Read and write, Actions · Read and write. Токен отправляется только на твой HTTPS NEXUS Server и хранится там зашифрованным. Не отправляй его в чат.",
                         color = Muted, fontSize = 9.sp, lineHeight = 13.sp
                     )
                     OutlinedTextField(
