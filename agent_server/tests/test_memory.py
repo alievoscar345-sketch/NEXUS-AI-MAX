@@ -42,7 +42,7 @@ class MemoryRetrievalTests(unittest.TestCase):
     def test_retrieval_prioritizes_title_matches_and_pinned_memories(self):
         self.add_memory("content", "owner-a", "General note", "I am interested in progressive overload training")
         self.add_memory("title", "owner-a", "Muscle training plan", "A short personal note")
-        self.add_memory("pinned", "owner-a", "Muscle training preference", "Prefer evidence-based training", pinned=True)
+        self.add_memory("pinned", "owner-a", "Muscle training plan", "Prefer evidence-based training", pinned=True)
 
         result = main._retrieve_relevant_memories(
             "owner-a", [{"role": "user", "content": "Help me with a muscle training plan"}]
