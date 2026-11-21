@@ -384,6 +384,19 @@ class DurableTaskTests(unittest.TestCase):
         finally:
             main._LEASE_OWNER.reset(stale)
 
+    def test_github_actions_log_parser_redacts_tokens_and_bounds_excerpts(self):
+        archive_path = Path(self.temp.name) / "actions-logs.zip"
+        secret = "github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            archive.writestr("1_build/step.txt", "build failed with " + secret + "\n" + ("x" * 20000))
+            archive.writestr("2_build/metadata.json", "{\"not\":\"a log\"}")
+        logs = main._read_github_actions_log_archive(archive_path, secret)
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0]["file"], "step.txt")
+        self.assertNotIn(secret, logs[0]["tail"])
+        self.assertIn("[REDACTED_GITHUB_TOKEN]", logs[0]["tail"])
+        self.assertLessEqual(len(logs[0]["tail"]), 12000)
+
     def test_github_android_build_dispatch_waits_and_publishes_signed_apk(self):
         from unittest.mock import AsyncMock
         now = time.time()
