@@ -14,7 +14,7 @@ Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent 
 - Encrypted per-owner provider credentials; API keys are never returned by provider or model listing endpoints.
 - Standard chat endpoint with bounded text and inline image payloads. The Android app extracts supported document text locally and sends it as message context.
 - Provider connectivity checks and an image-understanding probe that can confirm and enable the provider's vision capability.
-- Task-scoped workspace files, artifact creation/listing/reading, and Android agent-console integration.
+- Task-scoped workspace files plus binary artifact publication, listing, text preview, SHA-256 metadata, and authenticated downloads; Android can save original files such as APKs to device storage.
 - Optional isolated Docker code execution with digest-pinned images, no network egress, read-only container root, no fixed CPU/memory/PID/wall-clock ceilings, and task-workspace-only writable mount; requires explicit operator configuration.
 - Optional Tavily search and HTTPS text/JSON fetching with private-network destination protections.
 - Approval records for proposed external side effects.
@@ -119,7 +119,7 @@ The feature returns a blocked result instead of pretending execution occurred wh
 
 ### Autonomous software project planning
 
-For software-development tasks, the planner now prioritizes explicit requirements and acceptance criteria, workspace inspection, architecture/file layout, ordered file-level implementation, build configuration, tests, and setup documentation. It maintains a requirements-to-deliverables progress document, reviews written files, and can request independent architect/implementer/critic review before finalizing. The default plan budget is 24 steps (server maximum 30).
+For software-development tasks, the planner now prioritizes explicit requirements and acceptance criteria, workspace inspection, architecture/file layout, ordered file-level implementation, build configuration, tests, and setup documentation. It maintains a requirements-to-deliverables progress document, reviews written files, and can request independent architect/implementer/critic review before finalizing. The planner has no fixed total-step ceiling. `max_steps` is legacy request metadata only and does not truncate plans or dynamically appended work.
 
 Important limitation: the agent can now execute allowlisted commands in an optional isolated Docker runner when the operator provisions it. Without that runner, it can author source code and test files but cannot execute them. Repository checkout/branch integration and production-grade VM/microVM isolation are still missing.
 
@@ -136,12 +136,15 @@ Every `/v1` route requires `Authorization: Bearer` with `NEXUS_AGENT_API_KEY`.
 - `POST /v1/tasks` — create a task; accepts an optional idempotency key, optional max_steps metadata, optional active `project_id`, and up to 24 KB of separate user-supplied text-file context (`context_text`). The file context is treated as untrusted content during planning.
 - `GET /v1/tasks` — list tasks for the authenticated owner.
 - `GET /v1/tasks/{id}` — inspect a task and its event log.
+- `GET /v1/tasks/{id}/artifacts` — list published task artifacts with byte size, MIME type, and SHA-256.
+- `GET /v1/tasks/{id}/artifacts/file?name=...` — preview UTF-8 text artifacts up to 100 KB.
+- `GET /v1/tasks/{id}/artifacts/download?name=...` — download the original artifact bytes with an attachment filename.
 - `GET /v1/tasks/{id}/events?after_event_id=N` — resume the task event stream from a cursor.
 - `POST /v1/tasks/{id}/cancel` — request cooperative cancellation.
 - `POST /v1/tasks/{id}/pause` and `/resume` — pause at a durable step boundary and continue later; an in-flight step is allowed to finish before pausing.
 - `GET /v1/approvals` — list pending approvals.
 - `POST /v1/approvals/{id}` — record an approval decision.
-- Task workspace and artifact endpoints are task- and owner-scoped.
+- Task workspace and artifact endpoints are task- and owner-scoped. The planner can publish a file from its task workspace with the `publish_artifact` action (`input.path`, optional `input.filename`). Binary files are copied atomically into persistent artifact storage; the default publication size ceiling is 2 GiB and can be changed with `NEXUS_AGENT_MAX_ARTIFACT_BYTES`. This storage ceiling is a configurable safety bound, not a limit on task steps or duration.
 
 The supported worker actions are deliberately constrained. Do not interpret approval records as evidence that an external action was executed.
 
