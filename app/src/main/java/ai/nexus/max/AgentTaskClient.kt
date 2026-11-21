@@ -102,7 +102,7 @@ class AgentTaskClient(
         query: Map<String, String> = emptyMap()
     ): JSONObject {
         val builder = base.newBuilder()
-        segments.forEach(builder::addPathSegment)
+        segments.forEach { segment -> builder.addPathSegment(segment) }
         query.forEach { (key, value) -> builder.addQueryParameter(key, value) }
         val requestBuilder = Request.Builder().url(builder.build())
             .header("Authorization", "Bearer $token")
