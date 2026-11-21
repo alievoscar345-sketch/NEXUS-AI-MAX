@@ -521,6 +521,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var agentCheckpointBusy by mutableStateOf(false)
         private set
+    private var agentCheckpointTaskId: String? = null
     var agentArtifacts by mutableStateOf<List<AgentArtifact>>(emptyList())
         private set
     var agentArtifactFileName by mutableStateOf<String?>(null)
@@ -1386,13 +1387,22 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshAgentCheckpoints(taskId: String) {
         if (agentCheckpointBusy || !agentServerConfigured || agentServerUrl.isBlank()) return
+        if (agentCheckpointTaskId != taskId) {
+            agentCheckpointTaskId = taskId
+            agentCheckpointLatestSequence = 0
+            agentCheckpoints = emptyList()
+        }
+        val cursor = agentCheckpointLatestSequence
         agentCheckpointBusy = true
         viewModelScope.launch {
             try {
-                val result = withContext(Dispatchers.IO) { agentTaskClient().listTaskCheckpoints(taskId) }
+                val result = withContext(Dispatchers.IO) {
+                    agentTaskClient().listTaskCheckpoints(taskId, afterSequence = cursor)
+                }
                 if (activeAgentTaskId == taskId || activeAgentTask?.id == taskId) {
-                    agentCheckpointLatestSequence = result.first
-                    agentCheckpoints = result.second
+                    agentCheckpointLatestSequence = maxOf(agentCheckpointLatestSequence, result.first)
+                    agentCheckpoints = (result.second + agentCheckpoints)
+                        .distinctBy { it.id }.sortedByDescending { it.sequence }
                 }
             } catch (e: Exception) {
                 agentMessage = e.message ?: "Не удалось загрузить историю контрольных точек."
@@ -1423,6 +1433,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 activeAgentTask = loadedTask
                 selectAgentTask(taskId)
                 agentTasks = listOf(loadedTask) + agentTasks.filterNot { it.id == taskId }
+                agentCheckpointTaskId = taskId
                 agentCheckpointLatestSequence = history.first
                 agentCheckpoints = history.second
                 agentWorkspaceTaskId = taskId
