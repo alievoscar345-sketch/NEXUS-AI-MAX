@@ -29,6 +29,7 @@ data class AgentTaskEvent(val id: Long, val createdAt: Double, val kind: String,
 data class AgentTaskStep(val index: Int, val title: String, val action: String, val status: String, val error: String)
 
 data class AgentApproval(val id: String, val taskId: String, val description: String, val status: String)
+data class NexusGitHubIntegration(val connected: Boolean, val repoFullName: String, val githubLogin: String, val defaultBranch: String)
 data class AgentWorkspaceEntry(val name: String, val type: String, val bytes: Long?)
 data class AgentArtifact(val name: String, val bytes: Long, val contentType: String, val sha256: String)
 data class NexusMemory(val id: String, val title: String, val content: String, val category: String, val pinned: Boolean, val updatedAt: Double)
@@ -166,6 +167,33 @@ class AgentTaskClient(
             }
         })
         return call
+    }
+
+    fun githubStatus(): NexusGitHubIntegration {
+        val obj = request("GET", listOf("v1", "github", "status"))
+        val connected = obj.optBoolean("connected")
+        val item = obj.optJSONObject("integration")
+        return NexusGitHubIntegration(
+            connected,
+            item?.optString("repo_full_name").orEmpty(),
+            item?.optString("github_login").orEmpty(),
+            item?.optString("default_branch").orEmpty()
+        )
+    }
+
+    fun connectGitHub(repoFullName: String, token: String): NexusGitHubIntegration {
+        require(repoFullName.matches(Regex("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"))) {
+            "GitHub repository must use owner/repository format"
+        }
+        require(token.isNotBlank()) { "GitHub token is missing" }
+        val obj = request("POST", listOf("v1", "github", "connect"),
+            JSONObject().put("repo_full_name", repoFullName.trim()).put("token", token.trim()))
+        return NexusGitHubIntegration(true, obj.optString("repo_full_name"),
+            obj.optString("github_login"), obj.optString("default_branch"))
+    }
+
+    fun disconnectGitHub() {
+        request("DELETE", listOf("v1", "github", "connect"))
     }
 
     fun listTasks(limit: Int = 30): List<AgentTaskSnapshot> {
