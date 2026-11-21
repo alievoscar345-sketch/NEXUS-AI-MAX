@@ -1,16 +1,7 @@
 name: Android PR Build
 
 on:
-  pull_request:
-    branches:
-      - nexus-1.0-development
-      - 'nexus-agent/**'
-    paths:
-      - 'app/**'
-      - 'build.gradle.kts'
-      - 'settings.gradle.kts'
-      - 'gradle.properties'
-      - '.github/workflows/android-pr.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
