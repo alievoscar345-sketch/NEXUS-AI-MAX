@@ -1857,6 +1857,28 @@ class DurableTaskTests(unittest.TestCase):
         self.assertEqual(task["status"], "queued")
         self.assertEqual(approval["status"], "rejected")
 
+    def test_worker_metrics_report_queue_depth_and_oldest_pending_age(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("queued-1", "queued task", "queued", now - 120, now),
+            )
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("retry-1", "retry task", "retry_wait", now - 60, now),
+            )
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("running-1", "running task", "running", now - 30, now),
+            )
+        heartbeat, counts, oldest = main._read_worker_metrics()
+        self.assertIsNone(heartbeat)
+        self.assertEqual(counts["queued"], 1)
+        self.assertEqual(counts["retry_wait"], 1)
+        self.assertEqual(counts["running"], 1)
+        self.assertAlmostEqual(oldest, now - 120, delta=1)
+
     def test_worker_heartbeat_is_persisted_and_can_be_marked_stale(self):
         main._write_worker_heartbeat("running")
         heartbeat = main._read_worker_heartbeat()
