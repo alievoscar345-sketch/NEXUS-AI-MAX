@@ -525,7 +525,12 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var memoryMessage by mutableStateOf<String?>(null)
         private set
-
+    var nexusAutomations by mutableStateOf<List<NexusAutomation>>(emptyList())
+        private set
+    var automationBusy by mutableStateOf(false)
+        private set
+    var automationMessage by mutableStateOf<String?>(null)
+        private set
 
 
     @Volatile private var agentEventStreamCall: okhttp3.Call? = null
@@ -744,6 +749,69 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             } finally {
                 memoryBusy = false
             }
+        }
+    }
+
+    fun refreshAutomations() {
+        if (automationBusy || !agentServerConfigured || agentServerUrl.isBlank()) return
+        automationBusy = true
+        viewModelScope.launch {
+            try {
+                nexusAutomations = withContext(Dispatchers.IO) { agentTaskClient().listAutomations() }
+                automationMessage = null
+            } catch (e: Exception) {
+                automationMessage = e.message ?: "Не удалось загрузить автоматизации."
+            } finally { automationBusy = false }
+        }
+    }
+
+    fun createAutomation(name: String, prompt: String, scheduleType: String, localTime: String,
+                         weekdays: List<Int>, intervalMinutes: Int?) {
+        if (automationBusy || name.isBlank() || prompt.trim().length < 3) return
+        automationBusy = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    agentTaskClient().createAutomation(name, prompt, scheduleType, localTime,
+                        ZoneId.systemDefault().id, weekdays, intervalMinutes)
+                }
+                nexusAutomations = withContext(Dispatchers.IO) { agentTaskClient().listAutomations() }
+                automationMessage = "Автоматизация сохранена на сервере."
+            } catch (e: Exception) {
+                automationMessage = e.message ?: "Не удалось создать автоматизацию."
+            } finally { automationBusy = false }
+        }
+    }
+
+    fun controlAutomation(id: String, action: String) {
+        if (automationBusy) return
+        automationBusy = true
+        viewModelScope.launch {
+            try {
+                val taskId = withContext(Dispatchers.IO) {
+                    val api = agentTaskClient()
+                    when (action) {
+                        "pause" -> { api.pauseAutomation(id); "" }
+                        "resume" -> { api.resumeAutomation(id); "" }
+                        "run" -> api.runAutomationNow(id)
+                        "delete" -> { api.deleteAutomation(id); "" }
+                        else -> throw IllegalArgumentException("Unknown automation action")
+                    }
+                }
+                nexusAutomations = withContext(Dispatchers.IO) { agentTaskClient().listAutomations() }
+                if (taskId.isNotBlank()) {
+                    selectAgentTask(taskId)
+                    refreshAgentConsole(taskId)
+                    automationMessage = "Задача запущена. Её ход выполнения доступен в разделе «Автономный агент»."
+                } else automationMessage = when(action) {
+                    "pause" -> "Автоматизация приостановлена."
+                    "resume" -> "Автоматизация возобновлена."
+                    "delete" -> "Автоматизация удалена."
+                    else -> "Изменения сохранены."
+                }
+            } catch (e: Exception) {
+                automationMessage = e.message ?: "Не удалось выполнить действие."
+            } finally { automationBusy = false }
         }
     }
 
@@ -2112,6 +2180,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var showSettings by remember { mutableStateOf(false) }
     var showAgentConsole by remember { mutableStateOf(false) }
     var showMemoryManager by remember { mutableStateOf(false) }
+    var showAutomationManager by remember { mutableStateOf(false) }
     var showAmbientSettings by remember { mutableStateOf(false) }
     val ambientPrefs = remember(context) { context.getSharedPreferences("nexus_ambient", 0) }
     var ambientPreset by remember { mutableStateOf(ambientPrefs.getString("preset", "red") ?: "red") }
@@ -2347,6 +2416,11 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                 showAgentConsole = true
                                 topMenuExpanded = false
                                 vm.refreshAgentConsole()
+                            })
+                            DropdownMenuItem(text = { Text("Автоматизация") }, onClick = {
+                                showAutomationManager = true
+                                topMenuExpanded = false
+                                vm.refreshAutomations()
                             })
                             DropdownMenuItem(text = { Text("Память NEXUS") }, onClick = {
                                 showMemoryManager = true
@@ -3481,6 +3555,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
 
     if (showAgentConsole) AgentConsoleDialog(vm) { showAgentConsole = false }
     if (showMemoryManager) MemoryManagerDialog(vm) { showMemoryManager = false }
+    if (showAutomationManager) AutomationManagerDialog(vm) { showAutomationManager = false }
 
     renameTarget?.let { target ->
         AlertDialog(
@@ -3683,6 +3758,118 @@ private fun MemoryManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
             },
             dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Отмена", color = Muted) } }
         )
+    }
+}
+
+@Composable
+private fun AutomationManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var prompt by remember { mutableStateOf("") }
+    var scheduleType by remember { mutableStateOf("daily") }
+    var localTime by remember { mutableStateOf("09:00") }
+    var intervalText by remember { mutableStateOf("60") }
+    var weekdays by remember { mutableStateOf(setOf(1, 2, 3, 4, 5)) }
+    LaunchedEffect(Unit) {
+        vm.refreshAutomations()
+        while (true) {
+            delay(30000)
+            vm.refreshAutomations()
+        }
+    }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(0.96f).fillMaxHeight(0.88f),
+            color = Panel, shape = RoundedCornerShape(20.dp)
+        ) {
+            Column(Modifier.fillMaxSize().padding(15.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("АВТОМАТИЗАЦИЯ NEXUS", color = MainText, fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    TextButton(onClick = onDismiss) { Text("Закрыть", color = Muted) }
+                }
+                Text("Создавай задачи, которые NEXUS будет запускать автоматически по расписанию. Сервер должен оставаться доступным.",
+                    color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
+                if (!vm.agentServerConfigured || vm.agentServerUrl.isBlank()) {
+                    Text("Сначала подключи HTTPS-сервер NEXUS и токен в настройках.", color = Color(0xFFE5A0A0), fontSize = 10.sp)
+                }
+                OutlinedTextField(value = name, onValueChange = { name = it.take(100) },
+                    modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Название автоматизации") })
+                OutlinedTextField(value = prompt, onValueChange = { prompt = it.take(12000) },
+                    modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 4,
+                    label = { Text("Что NEXUS должен делать") })
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    listOf("daily" to "Ежедневно", "weekly" to "По дням", "interval" to "Интервал").forEach { (value, label) ->
+                        FilterChip(selected = scheduleType == value, onClick = { scheduleType = value },
+                            label = { Text(label, fontSize = 10.sp) })
+                    }
+                }
+                when (scheduleType) {
+                    "daily" -> OutlinedTextField(value = localTime, onValueChange = { localTime = it.take(5) },
+                        modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Время · ЧЧ:ММ") })
+                    "weekly" -> {
+                        OutlinedTextField(value = localTime, onValueChange = { localTime = it.take(5) },
+                            modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Время · ЧЧ:ММ") })
+                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                            listOf("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс").forEachIndexed { index, day ->
+                                FilterChip(selected = index + 1 in weekdays,
+                                    onClick = { weekdays = if (index + 1 in weekdays) weekdays - (index + 1) else weekdays + (index + 1) },
+                                    label = { Text(day, fontSize = 9.sp) })
+                            }
+                        }
+                    }
+                    "interval" -> OutlinedTextField(value = intervalText, onValueChange = { intervalText = it.filter(Char::isDigit).take(5) },
+                        modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Интервал в минутах · минимум 5") })
+                }
+                Button(onClick = {
+                    vm.createAutomation(name, prompt, scheduleType, localTime,
+                        if (scheduleType == "weekly") weekdays.sorted() else emptyList(),
+                        if (scheduleType == "interval") intervalText.toIntOrNull() else null)
+                    name = ""; prompt = ""
+                }, enabled = !vm.automationBusy && vm.agentServerConfigured && name.isNotBlank() &&
+                    prompt.trim().length >= 3 && (scheduleType != "weekly" || weekdays.isNotEmpty()) &&
+                    (scheduleType != "interval" || (intervalText.toIntOrNull() ?: 0) >= 5)
+                ) { Text("Создать автоматизацию") }
+                vm.automationMessage?.let { Text(it, color = Muted, fontSize = 10.sp) }
+                Divider(color = DividerTone)
+                Text("МОИ АВТОМАТИЗАЦИИ · ${vm.nexusAutomations.size}", color = Muted,
+                    fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    items(vm.nexusAutomations, key = { it.id }) { item ->
+                        Column(Modifier.fillMaxWidth().background(PanelRaised, RoundedCornerShape(11.dp)).padding(10.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(item.name, color = MainText, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.weight(1f))
+                                Text(if (item.enabled) "АКТИВНА" else "ПАУЗА",
+                                    color = if (item.enabled) Color(0xFF8FC6A0) else Muted, fontSize = 8.sp)
+                            }
+                            Text(item.prompt, color = Muted, fontSize = 10.sp, maxLines = 3)
+                            val next = item.nextRunAt?.let {
+                                runCatching { Instant.ofEpochMilli((it * 1000).toLong())
+                                    .atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")) }.getOrNull()
+                            }
+                            Text("Следующий запуск: ${next ?: "не запланирован"} · ${item.timezone}",
+                                color = Muted, fontSize = 9.sp)
+                            item.lastTaskStatus?.let { Text("Последняя задача: $it", color = Muted, fontSize = 9.sp) }
+                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                TextButton(onClick = { vm.controlAutomation(item.id, "run") }, enabled = !vm.automationBusy) {
+                                    Text("Запустить", color = Blue, fontSize = 9.sp)
+                                }
+                                TextButton(onClick = { vm.controlAutomation(item.id, if (item.enabled) "pause" else "resume") },
+                                    enabled = !vm.automationBusy) {
+                                    Text(if (item.enabled) "Пауза" else "Возобновить", color = Blue, fontSize = 9.sp)
+                                }
+                                TextButton(onClick = { vm.controlAutomation(item.id, "delete") }, enabled = !vm.automationBusy) {
+                                    Text("Удалить", color = Color(0xFFE5A0A0), fontSize = 9.sp)
+                                }
+                            }
+                        }
+                    }
+                    if (vm.nexusAutomations.isEmpty()) item {
+                        Text(if (vm.automationBusy) "Загрузка…" else "Автоматизаций пока нет.", color = Muted, fontSize = 10.sp)
+                    }
+                }
+            }
+        }
     }
 }
 
