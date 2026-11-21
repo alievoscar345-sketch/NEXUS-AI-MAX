@@ -2420,7 +2420,7 @@ def _yield_task_for_continuation(tid: str) -> bool:
         if changed:
             c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
                       (tid, now, "continuation_scheduled",
-                       "Execution budget reached; durable task will resume automatically from its next unfinished step"))
+                       "Durable work yielded at a step boundary and will resume automatically"))
         return bool(changed)
 
 
@@ -2546,6 +2546,14 @@ def write_task_workspace_file(tid: str, body: WorkspaceFileInput, owner_id: str 
 
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _artifact_target(tid: str, name: str) -> Path:
     if (not name or len(name) > 100 or name in {".", ".."} or
             Path(name).name != name or "/" in name or "\\" in name or "\x00" in name):
@@ -2581,7 +2589,7 @@ def list_task_artifacts(tid: str, owner_id: str = Depends(auth)):
                     "name": name,
                     "bytes": stat.st_size,
                     "content_type": mimetypes.guess_type(name)[0] or "application/octet-stream",
-                    "sha256": hashlib.sha256(resolved.read_bytes()).hexdigest(),
+                    "sha256": _sha256_file(resolved),
                     "download_path": f"/v1/tasks/{tid}/artifacts/download",
                 })
             except (OSError, RuntimeError):
