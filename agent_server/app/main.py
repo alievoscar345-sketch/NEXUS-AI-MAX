@@ -2591,6 +2591,9 @@ async def _github_build_android(tid: str, integration: dict[str, str],
     repo_path = quote(integration["repo_full_name"], safe="/")
     workflow = "build-android.yml"
     workflow_endpoint = f"/repos/{repo_path}/actions/workflows/{workflow}"
+    workflow_info = await _github_api(token, "GET", workflow_endpoint)
+    if (workflow_info or {}).get("state") != "active":
+        raise RuntimeError("GitHub Actions workflow build-android.yml is disabled or unavailable")
     await run_db(_assert_task_lease_for_github_write, tid)
     branch_ref = await _github_api(token, "GET",
         f"/repos/{repo_path}/git/ref/heads/{quote(selected_branch, safe='/')}")
