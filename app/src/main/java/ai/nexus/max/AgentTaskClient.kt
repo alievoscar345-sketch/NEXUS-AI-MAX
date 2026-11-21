@@ -233,8 +233,10 @@ class AgentTaskClient(
         optString("status"), optInt("task_count")
     )
 
-    fun listSkills(): List<NexusSkill> {
-        val items = request("GET", listOf("v1", "skills")).optJSONArray("skills") ?: JSONArray()
+    fun listSkills(query: String = "", limit: Int = 100): List<NexusSkill> {
+        val params = mutableMapOf("limit" to limit.coerceIn(1, 100).toString())
+        if (query.isNotBlank()) params["q"] = query.take(200)
+        val items = request("GET", listOf("v1", "skills"), query = params).optJSONArray("skills") ?: JSONArray()
         return (0 until items.length()).mapNotNull { index ->
             val item = items.optJSONObject(index) ?: return@mapNotNull null
             item.toNexusSkill()
