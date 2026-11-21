@@ -5203,7 +5203,7 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                             Column(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
-                                        "#${checkpoint.sequence} · ${checkpoint.reason}",
+                                        "#${checkpoint.sequence} · ${checkpoint.reason}" + if (checkpoint.isLatest) " · ПОСЛЕДНЯЯ" else "",
                                         color = MainText, fontSize = 10.sp, modifier = Modifier.weight(1f)
                                     )
                                     Text(
@@ -5217,9 +5217,12 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                                         .format(Instant.ofEpochMilli((checkpoint.createdAt * 1000).toLong()))
                                 }
                                 Text(
-                                    "$checkpointTime · ${checkpoint.workspaceFiles.size} файлов · ${checkpoint.artifacts.size} результатов · ${checkpoint.archiveBytes} Б",
+                                    "$checkpointTime · ${checkpoint.workspaceFiles.size} файлов + ${checkpoint.projectFiles.size} файлов проекта · ${checkpoint.artifacts.size} результатов · ${checkpoint.archiveBytes} Б",
                                     color = Muted, fontSize = 8.sp
                                 )
+                                if (checkpoint.archiveSha256.isNotBlank()) {
+                                    Text("SHA-256 · " + checkpoint.archiveSha256.take(16), color = Muted, fontSize = 8.sp)
+                                }
                                 if (!checkpoint.available) {
                                     Text("Недоступна: ${checkpoint.error}", color = Color(0xFFE5A0A0), fontSize = 9.sp)
                                 } else if (checkpoint.legacy) {
