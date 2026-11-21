@@ -1,6 +1,7 @@
 import asyncio
 import tempfile
 import time
+import sqlite3
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -189,6 +190,37 @@ class DurableTaskTests(unittest.TestCase):
             count = conn.execute("SELECT COUNT(*) AS n FROM approvals WHERE task_id=?",
                                  ("task-approval",)).fetchone()["n"]
         self.assertEqual(count, 1)
+
+
+    def test_db_context_commits_and_closes_connection(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("context-commit", "commit test", "queued", now, now),
+            )
+        with self.assertRaises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
+        with main.db() as check:
+            row = check.execute("SELECT prompt FROM tasks WHERE id=?",
+                                ("context-commit",)).fetchone()
+        self.assertEqual(row["prompt"], "commit test")
+
+    def test_db_context_rolls_back_and_closes_connection(self):
+        now = time.time()
+        with self.assertRaisesRegex(RuntimeError, "rollback test"):
+            with main.db() as conn:
+                conn.execute(
+                    "INSERT INTO tasks(id,prompt,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+                    ("context-rollback", "rollback test", "queued", now, now),
+                )
+                raise RuntimeError("rollback test")
+        with self.assertRaises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
+        with main.db() as check:
+            row = check.execute("SELECT id FROM tasks WHERE id=?",
+                                ("context-rollback",)).fetchone()
+        self.assertIsNone(row)
 
 
 if __name__ == "__main__":

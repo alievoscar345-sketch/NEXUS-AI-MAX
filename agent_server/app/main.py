@@ -39,8 +39,18 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 _model_gateway = ModelGateway()
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """Commit or roll back on context exit, then always close the connection."""
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
 def db():
-    c = sqlite3.connect(DB_PATH, timeout=30)
+    c = sqlite3.connect(DB_PATH, timeout=30, factory=_ClosingConnection)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA foreign_keys=ON")
