@@ -337,6 +337,56 @@ class AgentTaskClient(
             ?: throw IOException("Project file API did not return a revision")
     }
 
+    fun uploadProjectBinaryFile(projectId: String, path: String, bytes: ByteArray,
+                                contentType: String = "application/octet-stream",
+                                message: String = "Uploaded from NEXUS Android"): NexusProjectFile {
+        require(bytes.size <= 50 * 1024 * 1024) { "Project files are limited to 50 MiB per revision" }
+        val url = base.newBuilder().addPathSegment("v1").addPathSegment("projects")
+            .addPathSegment(projectId).addPathSegment("files").addPathSegment("binary")
+            .addQueryParameter("path", path).addQueryParameter("message", message).build()
+        val request = Request.Builder().url(url).header("Authorization", "Bearer $token")
+            .header("Accept", "application/json")
+            .put(bytes.toRequestBody(contentType.toMediaType())).build()
+        http.newCall(request).execute().use { response ->
+            val raw = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                val detail = try { JSONObject(raw).optString("detail") } catch (_: Exception) { "" }
+                throw IOException(detail.ifBlank { "Binary upload returned HTTP ${response.code}" })
+            }
+            return try { JSONObject(raw).optJSONObject("file")?.toNexusProjectFile()
+                ?: throw IOException("Binary upload returned no file revision") }
+            catch (error: Exception) { if (error is IOException) throw error else throw IOException("Invalid binary upload response", error) }
+        }
+    }
+
+    fun downloadProjectBinaryFile(projectId: String, path: String): ByteArray {
+        val url = base.newBuilder().addPathSegment("v1").addPathSegment("projects")
+            .addPathSegment(projectId).addPathSegment("files").addPathSegment("binary")
+            .addQueryParameter("path", path).build()
+        val request = Request.Builder().url(url).header("Authorization", "Bearer $token")
+            .header("Accept", "application/octet-stream").get().build()
+        http.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                val raw = response.body?.string().orEmpty()
+                val detail = try { JSONObject(raw).optString("detail") } catch (_: Exception) { "" }
+                throw IOException(detail.ifBlank { "Binary download returned HTTP ${response.code}" })
+            }
+            val body = response.body ?: throw IOException("Binary download body is empty")
+            if (body.contentLength() > 50L * 1024 * 1024) throw IOException("Downloaded file exceeds 50 MiB")
+            val output = java.io.ByteArrayOutputStream()
+            body.byteStream().use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    if (output.size() + count > 50 * 1024 * 1024) throw IOException("Downloaded file exceeds 50 MiB")
+                    output.write(buffer, 0, count)
+                }
+            }
+            return output.toByteArray()
+        }
+    }
+
     fun listProjectFileVersions(projectId: String, path: String): List<NexusProjectFile> {
         val items = request("GET", listOf("v1", "projects", projectId, "files", "versions"),
             query = mapOf("path" to path)).optJSONArray("versions") ?: JSONArray()
