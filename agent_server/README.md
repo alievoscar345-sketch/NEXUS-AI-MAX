@@ -79,6 +79,12 @@ The memory store is owner-scoped and supports creating, editing, pinning, search
 - Suggestions are drafts only. NEXUS does not save them until the user explicitly accepts each one in the Android memory manager.
 - The extractor is instructed to exclude credentials and sensitive personal categories; users should still review each proposed item before saving.
 
+### Personal skills and episodic recall
+
+Enabled user-created skills are now selected by relevance to the current chat or agent task instead of injecting the newest skills indiscriminately. Matching weighs skill names, descriptions, categories, and instructions; only a small relevant subset is added to the model context. Skills remain user-managed records and can be disabled or deleted.
+
+Completed agent tasks also provide a bounded episodic recall source. NEXUS retrieves a few earlier completed tasks with overlapping goal/outcome terms and supplies their summaries as historical context in normal chat and new task planning. Episodes are explicitly marked as potentially incomplete or outdated; they are not treated as instructions or proof that a new task has succeeded. Retrieval is lexical and owner-scoped, not embedding-based semantic search.
+
 ## Scheduled automations
 
 The backend now stores owner-scoped automations and dispatches due schedules into the same durable task queue used by the autonomous agent. Supported schedules are one-time timestamps, daily local times, selected weekdays, and recurring intervals (5 minutes to 7 days). Daily and weekly schedules use an IANA time-zone identifier, so their wall-clock time follows daylight-saving changes. The scheduler runs inside the single backend worker; the service must remain online for a scheduled run to be dispatched. Missed runs are dispatched once after the service returns rather than replayed repeatedly.
