@@ -2212,13 +2212,14 @@ def _pause_task_if_requested(tid: str) -> bool:
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         row = c.execute("""SELECT pause_requested FROM tasks WHERE id=? AND status IN ('running','planning')
-            AND lease_owner=? AND lease_expires_at>?""",
+            AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
             (tid, _current_lease_owner(), now)).fetchone()
         if not row or not row["pause_requested"]:
             return False
         changed = c.execute("""UPDATE tasks SET status='paused',pause_requested=0,
             lease_owner='',lease_expires_at=NULL,updated_at=?
-            WHERE id=? AND status IN ('running','planning') AND lease_owner=? AND lease_expires_at>?""",
+            WHERE id=? AND status IN ('running','planning') AND cancel_requested=0
+            AND lease_owner=? AND lease_expires_at>?""",
             (now, tid, _current_lease_owner(), now)).rowcount
         if changed:
             c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
