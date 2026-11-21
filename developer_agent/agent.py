@@ -36,6 +36,29 @@ TOOLS = [
     {"type":"function","function":{"name":"create_pull_request","description":"Create a pull request from the isolated agent branch to the configured development branch. Call only after completing and reviewing changes.","parameters":{"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string"}},"required":["title","body"]}}},
 ]
 
+def parse_tool_arguments(raw: Any) -> dict[str, Any]:
+    """Parse provider tool arguments, tolerating harmless text around one JSON object."""
+    if isinstance(raw, dict):
+        return raw
+    if raw is None or raw == "":
+        return {}
+    if not isinstance(raw, str):
+        raise ValueError("Tool arguments must be a JSON object or string")
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        start = raw.find("{")
+        if start < 0:
+            raise ValueError("Tool arguments did not contain a JSON object")
+        try:
+            parsed, _end = decoder.raw_decode(raw[start:])
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Malformed tool arguments: {exc.msg}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("Tool arguments JSON must decode to an object")
+    return parsed
+
 def validate_repo_path(path: str) -> str:
     if not isinstance(path, str) or not path or "\x00" in path or "\\" in path:
         raise ValueError("Invalid repository path")
@@ -174,7 +197,12 @@ def main() -> int:
                 return 0
             for call in calls:
                 name = call["function"]["name"]
-                args = json.loads(call["function"].get("arguments") or "{}")
+                try:
+                    args = parse_tool_arguments(call["function"].get("arguments"))
+                except ValueError as exc:
+                    result = {"error":str(exc),"operation_succeeded":False}
+                    messages.append({"role":"tool","tool_call_id":call["id"],"content":json.dumps(result,ensure_ascii=False)})
+                    continue
                 try:
                     if name == "list_files": result = github.list_files(args.get("path",""))
                     elif name == "read_file": result = github.read_file(args["path"])
