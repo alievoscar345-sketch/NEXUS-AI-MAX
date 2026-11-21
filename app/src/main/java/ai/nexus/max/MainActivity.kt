@@ -537,6 +537,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     var projectNameDraft by mutableStateOf("")
     var projectDescriptionDraft by mutableStateOf("")
     var projectContextDraft by mutableStateOf("")
+    var editingProjectId by mutableStateOf<String?>(null)
     var nexusSkills by mutableStateOf<List<NexusSkill>>(emptyList())
         private set
     var skillBusy by mutableStateOf(false)
@@ -844,10 +845,19 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         val name = projectNameDraft.trim(); val description = projectDescriptionDraft.trim(); val context = projectContextDraft.trim()
         viewModelScope.launch {
             try {
-                withContext(Dispatchers.IO) { agentTaskClient().createProject(name, description, context) }
+                withContext(Dispatchers.IO) {
+                    val api = agentTaskClient()
+                    val editing = editingProjectId
+                    if (editing == null) api.createProject(name, description, context)
+                    else {
+                        val existing = nexusProjects.firstOrNull { it.id == editing }
+                            ?: throw IllegalStateException("Проект больше не найден.")
+                        api.updateProject(existing.copy(name = name, description = description, context = context))
+                    }
+                }
                 nexusProjects = withContext(Dispatchers.IO) { agentTaskClient().listProjects() }
-                projectNameDraft = ""; projectDescriptionDraft = ""; projectContextDraft = ""
-                projectMessage = "Проект создан. Контекст будет передаваться агенту в задачах этого проекта."
+                projectNameDraft = ""; projectDescriptionDraft = ""; projectContextDraft = ""; editingProjectId = null
+                projectMessage = if (editingProjectId == null) "Проект создан. Контекст будет передаваться агенту в задачах этого проекта." else "Проект обновлён."
             } catch (e: Exception) { projectMessage = e.message ?: "Не удалось создать проект." }
             finally { projectBusy = false }
         }
@@ -4015,8 +4025,13 @@ private fun ProjectManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                     singleLine = true, label = { Text("Краткое описание") })
                 OutlinedTextField(vm.projectContextDraft, { vm.projectContextDraft = it.take(12000) }, Modifier.fillMaxWidth(),
                     minLines = 3, maxLines = 5, label = { Text("Контекст, цели, требования и ограничения") })
-                Button(onClick = { vm.saveProject() }, enabled = !vm.projectBusy && vm.agentServerConfigured && vm.projectNameDraft.isNotBlank()) {
-                    Text("Создать проект")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { vm.saveProject() }, enabled = !vm.projectBusy && vm.agentServerConfigured && vm.projectNameDraft.isNotBlank()) {
+                        Text(if (vm.editingProjectId == null) "Создать проект" else "Сохранить проект")
+                    }
+                    if (vm.editingProjectId != null) TextButton(onClick = {
+                        vm.editingProjectId = null; vm.projectNameDraft = ""; vm.projectDescriptionDraft = ""; vm.projectContextDraft = ""
+                    }) { Text("Отмена", color = Muted) }
                 }
                 vm.projectMessage?.let { Text(it, color = Muted, fontSize = 10.sp) }
                 Divider(color = DividerTone)
@@ -4031,6 +4046,12 @@ private fun ProjectManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                             Text("${project.description} · Задач: ${project.taskCount}", color = Muted, fontSize = 9.sp)
                             Text(project.context, color = MainText, fontSize = 10.sp, maxLines = 4)
                             Row {
+                                TextButton(onClick = {
+                                    vm.editingProjectId = project.id
+                                    vm.projectNameDraft = project.name
+                                    vm.projectDescriptionDraft = project.description
+                                    vm.projectContextDraft = project.context
+                                }, enabled = !vm.projectBusy) { Text("Изменить", color = Blue, fontSize = 10.sp) }
                                 TextButton(onClick = { vm.archiveProject(project) }, enabled = !vm.projectBusy) {
                                     Text(if (project.status == "active") "В архив" else "Восстановить", color = Blue, fontSize = 10.sp)
                                 }
