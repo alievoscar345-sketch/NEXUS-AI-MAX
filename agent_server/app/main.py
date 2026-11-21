@@ -1578,13 +1578,13 @@ def list_skills(q: str = "", limit: int = 100, owner_id: str = Depends(auth)):
         rows = c.execute("SELECT * FROM skills WHERE owner_id=? ORDER BY enabled DESC,updated_at DESC",
                          (owner_id,)).fetchall()
     if q.strip():
-        terms = {term.casefold() for term in re.findall(r"[\\w-]{3,}", q)}
+        terms = {term.casefold() for term in re.findall(r"[\w-]{3,}", q)}
         ranked = []
         for row in rows:
             if not row["enabled"]:
                 continue
-            name_terms = set(re.findall(r"[\\w-]{3,}", row["name"].casefold()))
-            body_terms = set(re.findall(r"[\\w-]{3,}", (row["description"] + " " + row["instructions"]).casefold()))
+            name_terms = set(re.findall(r"[\w-]{3,}", row["name"].casefold()))
+            body_terms = set(re.findall(r"[\w-]{3,}", (row["description"] + " " + row["instructions"]).casefold()))
             score = 3 * len(terms & name_terms) + len(terms & body_terms)
             if score:
                 ranked.append((score, row))
