@@ -2501,6 +2501,42 @@ async def _download_github_actions_artifact(tid: str, integration: dict[str, str
             archive_path.unlink()
 
 
+def _read_github_actions_log_archive(archive_path: Path, token: str) -> list[dict[str, str]]:
+    excerpts: list[dict[str, str]] = []
+    total_text = 0
+    with zipfile.ZipFile(archive_path) as archive:
+        infos = archive.infolist()
+        if len(infos) > 1000:
+            raise RuntimeError("GitHub Actions log archive contains too many entries")
+        if sum(info.file_size for info in infos if not info.is_dir()) > 200 * 1024 * 1024:
+            raise RuntimeError("GitHub Actions log archive exceeds the 200 MB extracted-size limit")
+        for info in infos:
+            if info.is_dir() or stat.S_ISLNK(info.external_attr >> 16):
+                continue
+            name = PurePosixPath(info.filename).name
+            if not name.endswith(".txt") or len(name) > 200:
+                continue
+            if any(part in {"", ".", ".."} for part in PurePosixPath(info.filename).parts):
+                continue
+            if info.file_size > 2 * 1024 * 1024:
+                continue
+            with archive.open(info, "r") as source:
+                raw = source.read(2 * 1024 * 1024 + 1)
+            decoded = raw[:2 * 1024 * 1024].decode("utf-8", errors="replace")
+            decoded = decoded.replace(token, "[REDACTED_GITHUB_TOKEN]")
+            decoded = re.sub(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})",
+                             "[REDACTED_GITHUB_TOKEN]", decoded)
+            excerpt = decoded[-12000:]
+            if total_text + len(excerpt) > 48000:
+                excerpt = excerpt[:max(0, 48000 - total_text)]
+            if excerpt:
+                excerpts.append({"file": name, "tail": excerpt})
+                total_text += len(excerpt)
+            if total_text >= 48000:
+                break
+    return excerpts
+
+
 async def _download_github_actions_logs(integration: dict[str, str], run_id: int) -> list[dict[str, str]]:
     token = integration["token"]
     repo_path = quote(integration["repo_full_name"], safe="/")
@@ -2535,39 +2571,7 @@ async def _download_github_actions_logs(integration: dict[str, str], run_id: int
                         if total > 100 * 1024 * 1024:
                             raise RuntimeError("GitHub Actions log archive exceeded the 100 MB safety limit")
                         output.write(chunk)
-        excerpts: list[dict[str, str]] = []
-        total_text = 0
-        with zipfile.ZipFile(archive_path) as archive:
-            infos = archive.infolist()
-            if len(infos) > 1000:
-                raise RuntimeError("GitHub Actions log archive contains too many entries")
-            if sum(info.file_size for info in infos if not info.is_dir()) > 200 * 1024 * 1024:
-                raise RuntimeError("GitHub Actions log archive exceeds the 200 MB extracted-size limit")
-            for info in infos:
-                if info.is_dir() or stat.S_ISLNK(info.external_attr >> 16):
-                    continue
-                name = PurePosixPath(info.filename).name
-                if not name.endswith(".txt") or len(name) > 200:
-                    continue
-                if any(part in {"", ".", ".."} for part in PurePosixPath(info.filename).parts):
-                    continue
-                if info.file_size > 2 * 1024 * 1024:
-                    continue
-                with archive.open(info, "r") as source:
-                    raw = source.read(2 * 1024 * 1024 + 1)
-                decoded = raw[:2 * 1024 * 1024].decode("utf-8", errors="replace")
-                decoded = decoded.replace(token, "[REDACTED_GITHUB_TOKEN]")
-                decoded = re.sub(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})",
-                                 "[REDACTED_GITHUB_TOKEN]", decoded)
-                excerpt = decoded[-12000:]
-                if total_text + len(excerpt) > 48000:
-                    excerpt = excerpt[:max(0, 48000 - total_text)]
-                if excerpt:
-                    excerpts.append({"file": name, "tail": excerpt})
-                    total_text += len(excerpt)
-                if total_text >= 48000:
-                    break
-        return excerpts
+        return await asyncio.to_thread(_read_github_actions_log_archive, archive_path, token)
     finally:
         if archive_path.exists():
             archive_path.unlink()
