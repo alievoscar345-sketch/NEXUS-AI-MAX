@@ -76,7 +76,7 @@ class DurableTaskTests(unittest.TestCase):
             conn.execute(
                 "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
                 "VALUES(?,?,?,?,?,?,?)",
-                ("task-c", "continue work", "running", now, now, "dead-worker", now + 999),
+                ("task-c", "continue work", "running", now, now, "dead-worker", now - 1),
             )
         main._persist_plan("task-c", [{"title": "Read", "action": "fetch_url",
             "input": {"url": "https://example.com"}}], 3)
@@ -91,6 +91,25 @@ class DurableTaskTests(unittest.TestCase):
         self.assertEqual(task["lease_owner"], "")
         self.assertEqual(step["status"], "retry_wait")
         self.assertIn("Recovered", step["error"])
+
+    def test_recovery_preserves_task_with_active_lease(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("task-live-lease", "still running elsewhere", "running", now, now,
+                 "other-live-worker", now + 600),
+            )
+        main.recover_interrupted_tasks()
+        with main.db() as conn:
+            row = conn.execute(
+                "SELECT status,lease_owner,lease_expires_at FROM tasks WHERE id=?",
+                ("task-live-lease",),
+            ).fetchone()
+        self.assertEqual(row["status"], "running")
+        self.assertEqual(row["lease_owner"], "other-live-worker")
+        self.assertGreater(row["lease_expires_at"], now)
 
     def test_claim_respects_retry_schedule(self):
         now = time.time()
