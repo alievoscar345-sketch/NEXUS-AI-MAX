@@ -1,0 +1,47 @@
+name: NEXUS Developer Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Engineering task for NEXUS Developer Agent"
+        required: true
+        type: string
+      model:
+        description: "Exact AnyModel model ID"
+        required: true
+        default: "claude-fable-5-2"
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: nexus-developer-agent-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  developer-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install agent dependencies
+        run: pip install -r developer_agent/requirements.txt
+      - name: Run NEXUS Developer Agent
+        working-directory: developer_agent
+        env:
+          ANYMODEL_API_KEY: ${{ secrets.ANYMODEL_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          NEXUS_DEV_PROMPT: ${{ inputs.prompt }}
+          NEXUS_DEV_MODEL: ${{ inputs.model }}
+          NEXUS_DEV_BASE_BRANCH: gemini-hydrogen-development
+        run: python agent.py
