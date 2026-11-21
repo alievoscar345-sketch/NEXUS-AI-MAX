@@ -3621,6 +3621,10 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         color = if (vm.agentServerConfigured) Color(0xFF8FC6A0) else Muted,
                         fontSize = 10.sp
                     )
+                    if (vm.agentServerConfigured) Text(
+                        "Фоновые уведомления о завершении и ошибках задач включены. Android проверяет сервер примерно раз в 15 минут; приложение может прислать уведомление, даже когда закрыто.",
+                        color = Muted, fontSize = 9.sp, lineHeight = 12.sp
+                    )
                     Text("ПОДКЛЮЧЁННЫЕ ПРОВАЙДЕРЫ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     if (vm.remoteProviders.isEmpty()) {
                         Text("Список пуст или сервер ещё не подключён.", color = Muted, fontSize = 10.sp)
