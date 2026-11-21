@@ -1188,7 +1188,7 @@ def create_memory(body: MemoryInput, owner_id: str = Depends(auth)):
 
 @app.patch("/v1/memories/{memory_id}", dependencies=[Depends(auth)])
 def update_memory(memory_id: str, body: MemoryUpdateInput, owner_id: str = Depends(auth)):
-    changes = body.model_dump(exclude_unset=True)
+    changes = body.model_dump(exclude_unset=True, exclude_none=True)
     if not changes:
         raise HTTPException(422, "At least one memory field must be supplied")
     with db() as c:
