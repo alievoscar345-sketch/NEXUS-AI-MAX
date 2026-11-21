@@ -300,6 +300,8 @@ class ModelGateway:
                                 return None
                             raw = "\n".join(data_lines)
                             data_lines.clear()
+                            if len(raw.encode("utf-8")) > 1_000_000:
+                                raise ModelGatewayError("Provider streaming event exceeded the size limit")
                             if raw.strip() == "[DONE]":
                                 return "done"
                             try:
@@ -325,9 +327,12 @@ class ModelGateway:
                             delta = choice.get("delta", {})
                             if not isinstance(delta, dict):
                                 raise ModelGatewayError("Provider returned malformed streaming delta")
+                            choice_index = choice.get("index", 0)
+                            if isinstance(choice_index, bool) or not isinstance(choice_index, int) or choice_index < 0:
+                                raise ModelGatewayError("Provider returned an invalid streaming choice index")
                             normalized = {"id": stream_id, "object": "chat.completion.chunk",
                                           "created": created, "model": model.model,
-                                          "choices": [{"index": int(choice.get("index", 0)),
+                                          "choices": [{"index": choice_index,
                                                        "delta": delta,
                                                        "finish_reason": choice.get("finish_reason")}]}
                             emitted = True

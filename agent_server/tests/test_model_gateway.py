@@ -35,6 +35,22 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chunks[1]["choices"][0]["delta"]["content"], "hello")
         self.assertEqual(len(chunks), 2)
 
+    async def test_stream_rejects_oversized_sse_event(self):
+        body = "data: " + ("x" * 1_000_001) + "\n\n"
+        gateway = ModelGateway([config()], transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, text=body)
+        ))
+        with self.assertRaises(ModelGatewayError):
+            _ = [chunk async for chunk in gateway.stream_messages([{"role":"user","content":"hi"}])]
+
+    async def test_stream_rejects_invalid_choice_index(self):
+        body = 'data: {"choices":[{"index":"bad","delta":{"content":"x"}}]}\n\n'
+        gateway = ModelGateway([config()], transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, text=body)
+        ))
+        with self.assertRaises(ModelGatewayError):
+            _ = [chunk async for chunk in gateway.stream_messages([{"role":"user","content":"hi"}])]
+
     async def test_stream_falls_back_before_first_chunk(self):
         calls = []
         def handler(request):
