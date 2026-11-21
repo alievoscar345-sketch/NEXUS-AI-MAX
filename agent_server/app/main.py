@@ -32,7 +32,7 @@ from urllib.parse import quote, urlparse
 import httpx
 import aiohttp
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, SecretStr
 
 from .model_gateway import ModelConfig, ModelGateway, ModelGatewayError, load_models
@@ -48,6 +48,7 @@ CONTINUATION_DELAY_SECONDS = max(1, min(int(os.getenv("NEXUS_AGENT_CONTINUATION_
 NEXUS_AGENT_WORKER_ENABLED = os.getenv("NEXUS_AGENT_WORKER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 MAX_STEP_ATTEMPTS = max(1, min(int(os.getenv("NEXUS_AGENT_STEP_MAX_ATTEMPTS", "3")), 8))
 MAX_ARTIFACT_BYTES = max(1, int(os.getenv("NEXUS_AGENT_MAX_ARTIFACT_BYTES", str(2 * 1024 * 1024 * 1024))))
+MAX_PROJECT_FILE_BYTES = max(1024, int(os.getenv("NEXUS_AGENT_MAX_PROJECT_FILE_BYTES", str(50 * 1024 * 1024))))
 MAX_CHECKOUT_ARCHIVE_BYTES = max(1, int(os.getenv("NEXUS_AGENT_MAX_CHECKOUT_ARCHIVE_BYTES", str(512 * 1024 * 1024))))
 MAX_CHECKOUT_UNPACKED_BYTES = max(1, int(os.getenv("NEXUS_AGENT_MAX_CHECKOUT_UNPACKED_BYTES", str(2 * 1024 * 1024 * 1024))))
 MAX_CHECKOUT_FILES = max(1, int(os.getenv("NEXUS_AGENT_MAX_CHECKOUT_FILES", "50000")) )
@@ -122,6 +123,11 @@ def init_db():
             updated_at REAL NOT NULL
         );
         """)
+        project_file_columns = _columns(c, "project_file_versions")
+        if "content_type" not in project_file_columns:
+            c.execute("ALTER TABLE project_file_versions ADD COLUMN content_type TEXT NOT NULL DEFAULT 'text/plain; charset=utf-8'")
+        if "is_binary" not in project_file_columns:
+            c.execute("ALTER TABLE project_file_versions ADD COLUMN is_binary INTEGER NOT NULL DEFAULT 0")
         migrations = {
             "lease_owner": "TEXT NOT NULL DEFAULT ''",
             "lease_expires_at": "REAL",
@@ -205,6 +211,8 @@ def init_db():
             path TEXT NOT NULL, revision INTEGER NOT NULL, content BLOB NOT NULL,
             sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL,
             message TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL,
+            content_type TEXT NOT NULL DEFAULT 'text/plain; charset=utf-8',
+            is_binary INTEGER NOT NULL DEFAULT 0,
             UNIQUE(project_id,path,revision),
             FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
         );
@@ -2091,7 +2099,38 @@ def _project_file_dict(row: sqlite3.Row) -> dict[str, Any]:
         "path": row["path"], "revision": row["revision"],
         "bytes": row["size_bytes"], "sha256": row["sha256"],
         "message": row["message"], "created_at": row["created_at"],
+        "content_type": row["content_type"] if "content_type" in row.keys() else "text/plain; charset=utf-8",
+        "is_binary": bool(row["is_binary"]) if "is_binary" in row.keys() else False,
     }
+
+
+def _write_project_file_bytes(project_id: str, owner_id: str, path: str, content: bytes,
+                              message: str, content_type: str, is_binary: bool) -> dict[str, Any]:
+    safe_path = _validate_project_file_path(path)
+    if len(content) > MAX_PROJECT_FILE_BYTES:
+        raise HTTPException(413, f"Project files are limited to {MAX_PROJECT_FILE_BYTES} bytes per revision")
+    digest = hashlib.sha256(content).hexdigest()
+    now = time.time()
+    version_id = str(uuid.uuid4())
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        project = c.execute("SELECT id FROM projects WHERE id=? AND owner_id=?",
+                            (project_id, owner_id)).fetchone()
+        if not project:
+            raise HTTPException(404, "Project not found")
+        previous = c.execute("SELECT MAX(revision) AS revision FROM project_file_versions WHERE project_id=? AND path=?",
+                             (project_id, safe_path)).fetchone()
+        revision = int(previous["revision"] or 0) + 1
+        c.execute("""INSERT INTO project_file_versions(
+            id,project_id,owner_id,path,revision,content,sha256,size_bytes,message,created_at,content_type,is_binary
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (version_id, project_id, owner_id, safe_path, revision, sqlite3.Binary(content),
+             digest, len(content), (message.strip() or "Update project file")[:200], now,
+             content_type, int(is_binary)))
+        c.execute("UPDATE projects SET updated_at=? WHERE id=? AND owner_id=?",
+                  (now, project_id, owner_id))
+        row = c.execute("SELECT * FROM project_file_versions WHERE id=?", (version_id,)).fetchone()
+    return _project_file_dict(row)
 
 
 @app.get("/v1/projects/{project_id}/files", dependencies=[Depends(auth)])
@@ -2155,6 +2194,45 @@ def write_project_file(project_id: str, body: ProjectFileWriteInput, owner_id: s
                   (now, project_id, owner_id))
         row = c.execute("SELECT * FROM project_file_versions WHERE id=?", (version_id,)).fetchone()
     return {"file": _project_file_dict(row)}
+
+
+@app.put("/v1/projects/{project_id}/files/binary", dependencies=[Depends(auth)])
+async def upload_project_binary_file(project_id: str, path: str, request: Request,
+                                     message: str = "Upload binary project file",
+                                     owner_id: str = Depends(auth)):
+    declared_length = request.headers.get("content-length", "")
+    if declared_length.isdigit() and int(declared_length) > MAX_PROJECT_FILE_BYTES:
+        raise HTTPException(413, f"Project files are limited to {MAX_PROJECT_FILE_BYTES} bytes per revision")
+    chunks = bytearray()
+    async for chunk in request.stream():
+        chunks.extend(chunk)
+        if len(chunks) > MAX_PROJECT_FILE_BYTES:
+            raise HTTPException(413, f"Project files are limited to {MAX_PROJECT_FILE_BYTES} bytes per revision")
+    content_type = request.headers.get("content-type", "application/octet-stream").split(";", 1)[0].strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9!#@app.get("/v1/projects/{project_id}/files/versions", dependencies=[Depends(auth)])^_.+-]*/[a-z0-9][a-z0-9!#@app.get("/v1/projects/{project_id}/files/versions", dependencies=[Depends(auth)])^_.+-]*", content_type):
+        content_type = "application/octet-stream"
+    result = await run_db(_write_project_file_bytes, project_id, owner_id, path, bytes(chunks),
+                          message, content_type, True)
+    return {"file": result}
+
+
+@app.get("/v1/projects/{project_id}/files/binary", dependencies=[Depends(auth)])
+def download_project_binary_file(project_id: str, path: str, owner_id: str = Depends(auth)):
+    safe_path = _validate_project_file_path(path)
+    with db() as c:
+        row = c.execute("""SELECT v.* FROM project_file_versions v
+            JOIN projects p ON p.id=v.project_id
+            WHERE v.project_id=? AND v.owner_id=? AND p.owner_id=? AND v.path=?
+            ORDER BY v.revision DESC LIMIT 1""",
+            (project_id, owner_id, owner_id, safe_path)).fetchone()
+    if not row:
+        raise HTTPException(404, "Project file not found")
+    data = _verified_project_file_bytes(row)
+    filename = quote(PurePosixPath(safe_path).name, safe="")
+    return Response(content=data, media_type=row["content_type"] or "application/octet-stream",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}",
+                             "X-Content-SHA256": row["sha256"],
+                             "X-Project-Revision": str(row["revision"])})
 
 
 @app.get("/v1/projects/{project_id}/files/versions", dependencies=[Depends(auth)])
