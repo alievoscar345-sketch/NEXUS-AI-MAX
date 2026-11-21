@@ -115,7 +115,7 @@ Projects are owner-scoped containers for a durable name, description, and contex
 - `GET /v1/projects`, `POST /v1/projects`, `PATCH /v1/projects/{id}`, and `DELETE /v1/projects/{id}` manage projects.
 - `POST /v1/tasks` accepts an optional `project_id`; it must refer to an active project owned by the authenticated account.
 
-Reusable skills are owner-scoped instruction sets with name, description, category, instructions, and enabled state. The Android client can create, edit, enable/disable, and delete skills. Relevant enabled skills are selected by lexical overlap and supplied to the ordinary chat system context and autonomous task planner. This is lightweight keyword matching, not semantic embedding search. Skills are treated as user preferences and cannot override system rules, safety controls, or tool permissions.
+Reusable skills are owner-scoped instruction sets with name, description, category, instructions, and enabled state. The Android client can create, edit, enable/disable, and delete skills. Relevant enabled skills are selected by lexical overlap and supplied to the ordinary chat system context and autonomous task planner. Relevant user-approved memories are also retrieved for autonomous task planning. This is lightweight keyword matching, not semantic embedding search. Skills are treated as user preferences and cannot override system rules, safety controls, or tool permissions.
 
 - `GET /v1/skills`, `POST /v1/skills`, `PATCH /v1/skills/{id}`, and `DELETE /v1/skills/{id}` manage skills.
 - Maximum 100 projects and 100 skills per account; skill instructions are capped at 6 KB.
