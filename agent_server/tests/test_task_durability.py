@@ -1857,6 +1857,21 @@ class DurableTaskTests(unittest.TestCase):
         self.assertEqual(task["status"], "queued")
         self.assertEqual(approval["status"], "rejected")
 
+    def test_worker_heartbeat_is_persisted_and_can_be_marked_stale(self):
+        main._write_worker_heartbeat("running")
+        heartbeat = main._read_worker_heartbeat()
+        self.assertEqual(heartbeat["state"], "running")
+        self.assertEqual(heartbeat["instance_id"], main.WORKER_ID)
+        with main.db() as conn:
+            conn.execute(
+                "UPDATE worker_heartbeats SET updated_at=? WHERE name='default'",
+                (time.time() - 120,),
+            )
+        stale = main._read_worker_heartbeat()
+        self.assertLess(stale["updated_at"], time.time() - 90)
+        main._write_worker_heartbeat("stopped")
+        self.assertEqual(main._read_worker_heartbeat()["state"], "stopped")
+
     def test_db_context_commits_and_closes_connection(self):
         now = time.time()
         with main.db() as conn:
