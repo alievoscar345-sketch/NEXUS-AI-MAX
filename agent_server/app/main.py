@@ -2574,6 +2574,7 @@ async def _github_build_android(tid: str, integration: dict[str, str],
 
 async def _github_commit_task_workspace(tid: str, integration: dict[str, str],
                                           branch: str, message: str = "") -> dict[str, Any]:
+    await run_db(_assert_task_lease_for_github_write, tid)
     selected_branch = _github_branch_name(branch, require_feature=True)
     token = integration["token"]
     repo_path = quote(integration["repo_full_name"], safe="/")
@@ -2670,7 +2671,8 @@ async def _github_commit_task_workspace(tid: str, integration: dict[str, str],
     await run_db(_assert_task_lease_for_github_write, tid)
     await _github_api(token, "PATCH", ref_endpoint, {"sha": new_commit_sha, "force": False})
     return {"branch": selected_branch, "unchanged": False,
-            "files_committed": len(entries), "bytes_committed": sum(item[3] for item in pending),
+            "files_committed": len(pending), "files_deleted": len(deleted),
+            "bytes_committed": sum(item[3] for item in pending),
             "files_skipped": len(skipped), "skipped_paths": skipped[:100],
             "commit": (created or {}).get("html_url"), "commit_sha": new_commit_sha}
 
