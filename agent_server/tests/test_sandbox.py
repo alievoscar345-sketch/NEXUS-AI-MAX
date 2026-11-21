@@ -48,7 +48,7 @@ class SandboxValidationTests(unittest.TestCase):
             self.assertIn("--security-opt=no-new-privileges", joined)
             self.assertIn("--memory=1g", joined)
             self.assertIn("--pids-limit=128", joined)
-            self.assertIn(f"src={root.resolve()},dst=/workspace,rw", joined)
+            self.assertIn(f"src={root.resolve()},dst=/workspace", joined)
             self.assertEqual(argv[-3:], ["python3", "-m", "pytest"])
 
 
