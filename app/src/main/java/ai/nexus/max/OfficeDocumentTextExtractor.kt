@@ -41,7 +41,7 @@ private fun readOfficeArchive(bytes: ByteArray, accept: (String) -> Boolean): Li
 
 private fun officeParser(xml: ByteArray): XmlPullParser =
     KXmlParser().apply {
-        setFeature(XmlPullParser.FEATURE_PROCESS_DOCDECL, false)
+        setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, true)
         setInput(ByteArrayInputStream(xml), "UTF-8")
     }
 
