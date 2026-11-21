@@ -100,6 +100,12 @@ The backend now stores owner-scoped automations and dispatches due schedules int
 
 A schedule creates ordinary NEXUS agent tasks. It does not grant new tool permissions: existing restrictions and approval gates still apply. This is a single-instance prototype scheduler, not a highly available distributed scheduler.
 
+### Autonomous software project planning
+
+For software-development tasks, the planner now prioritizes explicit requirements and acceptance criteria, workspace inspection, architecture/file layout, ordered file-level implementation, build configuration, tests, and setup documentation. It maintains a requirements-to-deliverables progress document, reviews written files, and can request independent architect/implementer/critic review before finalizing. The default plan budget is 24 steps (server maximum 30).
+
+Important limitation: the current agent has workspace file read/write and review tools, but no shell, compiler, test runner, or repository checkout integration. It can author source code and test files and provide exact build/test commands, but cannot yet execute those commands or truthfully report a successful build. Full autonomous software delivery therefore still requires a sandboxed execution service and repository integration.
+
 ### Long-running background work
 
 The Android app is not the worker. Once a task is accepted by the deployed backend, its plan, ordered steps, results, and events are persisted in SQLite. The backend worker runs independently of the phone. When a task reaches the configured per-execution time budget, it checkpoints at a step boundary, releases its lease, and schedules the same task for automatic continuation. On service restart, expired leases are recovered and unfinished steps return to the durable queue.
