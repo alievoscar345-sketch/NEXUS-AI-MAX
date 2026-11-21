@@ -1208,6 +1208,7 @@ def _materialize_project_files(tid: str, owner_id: str, project_id: str) -> dict
     written = 0
     for row in rows:
         relative = _validate_project_file_path(row["path"])
+        verified_content = _verified_project_file_bytes(row)
         _, target = _workspace_target(tid, relative)
         if target.exists():
             continue
@@ -1215,7 +1216,7 @@ def _materialize_project_files(tid: str, owner_id: str, project_id: str) -> dict
         _, target = _workspace_target(tid, relative)
         temporary = target.with_name(target.name + ".tmp-" + uuid.uuid4().hex)
         try:
-            temporary.write_bytes(bytes(row["content"]))
+            temporary.write_bytes(verified_content)
             os.replace(temporary, target)
         finally:
             if temporary.exists():
@@ -2077,6 +2078,14 @@ def _validate_project_file_path(path: str) -> str:
     return "/".join(parts)
 
 
+def _verified_project_file_bytes(row: sqlite3.Row) -> bytes:
+    content = bytes(row["content"])
+    digest = hashlib.sha256(content).hexdigest()
+    if len(content) != int(row["size_bytes"]) or not hmac.compare_digest(digest, str(row["sha256"])):
+        raise HTTPException(500, "Project file integrity verification failed")
+    return content
+
+
 def _project_file_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "path": row["path"], "revision": row["revision"],
@@ -2113,7 +2122,7 @@ def read_project_file(project_id: str, path: str, owner_id: str = Depends(auth))
     if not row:
         raise HTTPException(404, "Project file not found")
     try:
-        content = bytes(row["content"]).decode("utf-8")
+        content = _verified_project_file_bytes(row).decode("utf-8")
     except UnicodeDecodeError as exc:
         raise HTTPException(415, "Project file is not valid UTF-8 text") from exc
     return {"path": safe_path, "content": content, **_project_file_dict(row)}
@@ -2182,10 +2191,11 @@ def restore_project_file(project_id: str, path: str, body: ProjectFileRestoreInp
         latest = c.execute("""SELECT MAX(revision) AS revision FROM project_file_versions
             WHERE project_id=? AND path=?""", (project_id, safe_path)).fetchone()
         revision = int(latest["revision"] or 0) + 1
+        source_content = _verified_project_file_bytes(source)
         c.execute("""INSERT INTO project_file_versions(
             id,project_id,owner_id,path,revision,content,sha256,size_bytes,message,created_at
             ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            (new_id, project_id, owner_id, safe_path, revision, source["content"],
+            (new_id, project_id, owner_id, safe_path, revision, sqlite3.Binary(source_content),
              source["sha256"], source["size_bytes"],
              body.message.strip() or f"Restore revision {body.revision}", now))
         c.execute("UPDATE projects SET updated_at=? WHERE id=? AND owner_id=?",
