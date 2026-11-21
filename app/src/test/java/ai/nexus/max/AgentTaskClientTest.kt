@@ -71,6 +71,34 @@ class AgentTaskClientTest {
         assertEquals("auto", org.json.JSONObject(buffer.readUtf8()).getString("model_selection"))
     }
 
+    @Test fun writeProjectFileSendsTextAndRevisionMessage() {
+        transport.responseBody = """{"file":{"path":"src/main.kt","revision":2,"bytes":12,"sha256":"abc","message":"save","created_at":10.0}}"""
+        val result = client.writeProjectFile("project-1", "src/main.kt", "hello world", "save")
+        assertEquals(2, result.revision)
+        assertEquals("PUT", transport.lastRequest!!.method)
+        val payload = Buffer().also { transport.lastRequest!!.body!!.writeTo(it) }
+        val json = org.json.JSONObject(payload.readUtf8())
+        assertEquals("src/main.kt", json.getString("path"))
+        assertEquals("hello world", json.getString("content"))
+        assertEquals("save", json.getString("message"))
+    }
+
+    @Test fun readProjectFileEncodesPathAsQueryParameter() {
+        transport.responseBody = """{"path":"src/main file.kt","content":"source","revision":1,"bytes":6,"sha256":"abc","message":"initial","created_at":10.0}"""
+        val result = client.readProjectFile("project-1", "src/main file.kt")
+        assertEquals("source", result.content)
+        assertEquals("src/main file.kt", transport.lastRequest!!.url.queryParameter("path"))
+    }
+
+    @Test fun restoreProjectFileSendsRevisionAndPath() {
+        transport.responseBody = """{"file":{"path":"README.md","revision":4,"bytes":4,"sha256":"abc","message":"restore","created_at":11.0}}"""
+        val result = client.restoreProjectFile("project-1", "README.md", 2)
+        assertEquals(4, result.revision)
+        assertEquals("README.md", transport.lastRequest!!.url.queryParameter("path"))
+        val payload = Buffer().also { transport.lastRequest!!.body!!.writeTo(it) }
+        assertEquals(2, org.json.JSONObject(payload.readUtf8()).getInt("revision"))
+    }
+
     @Test fun getTaskParsesEventsAndSteps() {
         transport.responseBody = """{"id":"t1","status":"running","prompt":"Do work","summary":"","error":"","events":[{"id":17,"created_at":1.5,"kind":"step_started","message":"1: Plan"}],"steps":[{"step_index":0,"title":"Plan","action":"web_search","status":"running","error":""}]}"""
         val task = client.getTask("t1")
