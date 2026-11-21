@@ -1571,11 +1571,26 @@ def delete_project(project_id: str, owner_id: str = Depends(auth)):
 
 
 @app.get("/v1/skills", dependencies=[Depends(auth)])
-def list_skills(owner_id: str = Depends(auth)):
+def list_skills(q: str = "", limit: int = 100, owner_id: str = Depends(auth)):
+    if len(q) > 200:
+        raise HTTPException(422, "Skill search query is limited to 200 characters")
     with db() as c:
         rows = c.execute("SELECT * FROM skills WHERE owner_id=? ORDER BY enabled DESC,updated_at DESC",
                          (owner_id,)).fetchall()
-    return {"skills": [_skill_dict(row) for row in rows]}
+    if q.strip():
+        terms = {term.casefold() for term in re.findall(r"[\\w-]{3,}", q)}
+        ranked = []
+        for row in rows:
+            if not row["enabled"]:
+                continue
+            name_terms = set(re.findall(r"[\\w-]{3,}", row["name"].casefold()))
+            body_terms = set(re.findall(r"[\\w-]{3,}", (row["description"] + " " + row["instructions"]).casefold()))
+            score = 3 * len(terms & name_terms) + len(terms & body_terms)
+            if score:
+                ranked.append((score, row))
+        ranked.sort(key=lambda item: (item[0], item[1]["updated_at"]), reverse=True)
+        rows = [row for _, row in ranked]
+    return {"skills": [_skill_dict(row) for row in rows[:max(1, min(limit, 100))]]}
 
 
 @app.post("/v1/skills", dependencies=[Depends(auth)])
