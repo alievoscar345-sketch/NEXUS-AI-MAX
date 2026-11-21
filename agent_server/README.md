@@ -165,10 +165,10 @@ The autonomous planner can request a `code_execute` step. The backend never eval
 
 The runner image definition is in `sandbox/Dockerfile`. Build it, push it to a registry, and configure the exact `repository@sha256:...` digest as `NEXUS_SANDBOX_IMAGE`. The image must already be present on the Docker host because execution uses `--pull=never`.
 
-The backend image includes the Docker CLI. To enable execution, the deployment operator must additionally:
-1. Mount the host Docker socket into the backend container at `/var/run/docker.sock`.
-2. Add the socket's host group ID as a supplementary group for the backend container's non-root `nexus` user.
-3. Ensure the backend workspace is a host bind mount. Set `NEXUS_SANDBOX_HOST_WORKSPACE_ROOT` to the corresponding host-side path for the configured `NEXUS_AGENT_WORKSPACE` directory when container and host paths differ.
-4. Preload the exact sandbox image digest on the same Docker daemon.
+The backend image includes the Docker CLI. To enable execution, the deployment operator must provide access to a dedicated Docker daemon:
+1. Prefer a separately administered runner daemon over mounting the host socket into a broadly exposed API container. Configure it through Docker's standard `DOCKER_HOST` setting using a protected SSH or TLS connection.
+2. If using a local Unix socket, mount it at `/var/run/docker.sock` and add the socket's host group ID as a supplementary group for the backend's non-root `nexus` user.
+3. Ensure the workspace is mounted at a stable host/runner path. Set `NEXUS_SANDBOX_HOST_WORKSPACE_ROOT` to the daemon-side path corresponding to the backend's `NEXUS_AGENT_WORKSPACE` directory when paths differ.
+4. Preload the exact sandbox image digest on the selected daemon.
 
-The Docker socket is a privileged host interface. Only enable this on a trusted, single-user deployment with the backend API key protected. Do not expose the Docker socket to the sandbox container, and do not enable this on a shared or untrusted multi-user service. If any prerequisite is missing, code execution returns a blocked result and the agent can continue file-based work without claiming that code was run.
+Docker daemon access is privileged host-level authority. Restrict it to this trusted single-user service, protect its credentials, and never expose the Docker socket to the sandbox container. Do not enable this on a shared or untrusted multi-user service. If any prerequisite is missing, code execution returns a blocked result and the agent can continue file-based work without claiming that code was run.
