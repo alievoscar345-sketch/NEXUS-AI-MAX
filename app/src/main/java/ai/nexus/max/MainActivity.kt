@@ -434,6 +434,19 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var agentMessage by mutableStateOf<String?>(null)
         private set
+    var agentWorkspaceTaskId by mutableStateOf<String?>(null)
+        private set
+    var agentWorkspacePath by mutableStateOf(".")
+        private set
+    var agentWorkspaceEntries by mutableStateOf<List<AgentWorkspaceEntry>>(emptyList())
+        private set
+    var agentWorkspaceFilePath by mutableStateOf<String?>(null)
+        private set
+    var agentWorkspaceFileContent by mutableStateOf("")
+        private set
+    var agentWorkspaceBusy by mutableStateOf(false)
+        private set
+
 
     @Volatile private var agentEventStreamCall: okhttp3.Call? = null
     @Volatile private var agentEventStreamTaskId: String? = null
@@ -660,6 +673,64 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun refreshAgentWorkspace(taskId: String, path: String = ".") {
+        if (agentWorkspaceBusy || !agentServerConfigured || agentServerUrl.isBlank()) return
+        agentWorkspaceBusy = true
+        viewModelScope.launch {
+            try {
+                val entries = withContext(Dispatchers.IO) { agentTaskClient().listWorkspace(taskId, path) }
+                if (agentWorkspaceTaskId != taskId) {
+                    agentWorkspaceFilePath = null
+                    agentWorkspaceFileContent = ""
+                }
+                agentWorkspaceTaskId = taskId
+                agentWorkspacePath = path
+                agentWorkspaceEntries = entries
+            } catch (e: Exception) {
+                agentMessage = e.message ?: "Не удалось загрузить файлы задачи."
+            } finally {
+                agentWorkspaceBusy = false
+            }
+        }
+    }
+
+    fun openAgentWorkspaceFile(taskId: String, path: String) {
+        if (agentWorkspaceBusy || !agentServerConfigured || agentServerUrl.isBlank()) return
+        agentWorkspaceBusy = true
+        viewModelScope.launch {
+            try {
+                val content = withContext(Dispatchers.IO) { agentTaskClient().readWorkspaceFile(taskId, path) }
+                agentWorkspaceTaskId = taskId
+                agentWorkspaceFilePath = path
+                agentWorkspaceFileContent = content
+            } catch (e: Exception) {
+                agentMessage = e.message ?: "Не удалось открыть файл."
+            } finally {
+                agentWorkspaceBusy = false
+            }
+        }
+    }
+
+    fun saveAgentWorkspaceFile(taskId: String, path: String, content: String) {
+        if (agentWorkspaceBusy || content.length > 100_000) {
+            if (content.length > 100_000) agentMessage = "Файл превышает ограничение 100 КБ."
+            return
+        }
+        agentWorkspaceBusy = true
+        viewModelScope.launch {
+            try {
+                val api = agentTaskClient()
+                withContext(Dispatchers.IO) { api.writeWorkspaceFile(taskId, path, content) }
+                agentWorkspaceFileContent = content
+                agentWorkspaceEntries = withContext(Dispatchers.IO) { api.listWorkspace(taskId, agentWorkspacePath) }
+                agentMessage = "Файл сохранён."
+            } catch (e: Exception) {
+                agentMessage = e.message ?: "Не удалось сохранить файл."
+            } finally {
+                agentWorkspaceBusy = false
+            }
+        }
+    }
     fun refreshAgentTasks() {
         if (agentBusy) return
         viewModelScope.launch {
@@ -3153,6 +3224,9 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
     LaunchedEffect(vm.activeAgentTaskId) {
         selectedTask = vm.activeAgentTaskId
     }
+    LaunchedEffect(selectedTask) {
+        selectedTask?.let { vm.refreshAgentWorkspace(it) }
+    }
     LaunchedEffect(vm.agentServerUrl, vm.agentServerConfigured, selectedTask) {
         if (vm.agentServerConfigured && vm.agentServerUrl.isNotBlank()) {
             try {
@@ -3235,6 +3309,61 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                         }
                         items(task.events.takeLast(6)) { event ->
                             Text("· " + event.message, color = Muted, fontSize = 9.sp)
+                        }
+                    }
+                }
+                vm.activeAgentTask?.takeIf { selectedTask == it.id }?.let { task ->
+                    Divider(color = DividerTone)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("ФАЙЛЫ ЗАДАЧИ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { vm.refreshAgentWorkspace(task.id, vm.agentWorkspacePath) }, enabled = !vm.agentWorkspaceBusy) {
+                            Text("Обновить", color = Blue, fontSize = 10.sp)
+                        }
+                        if (vm.agentWorkspacePath != ".") {
+                            TextButton(onClick = {
+                                val parent = vm.agentWorkspacePath.substringBeforeLast('/', ".").ifBlank { "." }
+                                vm.refreshAgentWorkspace(task.id, parent)
+                            }, enabled = !vm.agentWorkspaceBusy) { Text("Назад", color = Blue, fontSize = 10.sp) }
+                        }
+                    }
+                    Text(if (vm.agentWorkspacePath == ".") "Папка задачи" else vm.agentWorkspacePath, color = Muted, fontSize = 9.sp)
+                    LazyColumn(Modifier.heightIn(max = 95.dp)) {
+                        items(vm.agentWorkspaceEntries, key = { vm.agentWorkspacePath + "/" + it.name }) { entry ->
+                            Row(
+                                Modifier.fillMaxWidth().clickable(enabled = !vm.agentWorkspaceBusy) {
+                                    val path = if (vm.agentWorkspacePath == ".") entry.name else vm.agentWorkspacePath + "/" + entry.name
+                                    if (entry.type == "directory") vm.refreshAgentWorkspace(task.id, path)
+                                    else vm.openAgentWorkspaceFile(task.id, path)
+                                }.padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(if (entry.type == "directory") "Папка · " + entry.name else entry.name,
+                                    color = MainText, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                                Text(entry.bytes?.let { "$it Б" } ?: "", color = Muted, fontSize = 9.sp)
+                            }
+                        }
+                        if (vm.agentWorkspaceEntries.isEmpty()) item {
+                            Text(if (vm.agentWorkspaceBusy) "Загрузка…" else "В этой папке пока нет файлов.", color = Muted, fontSize = 9.sp)
+                        }
+                    }
+                    if (vm.agentWorkspaceTaskId == task.id && vm.agentWorkspaceFilePath != null) {
+                        var draft by remember(vm.agentWorkspaceFilePath, vm.agentWorkspaceFileContent) { mutableStateOf(vm.agentWorkspaceFileContent) }
+                        Text("ОТКРЫТ ФАЙЛ · " + vm.agentWorkspaceFilePath, color = Muted, fontSize = 9.sp)
+                        OutlinedTextField(
+                            value = draft,
+                            onValueChange = { draft = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 3,
+                            maxLines = 6,
+                            enabled = task.status in setOf("completed", "failed", "cancelled") && !vm.agentWorkspaceBusy
+                        )
+                        if (task.status in setOf("completed", "failed", "cancelled")) {
+                            TextButton(
+                                onClick = { vm.saveAgentWorkspaceFile(task.id, vm.agentWorkspaceFilePath!!, draft) },
+                                enabled = !vm.agentWorkspaceBusy && draft.length <= 100_000
+                            ) { Text("Сохранить файл", color = Blue, fontSize = 10.sp) }
+                        } else {
+                            Text("Редактирование доступно после завершения задачи.", color = Muted, fontSize = 9.sp)
                         }
                     }
                 }
