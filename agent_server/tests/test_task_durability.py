@@ -665,6 +665,47 @@ class DurableTaskTests(unittest.TestCase):
         self.assertEqual(task["status"], "running")
         self.assertEqual(task["lease_owner"], "new-worker")
 
+    def test_artifact_replace_failure_preserves_previous_file_and_cleans_temp(self):
+        now = time.time()
+        workspace = Path(self.temp.name) / "workspace-atomic"
+        workspace.mkdir()
+        target = workspace / "task-atomic-report.md"
+        target.write_text("previous complete content", encoding="utf-8")
+        with patch.object(main, "WORKSPACE", workspace):
+            with main.db() as conn:
+                conn.execute(
+                    "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    ("task-atomic", "replace artifact", "running", now, now,
+                     main.WORKER_ID, now + 600),
+                )
+            with patch.object(main.os, "replace", side_effect=OSError("simulated replace failure")):
+                with self.assertRaisesRegex(OSError, "simulated replace failure"):
+                    main._save_artifact("task-atomic", "report.md", "new content")
+
+        self.assertEqual(target.read_text(encoding="utf-8"), "previous complete content")
+        self.assertEqual(list(workspace.glob("*.tmp-*")), [])
+
+    def test_artifact_write_replaces_target_with_complete_content(self):
+        now = time.time()
+        workspace = Path(self.temp.name) / "workspace-replace"
+        workspace.mkdir()
+        target = workspace / "task-replace-report.md"
+        target.write_text("old", encoding="utf-8")
+        with patch.object(main, "WORKSPACE", workspace):
+            with main.db() as conn:
+                conn.execute(
+                    "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    ("task-replace", "replace artifact", "running", now, now,
+                     main.WORKER_ID, now + 600),
+                )
+            saved = main._save_artifact("task-replace", "report.md", "complete new content")
+
+        self.assertEqual(saved, target.name)
+        self.assertEqual(target.read_text(encoding="utf-8"), "complete new content")
+        self.assertEqual(list(workspace.glob("*.tmp-*")), [])
+
     def test_stale_worker_cannot_write_artifact(self):
         now = time.time()
         workspace = Path(self.temp.name) / "workspace"
