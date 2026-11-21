@@ -32,6 +32,7 @@ data class AgentWorkspaceEntry(val name: String, val type: String, val bytes: Lo
 data class AgentArtifact(val name: String, val bytes: Long)
 data class NexusMemory(val id: String, val title: String, val content: String, val category: String, val pinned: Boolean, val updatedAt: Double)
 data class MemorySuggestion(val title: String, val content: String, val category: String)
+data class NexusSkill(val id: String, val name: String, val description: String, val instructions: String, val category: String, val enabled: Boolean)
 data class NexusAutomation(
     val id: String, val name: String, val prompt: String, val scheduleType: String,
     val localTime: String, val timezone: String, val weekdays: List<Int>,
@@ -198,6 +199,37 @@ class AgentTaskClient(
     fun readArtifact(taskId: String, name: String): String =
         request("GET", listOf("v1", "tasks", taskId, "artifacts", "file"),
             query = mapOf("name" to name)).optString("content")
+
+    fun listSkills(): List<NexusSkill> {
+        val items = request("GET", listOf("v1", "skills")).optJSONArray("skills") ?: JSONArray()
+        return (0 until items.length()).mapNotNull { index ->
+            val item = items.optJSONObject(index) ?: return@mapNotNull null
+            item.toNexusSkill()
+        }
+    }
+
+    fun createSkill(name: String, description: String, instructions: String, category: String): NexusSkill {
+        val body = JSONObject().put("name", name.trim()).put("description", description.trim())
+            .put("instructions", instructions.trim()).put("category", category).put("enabled", true)
+        val item = request("POST", listOf("v1", "skills"), body).optJSONObject("skill")
+            ?: throw IOException("Skills API did not return a record")
+        return item.toNexusSkill()
+    }
+
+    fun updateSkill(skill: NexusSkill): NexusSkill {
+        val body = JSONObject().put("name", skill.name).put("description", skill.description)
+            .put("instructions", skill.instructions).put("category", skill.category).put("enabled", skill.enabled)
+        val item = request("PATCH", listOf("v1", "skills", skill.id), body).optJSONObject("skill")
+            ?: throw IOException("Skills API did not return an updated record")
+        return item.toNexusSkill()
+    }
+
+    fun deleteSkill(id: String) { request("DELETE", listOf("v1", "skills", id)) }
+
+    private fun JSONObject.toNexusSkill() = NexusSkill(
+        optString("id"), optString("name"), optString("description"),
+        optString("instructions"), optString("category"), optBoolean("enabled")
+    )
 
     fun suggestMemories(userMessages: List<String>): List<MemorySuggestion> {
         val messages = JSONArray()
