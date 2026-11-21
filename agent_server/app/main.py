@@ -1531,6 +1531,23 @@ def _read_worker_heartbeat():
         ).fetchone()
 
 
+def _read_worker_metrics():
+    with db() as c:
+        heartbeat = c.execute(
+            "SELECT instance_id,state,updated_at FROM worker_heartbeats WHERE name='default'"
+        ).fetchone()
+        counts = {
+            row["status"]: int(row["count"])
+            for row in c.execute(
+                "SELECT status,COUNT(*) AS count FROM tasks GROUP BY status"
+            ).fetchall()
+        }
+        oldest = c.execute(
+            "SELECT MIN(created_at) AS created_at FROM tasks WHERE status IN ('queued','retry_wait')"
+        ).fetchone()["created_at"]
+    return heartbeat, counts, oldest
+
+
 async def _worker_heartbeat_loop() -> None:
     logger = logging.getLogger("nexus.worker")
     while True:
@@ -1626,18 +1643,26 @@ async def health():
 
 @app.get("/health/worker")
 async def worker_health():
-    heartbeat = await run_db(_read_worker_heartbeat)
+    heartbeat, counts, oldest_pending = await run_db(_read_worker_metrics)
     now = time.time()
     if heartbeat is None:
         raise HTTPException(503, "Background worker has not reported a heartbeat")
     age = max(0.0, now - float(heartbeat["updated_at"]))
     if heartbeat["state"] != "running" or age > 90:
         raise HTTPException(503, "Background worker heartbeat is stale or stopped")
+    pending = counts.get("queued", 0) + counts.get("retry_wait", 0)
     return {
         "status": "ok",
         "worker": "running",
+        "instance_id": heartbeat["instance_id"],
         "last_seen_at": heartbeat["updated_at"],
-        "age_seconds": round(age, 1),
+        "heartbeat_age_seconds": round(age, 1),
+        "running_tasks": counts.get("running", 0) + counts.get("planning", 0),
+        "pending_tasks": pending,
+        "oldest_pending_age_seconds": (
+            round(max(0.0, now - float(oldest_pending)), 1)
+            if oldest_pending is not None else None
+        ),
     }
 
 
