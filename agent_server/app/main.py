@@ -1433,7 +1433,7 @@ async def suggest_memories(body: MemorySuggestionRequest, owner_id: str = Depend
         elif isinstance(content, list):
             fragments.extend(str(part.get("text", ""))[:2000]
                 for part in content if isinstance(part, dict) and part.get("type") == "text")
-    transcript = "\\n\\n".join(fragments)[-24000:]
+    transcript = "\n\n".join(fragments)[-24000:]
     if len(transcript.strip()) < 20:
         raise HTTPException(422, "Not enough user-authored conversation text to extract useful memories")
     system = (
