@@ -843,18 +843,19 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         if (projectBusy || projectNameDraft.isBlank()) return
         projectBusy = true
         val name = projectNameDraft.trim(); val description = projectDescriptionDraft.trim(); val context = projectContextDraft.trim()
+        val editingProject = editingProjectId?.let { id -> nexusProjects.firstOrNull { it.id == id } }
         val wasEditing = editingProjectId != null
+        if (wasEditing && editingProject == null) {
+            projectBusy = false
+            projectMessage = "Проект больше не найден. Обнови список и попробуй снова."
+            return
+        }
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     val api = agentTaskClient()
-                    val editing = editingProjectId
-                    if (editing == null) api.createProject(name, description, context)
-                    else {
-                        val existing = nexusProjects.firstOrNull { it.id == editing }
-                            ?: throw IllegalStateException("Проект больше не найден.")
-                        api.updateProject(existing.copy(name = name, description = description, context = context))
-                    }
+                    if (editingProject == null) api.createProject(name, description, context)
+                    else api.updateProject(editingProject.copy(name = name, description = description, context = context))
                 }
                 nexusProjects = withContext(Dispatchers.IO) { agentTaskClient().listProjects() }
                 projectNameDraft = ""; projectDescriptionDraft = ""; projectContextDraft = ""; editingProjectId = null
