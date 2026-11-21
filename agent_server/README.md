@@ -22,7 +22,7 @@ Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent 
 
 ## Not yet implemented
 
-Avito Messenger/listing connectors, general browser automation, GitHub Actions workflow dispatch/artifact polling, automatic pull-request creation, production-grade VM/microVM isolation, push notifications, and automatic execution of approved external actions. Approval currently records the decision and resumes the task; it does not send messages, publish listings, make purchases, or modify third-party accounts. Do not connect a real Avito account until official API credentials and permissions are configured.
+Avito Messenger/listing connectors, general browser automation, automatic pull-request creation, production-grade VM/microVM isolation, push notifications, and automatic execution of approved external actions. Approval currently records the decision and resumes the task; it does not send messages, publish listings, make purchases, or modify third-party accounts. Do not connect a real Avito account until official API credentials and permissions are configured.
 
 ## Deployment and security
 
@@ -71,13 +71,16 @@ A single repository can be connected to the single-user account through the Andr
 - `GET /v1/github/status` — return repository/account metadata only; never returns the token.
 - `DELETE /v1/github/connect` — delete the stored encrypted token and integration.
 - `GET /v1/github/files` and `GET /v1/github/file?path=...&branch=...` — inspect repository files.
-- Task actions `github_create_branch`, `github_checkout`, `github_list_files`, `github_read_file`, and `github_write_file` let the agent work with the connected repository. Checkout extracts the selected branch into the task workspace without restoring `.git` history, rejects traversal/symlink entries, and uses configurable archive, extracted-size, and entry-count safety bounds.
+- Task actions `github_create_branch`, `github_checkout`, `github_list_files`, `github_read_file`, `github_write_file`, `github_commit_workspace`, and `github_build_android` let the agent work with the connected repository and build the feature branch. Checkout extracts the selected branch into the task workspace without restoring `.git` history, rejects traversal/symlink entries, and uses configurable archive, extracted-size, and entry-count safety bounds.
 
-Use a GitHub fine-grained personal access token restricted to the one selected repository, with Metadata read-only and Contents read/write. The token is transmitted only to the configured HTTPS NEXUS server and encrypted at rest using the same AES-256-GCM credential key as provider secrets. Never put it in a task prompt or chat message.
+Use a GitHub fine-grained personal access token restricted to the one selected repository, with Metadata read-only, Contents read/write, and Actions read/write. The token is transmitted only to the configured HTTPS NEXUS server and encrypted at rest using the same AES-256-GCM credential key as provider secrets. Never put it in a task prompt or chat message.
 
 Each coding task gets a deterministic `nexus-agent/task-<task-id>` feature branch based on the repository's default branch. The worker checks its active lease before creating a branch or committing a file. Writes are accepted only on `nexus-agent/*` branches; `main`, `master`, and `nexus-1.0-development` are never write targets. Protected/default branches remain readable for inspection. The integration does not merge branches or create pull requests. GitHub's own token permissions and repository branch rules remain authoritative.
 
-The current implementation edits UTF-8 text files through the GitHub Contents API (1 MB per-file text limit). Checkout is a source snapshot rather than a full Git clone; Git history and local uncommitted state are not synchronized automatically. Binary build outputs are published as task artifacts rather than committed to the repository. GitHub Actions build dispatch and artifact polling are not implemented yet.
+The Android workflow accepts `require_signed_release=true` for strict release builds. In this mode it skips the debug APK path and fails if any signing secret is absent. Configure these repository Actions secrets before requesting the final release APK: `NEXUS_KEYSTORE_BASE64`, `NEXUS_KEYSTORE_PASSWORD`, `NEXUS_KEY_ALIAS`, and `NEXUS_KEY_PASSWORD`. Do not send keystore files or passwords in chat. GitHub Actions artifacts are temporary (currently 14-day retention); NEXUS copies the APK into the task's persistent artifact storage after a successful workflow.
+
+
+The current implementation commits changed workspace files as one Git tree/commit update; individual UTF-8 file writes use the Contents API (1 MB per-file text limit). Checkout is a source snapshot rather than a full Git clone; Git history and deleted-file synchronization are not implemented. Build outputs are excluded from repository commits. `github_build_android` dispatches `.github/workflows/build-android.yml`, waits for the run, downloads the release APK artifact, and publishes it as a task artifact. This requires GitHub Actions write permission and the workflow's signing secrets.
 
 ## Chat and attachments
 
@@ -137,7 +140,7 @@ The feature returns a blocked result instead of pretending execution occurred wh
 
 For software-development tasks, the planner now prioritizes explicit requirements and acceptance criteria, workspace inspection, architecture/file layout, ordered file-level implementation, build configuration, tests, and setup documentation. It maintains a requirements-to-deliverables progress document, reviews written files, and can request independent architect/implementer/critic review before finalizing. The planner has no fixed total-step ceiling. `max_steps` is legacy request metadata only and does not truncate plans or dynamically appended work.
 
-Important limitation: the agent can now execute allowlisted commands in an optional isolated Docker runner when the operator provisions it. Without that runner, it can author source code and test files but cannot execute them. Full Git clone/checkout, GitHub Actions workflow dispatch and artifact polling, automatic pull-request creation, and production-grade VM/microVM isolation are still missing. The current GitHub API integration can inspect a selected repository, create a per-task feature branch, check out a ZIP snapshot into the task workspace, read UTF-8 files, and commit UTF-8 file updates.
+Important limitation: the agent can now execute allowlisted commands in an optional isolated Docker runner when the operator provisions it. Without that runner, it can author source code and test files but cannot execute them. GitHub integration is a source snapshot and Git API workflow, not a full Git clone with local history; automatic pull-request creation and production-grade VM/microVM isolation are still missing. The current GitHub API integration can inspect a selected repository, create a per-task feature branch, check out a ZIP snapshot into the task workspace, read UTF-8 files, and commit UTF-8 file updates.
 
 ### Long-running background work
 
