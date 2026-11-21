@@ -29,6 +29,7 @@ data class AgentTaskStep(val index: Int, val title: String, val action: String, 
 
 data class AgentApproval(val id: String, val taskId: String, val description: String, val status: String)
 data class AgentWorkspaceEntry(val name: String, val type: String, val bytes: Long?)
+data class AgentArtifact(val name: String, val bytes: Long)
 
 class AgentTaskClient(
     baseUrl: String,
@@ -177,6 +178,19 @@ class AgentTaskClient(
 
     fun writeWorkspaceFile(taskId: String, path: String, content: String): Long =
         request("PUT", listOf("v1", "tasks", taskId, "workspace", "file"), JSONObject().put("path", path).put("content", content)).optLong("bytes")
+    fun listArtifacts(taskId: String): List<AgentArtifact> {
+        val items = request("GET", listOf("v1", "tasks", taskId, "artifacts"))
+            .optJSONArray("artifacts") ?: JSONArray()
+        return (0 until items.length()).mapNotNull { index ->
+            val item = items.optJSONObject(index) ?: return@mapNotNull null
+            AgentArtifact(item.optString("name"), item.optLong("bytes"))
+        }
+    }
+
+    fun readArtifact(taskId: String, name: String): String =
+        request("GET", listOf("v1", "tasks", taskId, "artifacts", "file"),
+            query = mapOf("name" to name)).optString("content")
+
     fun listApprovals(): List<AgentApproval> {
         val approvals = request("GET", listOf("v1", "approvals")).optJSONArray("approvals") ?: JSONArray()
         return (0 until approvals.length()).mapNotNull { index ->
