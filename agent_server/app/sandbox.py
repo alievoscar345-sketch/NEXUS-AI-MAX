@@ -86,6 +86,11 @@ def build_docker_argv(image: str, workspace: Path, cidfile: str,
         "--security-opt=no-new-privileges",
         "--pids-limit=128", "--memory=1g", "--cpus=1",
         "--user", f"{uid}:{gid}",
+        "--env", "HOME=/tmp/home",
+        "--env", "GRADLE_USER_HOME=/tmp/gradle",
+        "--env", "npm_config_cache=/tmp/npm",
+        "--env", "PIP_CACHE_DIR=/tmp/pip",
+        "--env", "JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=/tmp",
         "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m",
         "--mount", f"type=bind,src={root},dst=/workspace",
         "--workdir", "/workspace",
@@ -170,6 +175,15 @@ async def execute(workspace: Path, command: Any, timeout_seconds: Any = 60) -> d
             except ProcessLookupError:
                 pass
             await process.wait()
+        except asyncio.CancelledError:
+            await _stop_container(cidfile)
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            await process.wait()
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            raise
         stdout, stderr = await asyncio.gather(stdout_task, stderr_task)
 
     return {
