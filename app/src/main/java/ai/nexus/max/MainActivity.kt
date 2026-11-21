@@ -3135,7 +3135,7 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                             Modifier.fillMaxWidth().clickable {
                                 selectedTask = task.id
                                 vm.selectAgentTask(task.id)
-                                vm.refreshAgentTask(task.id)
+                                vm.refreshAgentConsole(task.id)
                             }.padding(vertical = 7.dp)
                         ) {
                             Text(task.status.uppercase() + " · " + task.prompt, color = MainText, fontSize = 11.sp)
@@ -3150,7 +3150,7 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("ВЫПОЛНЕНИЕ · " + task.status.uppercase(), color = MainText, fontSize = 10.sp, modifier = Modifier.weight(1f))
                         if (task.status in setOf("queued", "planning", "running", "retry_wait", "waiting_for_approval")) {
-                            TextButton(onClick = { vm.cancelAgentTask(task.id) }, enabled = !vm.agentBusy) {
+                            TextButton(onClick = { vm.cancelAgentTask(task.id) }, enabled = !vm.agentBusy && !vm.agentRefreshing) {
                                 Text("Отменить", color = Color(0xFFE5A0A0))
                             }
                         }
@@ -3178,10 +3178,10 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                             Column(Modifier.padding(vertical = 5.dp)) {
                                 Text(approval.description, color = MainText, fontSize = 10.sp)
                                 Row {
-                                    TextButton(onClick = { vm.decideAgentApproval(approval.id, true) }, enabled = !vm.agentBusy) {
+                                    TextButton(onClick = { vm.decideAgentApproval(approval.id, true) }, enabled = !vm.agentBusy && !vm.agentRefreshing) {
                                         Text("Разрешить", color = Color(0xFF8FC6A0))
                                     }
-                                    TextButton(onClick = { vm.decideAgentApproval(approval.id, false) }, enabled = !vm.agentBusy) {
+                                    TextButton(onClick = { vm.decideAgentApproval(approval.id, false) }, enabled = !vm.agentBusy && !vm.agentRefreshing) {
                                         Text("Отклонить", color = Color(0xFFE5A0A0))
                                     }
                                 }
