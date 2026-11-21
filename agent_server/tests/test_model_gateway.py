@@ -1,5 +1,8 @@
 import json
+import os
 import unittest
+from unittest.mock import patch
+
 import httpx
 
 from app.model_gateway import ModelConfig, ModelGateway, ModelGatewayError, infer_task_type
@@ -87,7 +90,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                     "model": "model", "api_key_env": "NEXUS_TEST_KEY",
                 }
                 item.update(metadata)
-                with unittest.mock.patch.dict(
+                with patch.dict(
                     os.environ,
                     {"NEXUS_MODEL_PROVIDERS": json.dumps([item]), "NEXUS_TEST_KEY": "secret"},
                 ):
