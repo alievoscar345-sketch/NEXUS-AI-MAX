@@ -44,6 +44,7 @@ API_KEY = os.getenv("NEXUS_AGENT_API_KEY", "")
 TAVILY_KEY = os.getenv("TAVILY_API_KEY", "")
 DEFAULT_TASK_STEPS = max(1, int(os.getenv("NEXUS_AGENT_DEFAULT_TASK_STEPS", "24")))
 CONTINUATION_DELAY_SECONDS = max(1, min(int(os.getenv("NEXUS_AGENT_CONTINUATION_DELAY_SECONDS", "5")), 60))
+NEXUS_AGENT_WORKER_ENABLED = os.getenv("NEXUS_AGENT_WORKER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 MAX_STEP_ATTEMPTS = max(1, min(int(os.getenv("NEXUS_AGENT_STEP_MAX_ATTEMPTS", "3")), 8))
 MAX_ARTIFACT_BYTES = max(1, int(os.getenv("NEXUS_AGENT_MAX_ARTIFACT_BYTES", str(2 * 1024 * 1024 * 1024))))
 MAX_CHECKOUT_ARCHIVE_BYTES = max(1, int(os.getenv("NEXUS_AGENT_MAX_CHECKOUT_ARCHIVE_BYTES", str(512 * 1024 * 1024))))
@@ -1504,14 +1505,17 @@ async def worker():
 @asynccontextmanager
 async def lifespan(app):
     await run_db(init_db)
-    await run_db(recover_interrupted_tasks)
-    task = asyncio.create_task(worker())
+    task = None
+    if NEXUS_AGENT_WORKER_ENABLED:
+        await run_db(recover_interrupted_tasks)
+        task = asyncio.create_task(worker())
     yield
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="NEXUS Agent Core", version="0.2.0", lifespan=lifespan)
