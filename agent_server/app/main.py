@@ -387,7 +387,7 @@ def _set_task_planning(tid: str):
 
 def _mark_task_cancelled(tid: str):
     with db() as c:
-        c.execute("UPDATE tasks SET status='cancelled',lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
+        c.execute("UPDATE tasks SET status='cancelled',cancel_requested=1,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
                   (time.time(), tid))
 
 
@@ -409,22 +409,25 @@ def _step_summary(tid: str):
     return waiting, unfinished, results_rows
 
 
-def _set_task_waiting_for_approval(tid: str):
+def _set_task_waiting_for_approval(tid: str) -> bool:
     with db() as c:
-        c.execute("UPDATE tasks SET status='waiting_for_approval',lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
-                  (time.time(), tid))
+        changed = c.execute("UPDATE tasks SET status='waiting_for_approval',lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND cancel_requested=0 AND status!='cancelled'",
+                            (time.time(), tid)).rowcount
+    return bool(changed)
 
 
-def _set_task_retry_wait(tid: str, next_at: float):
+def _set_task_retry_wait(tid: str, next_at: float) -> bool:
     with db() as c:
-        c.execute("UPDATE tasks SET status='retry_wait',next_attempt_at=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
-                  (next_at, time.time(), tid))
+        changed = c.execute("UPDATE tasks SET status='retry_wait',next_attempt_at=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND cancel_requested=0 AND status!='cancelled'",
+                            (next_at, time.time(), tid)).rowcount
+    return bool(changed)
 
 
-def _complete_task(tid: str, summary: str, results_json: str):
+def _complete_task(tid: str, summary: str, results_json: str) -> bool:
     with db() as c:
-        c.execute("UPDATE tasks SET status='completed',summary=?,results_json=?,error='',next_attempt_at=NULL,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
-                  (summary[:12000], results_json, time.time(), tid))
+        changed = c.execute("UPDATE tasks SET status='completed',summary=?,results_json=?,error='',next_attempt_at=NULL,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND cancel_requested=0 AND status!='cancelled'",
+                            (summary[:12000], results_json, time.time(), tid)).rowcount
+    return bool(changed)
 
 
 def _claim_step(step_id: str):
@@ -454,20 +457,22 @@ def _record_step_failure(tid: str, step_id: str, retry: bool, next_at: float | N
         c.execute("UPDATE task_steps SET status=?,error=?,next_attempt_at=?,updated_at=? WHERE id=?",
                   ("retry_wait" if retry else "failed", error[:2000], next_at, time.time(), step_id))
         if retry:
-            c.execute("UPDATE tasks SET status='retry_wait',next_attempt_at=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
+            c.execute("UPDATE tasks SET status='retry_wait',next_attempt_at=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND cancel_requested=0 AND status!='cancelled'",
                       (next_at, time.time(), tid))
         else:
-            c.execute("UPDATE tasks SET status='failed',error=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
+            c.execute("UPDATE tasks SET status='failed',error=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND cancel_requested=0 AND status!='cancelled'",
                       (error[:2000], time.time(), tid))
 
 
 def _record_task_failure(tid: str, exc: Exception, error: str) -> bool:
     with db() as c:
-        current = c.execute("SELECT attempt_count,max_attempts FROM tasks WHERE id=?", (tid,)).fetchone()
-        retry = bool(current and _is_transient(exc) and current["attempt_count"] < current["max_attempts"])
+        current = c.execute("SELECT attempt_count,max_attempts,cancel_requested FROM tasks WHERE id=?", (tid,)).fetchone()
+        cancelled = bool(current and current["cancel_requested"])
+        retry = bool(current and not cancelled and _is_transient(exc) and current["attempt_count"] < current["max_attempts"])
         next_at = time.time() + _retry_delay(current["attempt_count"]) if retry else None
+        status = "cancelled" if cancelled else ("retry_wait" if retry else "failed")
         c.execute("UPDATE tasks SET status=?,error=?,next_attempt_at=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND status!='cancelled'",
-                  ("retry_wait" if retry else "failed", error[:2000], next_at, time.time(), tid))
+                  (status, error[:2000], next_at, time.time(), tid))
     return retry
 
 
@@ -499,19 +504,29 @@ async def process(tid: str):
             if not step:
                 waiting, unfinished, results_rows = await run_db(_step_summary, tid)
                 if waiting:
-                    await run_db(_set_task_waiting_for_approval, tid)
+                    transitioned = await run_db(_set_task_waiting_for_approval, tid)
+                    if not transitioned:
+                        await run_db(_mark_task_cancelled, tid)
+                        await run_db(event, tid, "cancelled", "Task cancellation acknowledged")
                     return
                 if unfinished:
-                    await run_db(_set_task_retry_wait, tid, time.time() + RETRY_BASE_SECONDS)
+                    transitioned = await run_db(_set_task_retry_wait, tid, time.time() + RETRY_BASE_SECONDS)
+                    if not transitioned:
+                        await run_db(_mark_task_cancelled, tid)
+                        await run_db(event, tid, "cancelled", "Task cancellation acknowledged")
                     return
                 results = [json.loads(x["result_json"]) for x in results_rows]
                 final = await llm_json(
                     'Return strict JSON only: {"summary":"..."}. Summarize only supplied results. Explicitly identify blocked or unavailable actions; do not claim they succeeded.',
                     json.dumps({"goal": row["prompt"], "results": results}, ensure_ascii=False)[:30000],
                     purpose="evaluation", task_id=tid, owner_id=row["owner_id"])
-                await run_db(_complete_task, tid, str(final.get("summary", "Task finished")),
-                             json.dumps(results, ensure_ascii=False))
-                await run_db(event, tid, "completed", "Task completed")
+                completed = await run_db(_complete_task, tid, str(final.get("summary", "Task finished")),
+                                         json.dumps(results, ensure_ascii=False))
+                if completed:
+                    await run_db(event, tid, "completed", "Task completed")
+                else:
+                    await run_db(_mark_task_cancelled, tid)
+                    await run_db(event, tid, "cancelled", "Task cancellation acknowledged")
                 return
 
             claimed = await run_db(_claim_step, step["id"])
@@ -527,20 +542,29 @@ async def process(tid: str):
                              json.dumps(result, ensure_ascii=False))
                 await run_db(event, tid, "step_finished", f"{claimed['step_index'] + 1}: {status}")
                 if status == "waiting_for_approval":
-                    await run_db(_set_task_waiting_for_approval, tid)
+                    transitioned = await run_db(_set_task_waiting_for_approval, tid)
+                    if not transitioned:
+                        await run_db(_mark_task_cancelled, tid)
+                        await run_db(event, tid, "cancelled", "Task cancellation acknowledged")
                     return
             except Exception as exc:
                 attempts = claimed["attempt_count"]
                 retry = _is_transient(exc) and attempts < claimed["max_attempts"]
                 next_at = time.time() + _retry_delay(attempts) if retry else None
                 await run_db(_record_step_failure, tid, claimed["id"], retry, next_at, str(exc)[:2000])
-                await run_db(event, tid, "step_retry" if retry else "error", str(exc)[:1000])
-                if retry:
-                    return
+                if await run_db(_task_cancelled, tid):
+                    await run_db(_mark_task_cancelled, tid)
+                    await run_db(event, tid, "cancelled", "Task cancellation acknowledged")
+                else:
+                    await run_db(event, tid, "step_retry" if retry else "error", str(exc)[:1000])
                 return
     except Exception as exc:
         retry = await run_db(_record_task_failure, tid, exc, str(exc)[:2000])
-        await run_db(event, tid, "task_retry" if retry else "error", str(exc)[:1000])
+        if await run_db(_task_cancelled, tid):
+            await run_db(_mark_task_cancelled, tid)
+            await run_db(event, tid, "cancelled", "Task cancellation acknowledged")
+        else:
+            await run_db(event, tid, "task_retry" if retry else "error", str(exc)[:1000])
 
 
 def recover_interrupted_tasks():
@@ -793,19 +817,28 @@ def get_task(tid: str, owner_id: str = Depends(auth)):
                       for x in steps]}
 
 
-@app.post("/v1/tasks/{tid}/cancel", dependencies=[Depends(auth)])
-def cancel_task(tid: str, owner_id: str = Depends(auth)):
+def _cancel_task_record(tid: str, owner_id: str) -> dict[str, str]:
     with db() as c:
+        c.execute("BEGIN IMMEDIATE")
         row = c.execute("SELECT status FROM tasks WHERE id=? AND owner_id=?", (tid, owner_id)).fetchone()
         if not row:
             raise HTTPException(404, "Task not found")
         if row["status"] in {"completed", "failed", "cancelled"}:
             raise HTTPException(409, "Task already finished")
-        c.execute("UPDATE tasks SET cancel_requested=1,updated_at=? WHERE id=?", (time.time(), tid))
+        now = time.time()
         if row["status"] in {"queued", "retry_wait", "waiting_for_approval", "paused"}:
-            c.execute("UPDATE tasks SET status='cancelled',lease_owner='',lease_expires_at=NULL WHERE id=?", (tid,))
-    event(tid, "cancel_requested", "Cancellation requested by user")
+            c.execute("UPDATE tasks SET cancel_requested=1,status='cancelled',lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
+                      (now, tid))
+        else:
+            c.execute("UPDATE tasks SET cancel_requested=1,updated_at=? WHERE id=?", (now, tid))
+        c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                  (tid, now, "cancel_requested", "Cancellation requested by user"))
     return {"id": tid, "status": "cancellation_requested"}
+
+
+@app.post("/v1/tasks/{tid}/cancel", dependencies=[Depends(auth)])
+def cancel_task(tid: str, owner_id: str = Depends(auth)):
+    return _cancel_task_record(tid, owner_id)
 
 
 @app.get("/v1/approvals", dependencies=[Depends(auth)])
