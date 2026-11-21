@@ -219,6 +219,100 @@ class DurableTaskTests(unittest.TestCase):
         finally:
             main._LEASE_OWNER.reset(stale)
 
+    def test_github_connect_encrypts_token_and_status_never_returns_it(self):
+        from unittest.mock import AsyncMock
+        with patch.object(main, "_github_api", new=AsyncMock(side_effect=[
+            {"login": "nexus-owner"},
+            {"full_name": "nexus-owner/sample-app", "default_branch": "main",
+             "permissions": {"push": True}},
+        ])), patch.object(main, "encrypt_secret", return_value=b"encrypted-token"):
+            result = asyncio.run(main.connect_github(
+                main.GitHubConnectInput(repo_full_name="nexus-owner/sample-app",
+                                        token="ghp_" + "x" * 36),
+                owner_id="owner-a",
+            ))
+        self.assertEqual(result["status"], "connected")
+        self.assertFalse(result["secret_returned"])
+        status = main.github_status(owner_id="owner-a")
+        self.assertTrue(status["connected"])
+        self.assertEqual(status["integration"]["repo_full_name"], "nexus-owner/sample-app")
+        self.assertNotIn("token", str(status))
+        with main.db() as conn:
+            stored = conn.execute("SELECT encrypted_token FROM github_integrations WHERE owner_id='owner-a'").fetchone()
+        self.assertEqual(bytes(stored["encrypted_token"]), b"encrypted-token")
+        self.assertEqual(main.disconnect_github(owner_id="owner-a")["status"], "disconnected")
+        self.assertFalse(main.github_status(owner_id="owner-a")["connected"])
+
+    def test_github_write_actions_reject_protected_branches(self):
+        for branch_name in ("main", "master", "nexus-1.0-development", "feature/unsafe"):
+            with self.subTest(branch=branch_name):
+                with self.assertRaises(ValueError):
+                    main._github_branch_name(branch_name, require_feature=True)
+        self.assertEqual(main._github_branch_name("nexus-agent/task-123", require_feature=True),
+                         "nexus-agent/task-123")
+
+    def test_github_write_is_fenced_to_current_task_lease(self):
+        from unittest.mock import AsyncMock
+        now = time.time()
+        worker = main.WORKER_ID + ":github-write"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                ("github-write-task", "commit code", "running", now, now, "owner-a", worker, now + 600),
+            )
+            conn.execute(
+                "INSERT INTO github_integrations(owner_id,repo_full_name,github_login,default_branch,"
+                "encrypted_token,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                ("owner-a", "nexus-owner/sample-app", "nexus-owner", "main", b"encrypted", now, now),
+            )
+        token_context = main._LEASE_OWNER.set(worker)
+        try:
+            with patch.object(main, "decrypt_secret", return_value="ghp_test-token"), \
+                 patch.object(main, "_github_api", new=AsyncMock(side_effect=[
+                     None,
+                     {"commit": {"html_url": "https://github.com/nexus-owner/sample-app/commit/abc"},
+                      "content": {"sha": "new-sha"}},
+                 ])) as github_api:
+                result = asyncio.run(main._github_task_action(
+                    "github-write-task", "owner-a", "github_write_file",
+                    {"branch": "nexus-agent/task-github-write-task",
+                     "path": "src/Main.kt", "content": "package sample"},
+                ))
+            self.assertFalse(result["unchanged"])
+            self.assertEqual(result["sha"], "new-sha")
+            self.assertEqual(github_api.await_count, 2)
+            self.assertEqual(github_api.await_args_list[-1].args[1], "PUT")
+        finally:
+            main._LEASE_OWNER.reset(token_context)
+
+    def test_github_write_refuses_stale_task_lease_before_commit(self):
+        from unittest.mock import AsyncMock
+        now = time.time()
+        current = main.WORKER_ID + ":github-current"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                ("github-stale-task", "stale commit", "running", now, now, "owner-a", current, now + 600),
+            )
+            conn.execute(
+                "INSERT INTO github_integrations(owner_id,repo_full_name,github_login,default_branch,"
+                "encrypted_token,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                ("owner-a", "nexus-owner/sample-app", "nexus-owner", "main", b"encrypted", now, now),
+            )
+        stale = main._LEASE_OWNER.set(main.WORKER_ID + ":github-stale")
+        try:
+            with patch.object(main, "decrypt_secret", return_value="ghp_test-token"), \
+                 patch.object(main, "_github_api", new=AsyncMock()) as github_api:
+                with self.assertRaises(RuntimeError):
+                    asyncio.run(main._github_task_action(
+                        "github-stale-task", "owner-a", "github_create_branch", {}
+                    ))
+                github_api.assert_not_awaited()
+        finally:
+            main._LEASE_OWNER.reset(stale)
+
     def test_memory_crud_is_scoped_to_owner(self):
         created = main.create_memory(
             main.MemoryInput(title="Nutrition preference", content="Prefers evidence-based nutrition advice",
