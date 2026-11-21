@@ -38,7 +38,8 @@ data class NexusSkill(val id: String, val name: String, val description: String,
 data class NexusProject(val id: String, val name: String, val description: String, val context: String, val status: String, val taskCount: Int)
 data class NexusProjectFile(
     val path: String, val revision: Int, val bytes: Long, val sha256: String,
-    val message: String, val createdAt: Double
+    val message: String, val createdAt: Double,
+    val contentType: String = "text/plain; charset=utf-8", val isBinary: Boolean = false
 )
 data class NexusProjectFileContent(val file: NexusProjectFile, val content: String)
 data class NexusAutomationRun(val id: String, val taskId: String, val scheduledFor: Double, val taskStatus: String, val taskSummary: String, val taskError: String)
@@ -402,7 +403,8 @@ class AgentTaskClient(
 
     private fun JSONObject.toNexusProjectFile() = NexusProjectFile(
         optString("path"), optInt("revision"), optLong("bytes"), optString("sha256"),
-        optString("message"), optDouble("created_at")
+        optString("message"), optDouble("created_at"),
+        optString("content_type", "text/plain; charset=utf-8"), optBoolean("is_binary")
     )
 
     private fun JSONObject.toNexusProject() = NexusProject(
