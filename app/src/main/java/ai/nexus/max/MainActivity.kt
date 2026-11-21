@@ -731,6 +731,25 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+    fun exportAgentWorkspaceFile(uri: Uri) {
+        if (agentWorkspaceBusy) return
+        val content = agentWorkspaceFileContent
+        agentWorkspaceBusy = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val output = getApplication<Application>().contentResolver.openOutputStream(uri)
+                        ?: throw IllegalStateException("Не удалось открыть файл для сохранения.")
+                    output.use { it.write(content.toByteArray(Charsets.UTF_8)) }
+                }
+                agentMessage = "Файл сохранён на устройстве."
+            } catch (e: Exception) {
+                agentMessage = e.message ?: "Не удалось экспортировать файл."
+            } finally {
+                agentWorkspaceBusy = false
+            }
+        }
+    }
     fun refreshAgentTasks() {
         if (agentBusy) return
         viewModelScope.launch {
@@ -3220,6 +3239,11 @@ private fun extractMarkdownCode(content: String, node: ASTNode, fenced: Boolean)
 @Composable
 private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
     var prompt by remember { mutableStateOf("") }
+    val workspaceExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        uri?.let { vm.exportAgentWorkspaceFile(it) }
+    }
     var selectedTask by remember { mutableStateOf(vm.activeAgentTaskId) }
     LaunchedEffect(vm.activeAgentTaskId) {
         selectedTask = vm.activeAgentTaskId
@@ -3357,12 +3381,22 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                             maxLines = 6,
                             enabled = task.status in setOf("completed", "failed", "cancelled") && !vm.agentWorkspaceBusy
                         )
-                        if (task.status in setOf("completed", "failed", "cancelled")) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             TextButton(
-                                onClick = { vm.saveAgentWorkspaceFile(task.id, vm.agentWorkspaceFilePath!!, draft) },
-                                enabled = !vm.agentWorkspaceBusy && draft.length <= 100_000
-                            ) { Text("Сохранить файл", color = Blue, fontSize = 10.sp) }
-                        } else {
+                                onClick = {
+                                    val fileName = vm.agentWorkspaceFilePath?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "nexus-export.txt"
+                                    workspaceExportLauncher.launch(fileName)
+                                },
+                                enabled = !vm.agentWorkspaceBusy
+                            ) { Text("Скачать на устройство", color = Blue, fontSize = 10.sp) }
+                            if (task.status in setOf("completed", "failed", "cancelled")) {
+                                TextButton(
+                                    onClick = { vm.saveAgentWorkspaceFile(task.id, vm.agentWorkspaceFilePath!!, draft) },
+                                    enabled = !vm.agentWorkspaceBusy && draft.length <= 100_000
+                                ) { Text("Сохранить в задаче", color = Blue, fontSize = 10.sp) }
+                            }
+                        }
+                        if (task.status !in setOf("completed", "failed", "cancelled")) {
                             Text("Редактирование доступно после завершения задачи.", color = Muted, fontSize = 9.sp)
                         }
                     }
