@@ -54,6 +54,23 @@ class AgentTaskClientTest {
         assertEquals("stable-key-123", org.json.JSONObject(buffer.readUtf8()).getString("idempotency_key"))
     }
 
+    @Test fun createTaskSendsExplicitManualModelSelection() {
+        transport.responseBody = """{"id":"task-model","status":"queued"}"""
+        client.createTask("Build an Android app", modelSelection = "user-claude")
+        val buffer = Buffer()
+        transport.lastRequest!!.body!!.writeTo(buffer)
+        val payload = org.json.JSONObject(buffer.readUtf8())
+        assertEquals("user-claude", payload.getString("model_selection"))
+    }
+
+    @Test fun createTaskDefaultsToAutomaticModelSelection() {
+        transport.responseBody = """{"id":"task-auto","status":"queued"}"""
+        client.createTask("Research this topic")
+        val buffer = Buffer()
+        transport.lastRequest!!.body!!.writeTo(buffer)
+        assertEquals("auto", org.json.JSONObject(buffer.readUtf8()).getString("model_selection"))
+    }
+
     @Test fun getTaskParsesEventsAndSteps() {
         transport.responseBody = """{"id":"t1","status":"running","prompt":"Do work","summary":"","error":"","events":[{"id":17,"created_at":1.5,"kind":"step_started","message":"1: Plan"}],"steps":[{"step_index":0,"title":"Plan","action":"web_search","status":"running","error":""}]}"""
         val task = client.getTask("t1")
