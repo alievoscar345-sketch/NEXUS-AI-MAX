@@ -1659,6 +1659,27 @@ def list_automations(owner_id: str = Depends(auth)):
         for row in rows]}
 
 
+@app.get("/v1/automations/{automation_id}/runs", dependencies=[Depends(auth)])
+def list_automation_runs(automation_id: str, limit: int = 30, owner_id: str = Depends(auth)):
+    limit = max(1, min(limit, 100))
+    with db() as c:
+        automation = c.execute("SELECT id FROM automations WHERE id=? AND owner_id=?",
+                               (automation_id, owner_id)).fetchone()
+        if not automation:
+            raise HTTPException(404, "Automation not found")
+        rows = c.execute("""SELECT r.id,r.task_id,r.scheduled_for,r.created_at,
+            t.status AS task_status,t.summary AS task_summary,t.error AS task_error
+            FROM automation_runs r JOIN tasks t ON t.id=r.task_id
+            WHERE r.automation_id=? AND r.owner_id=?
+            ORDER BY r.scheduled_for DESC LIMIT ?""",
+            (automation_id, owner_id, limit)).fetchall()
+    return {"runs": [{
+        "id": row["id"], "task_id": row["task_id"], "scheduled_for": row["scheduled_for"],
+        "created_at": row["created_at"], "task_status": row["task_status"],
+        "task_summary": row["task_summary"], "task_error": row["task_error"]
+    } for row in rows]}
+
+
 @app.post("/v1/automations", dependencies=[Depends(auth)])
 def create_automation(body: AutomationInput, owner_id: str = Depends(auth)):
     now = time.time()
