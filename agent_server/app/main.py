@@ -140,6 +140,8 @@ def init_db():
             "owner_id": "TEXT NOT NULL DEFAULT 'personal'",
             "context_text": "TEXT NOT NULL DEFAULT ''",
             "model_selection": "TEXT NOT NULL DEFAULT 'auto'",
+            "restore_checkpoint_id": "TEXT NOT NULL DEFAULT ''",
+            "restore_previous_status": "TEXT NOT NULL DEFAULT ''",
         }
         existing = _columns(c, "tasks")
         for name, definition in migrations.items():
@@ -2026,8 +2028,44 @@ def _stop_task_after_checkpoint_failure(tid: str, error: str) -> None:
                   (tid, now, "checkpoint_restore_failed",
                    "Task stopped because its last safe workspace checkpoint could not be restored"))
 
+def _recover_interrupted_checkpoint_restores() -> int:
+    """Finish or safely stop manual restores whose API process died mid-operation."""
+    now = time.time()
+    with db() as c:
+        rows = c.execute("""SELECT id,restore_checkpoint_id,restore_previous_status
+            FROM tasks WHERE status='restoring'
+            AND (lease_expires_at IS NULL OR lease_expires_at<=?)""", (now,)).fetchall()
+    recovered = 0
+    for row in rows:
+        tid = row["id"]
+        try:
+            restored = _restore_latest_task_checkpoint(
+                tid, restore_state=True, checkpoint_id=row["restore_checkpoint_id"], manual=True
+            )
+            if not restored:
+                raise ValueError("Selected checkpoint no longer exists")
+            with db() as c:
+                c.execute("""UPDATE tasks SET status='paused',cancel_requested=0,pause_requested=0,
+                    restore_checkpoint_id='',restore_previous_status='',lease_owner='',
+                    lease_expires_at=NULL,updated_at=? WHERE id=? AND status='restoring'""",
+                    (time.time(), tid))
+            recovered += 1
+        except Exception as exc:
+            with db() as c:
+                c.execute("""UPDATE tasks SET status='failed',error=?,restore_checkpoint_id='',
+                    restore_previous_status='',lease_owner='',lease_expires_at=NULL,updated_at=?
+                    WHERE id=? AND status='restoring'""",
+                    ("Interrupted checkpoint restore could not be completed safely: " + str(exc)[:800],
+                     time.time(), tid))
+                c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                          (tid, time.time(), "checkpoint_restore_failed",
+                           "Task stopped because an interrupted manual restore could not be verified"))
+    return recovered
+
+
 def recover_interrupted_tasks():
     """Single-worker SQLite recovery. Safe because supported actions are read-only or idempotent."""
+    _recover_interrupted_checkpoint_restores()
     now = time.time()
     with db() as c:
         candidates = c.execute("""SELECT id FROM tasks WHERE status IN ('planning','running')
@@ -4254,23 +4292,30 @@ def restore_task_checkpoint(tid: str, checkpoint_id: str, body: dict[str, Any],
             (checkpoint_id, tid, owner_id)).fetchone()
         if not selected:
             raise HTTPException(404, "Checkpoint not found")
-        c.execute("""UPDATE tasks SET status='restoring',updated_at=?
-            WHERE id=? AND owner_id=?""", (time.time(), tid, owner_id))
+        restore_owner = "checkpoint-restore:" + uuid.uuid4().hex
+        restore_started = time.time()
+        c.execute("""UPDATE tasks SET status='restoring',restore_checkpoint_id=?,
+            restore_previous_status=?,lease_owner=?,lease_expires_at=?,updated_at=?
+            WHERE id=? AND owner_id=?""",
+            (checkpoint_id, previous_status, restore_owner, restore_started + 900,
+             restore_started, tid, owner_id))
     try:
         restored = _restore_latest_task_checkpoint(tid, restore_state=True,
                                                    checkpoint_id=checkpoint_id, manual=True)
-    except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile,
-            json.JSONDecodeError, sqlite3.Error) as exc:
+    except Exception as exc:
         with db() as c:
-            c.execute("UPDATE tasks SET status=?,updated_at=? WHERE id=? AND owner_id=? AND status='restoring'",
-                      (previous_status, time.time(), tid, owner_id))
+            c.execute("""UPDATE tasks SET status=?,restore_checkpoint_id='',
+                restore_previous_status='',lease_owner='',lease_expires_at=NULL,updated_at=?
+                WHERE id=? AND owner_id=? AND status='restoring'""",
+                (previous_status, time.time(), tid, owner_id))
         raise HTTPException(422, f"Checkpoint restore failed: {exc}") from exc
     if not restored:
         raise HTTPException(404, "Checkpoint not found")
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         changed = c.execute("""UPDATE tasks SET status='paused',cancel_requested=0,
-            pause_requested=0,lease_owner='',lease_expires_at=NULL,updated_at=?
+            pause_requested=0,restore_checkpoint_id='',restore_previous_status='',
+            lease_owner='',lease_expires_at=NULL,updated_at=?
             WHERE id=? AND owner_id=? AND status='restoring'""",
             (time.time(), tid, owner_id)).rowcount
         if not changed:
