@@ -973,14 +973,14 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun createAutomation(name: String, prompt: String, scheduleType: String, localTime: String,
-                         weekdays: List<Int>, intervalMinutes: Int?) {
+                         weekdays: List<Int>, intervalMinutes: Int?, projectId: String? = null) {
         if (automationBusy || name.isBlank() || prompt.trim().length < 3) return
         automationBusy = true
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     agentTaskClient().createAutomation(name, prompt, scheduleType, localTime,
-                        ZoneId.systemDefault().id, weekdays, intervalMinutes)
+                        ZoneId.systemDefault().id, weekdays, intervalMinutes, projectId)
                 }
                 nexusAutomations = withContext(Dispatchers.IO) { agentTaskClient().listAutomations() }
                 automationMessage = "Автоматизация сохранена на сервере."
@@ -4164,8 +4164,11 @@ private fun AutomationManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
     var localTime by remember { mutableStateOf("09:00") }
     var intervalText by remember { mutableStateOf("60") }
     var weekdays by remember { mutableStateOf(setOf(1, 2, 3, 4, 5)) }
+    var selectedProjectId by remember { mutableStateOf<String?>(null) }
+    var projectMenuExpanded by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         vm.refreshAutomations()
+        vm.refreshProjects()
         while (true) {
             delay(30000)
             vm.refreshAutomations()
@@ -4192,6 +4195,17 @@ private fun AutomationManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                 OutlinedTextField(value = prompt, onValueChange = { prompt = it.take(12000) },
                     modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 4,
                     label = { Text("Что NEXUS должен делать") })
+                Box {
+                    OutlinedButton(onClick = { projectMenuExpanded = true }, enabled = !vm.automationBusy) {
+                        Text(vm.nexusProjects.firstOrNull { it.id == selectedProjectId }?.name ?: "Без проекта", color = MainText)
+                    }
+                    DropdownMenu(expanded = projectMenuExpanded, onDismissRequest = { projectMenuExpanded = false }) {
+                        DropdownMenuItem(text = { Text("Без проекта") }, onClick = { selectedProjectId = null; projectMenuExpanded = false })
+                        vm.nexusProjects.filter { it.status == "active" }.forEach { project ->
+                            DropdownMenuItem(text = { Text(project.name) }, onClick = { selectedProjectId = project.id; projectMenuExpanded = false })
+                        }
+                    }
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                     listOf("daily" to "Ежедневно", "weekly" to "По дням", "interval" to "Интервал").forEach { (value, label) ->
                         FilterChip(selected = scheduleType == value, onClick = { scheduleType = value },
@@ -4218,7 +4232,7 @@ private fun AutomationManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                 Button(onClick = {
                     vm.createAutomation(name, prompt, scheduleType, localTime,
                         if (scheduleType == "weekly") weekdays.sorted() else emptyList(),
-                        if (scheduleType == "interval") intervalText.toIntOrNull() else null)
+                        if (scheduleType == "interval") intervalText.toIntOrNull() else null, selectedProjectId)
                     name = ""; prompt = ""
                 }, enabled = !vm.automationBusy && vm.agentServerConfigured && name.isNotBlank() &&
                     prompt.trim().length >= 3 && (scheduleType != "weekly" || weekdays.isNotEmpty()) &&
@@ -4238,6 +4252,10 @@ private fun AutomationManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                                     color = if (item.enabled) Color(0xFF8FC6A0) else Muted, fontSize = 8.sp)
                             }
                             Text(item.prompt, color = Muted, fontSize = 10.sp, maxLines = 3)
+                            item.projectId?.let { id ->
+                                Text("Проект: " + (vm.nexusProjects.firstOrNull { it.id == id }?.name ?: "привязанный проект"),
+                                    color = Blue, fontSize = 9.sp)
+                            }
                             val next = item.nextRunAt?.let {
                                 runCatching { Instant.ofEpochMilli((it * 1000).toLong())
                                     .atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")) }.getOrNull()
