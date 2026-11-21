@@ -96,6 +96,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
+import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
@@ -990,14 +991,14 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun createAutomation(name: String, prompt: String, scheduleType: String, localTime: String,
-                         weekdays: List<Int>, intervalMinutes: Int?, projectId: String? = null) {
+                         weekdays: List<Int>, intervalMinutes: Int?, projectId: String? = null, runAt: Double? = null) {
         if (automationBusy || name.isBlank() || prompt.trim().length < 3) return
         automationBusy = true
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     agentTaskClient().createAutomation(name, prompt, scheduleType, localTime,
-                        ZoneId.systemDefault().id, weekdays, intervalMinutes, projectId)
+                        ZoneId.systemDefault().id, weekdays, intervalMinutes, projectId, runAt)
                 }
                 nexusAutomations = withContext(Dispatchers.IO) { agentTaskClient().listAutomations() }
                 automationMessage = "Автоматизация сохранена на сервере."
@@ -4180,6 +4181,7 @@ private fun AutomationManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
     var prompt by remember { mutableStateOf("") }
     var scheduleType by remember { mutableStateOf("daily") }
     var localTime by remember { mutableStateOf("09:00") }
+    var onceDateTime by remember { mutableStateOf(LocalDateTime.now().plusHours(1).withSecond(0).withNano(0).format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"))) }
     var intervalText by remember { mutableStateOf("60") }
     var weekdays by remember { mutableStateOf(setOf(1, 2, 3, 4, 5)) }
     var selectedProjectId by remember { mutableStateOf<String?>(null) }
@@ -4225,12 +4227,14 @@ private fun AutomationManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    listOf("daily" to "Ежедневно", "weekly" to "По дням", "interval" to "Интервал").forEach { (value, label) ->
+                    listOf("once" to "Один раз", "daily" to "Ежедневно", "weekly" to "По дням", "interval" to "Интервал").forEach { (value, label) ->
                         FilterChip(selected = scheduleType == value, onClick = { scheduleType = value },
                             label = { Text(label, fontSize = 10.sp) })
                     }
                 }
                 when (scheduleType) {
+                    "once" -> OutlinedTextField(value = onceDateTime, onValueChange = { onceDateTime = it.take(16) },
+                        modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Дата и время · ДД.ММ.ГГГГ ЧЧ:ММ") })
                     "daily" -> OutlinedTextField(value = localTime, onValueChange = { localTime = it.take(5) },
                         modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Время · ЧЧ:ММ") })
                     "weekly" -> {
@@ -4248,13 +4252,18 @@ private fun AutomationManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                         modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Интервал в минутах · минимум 5") })
                 }
                 Button(onClick = {
+                    val oneTimeRun = if (scheduleType == "once") runCatching {
+                        LocalDateTime.parse(onceDateTime, DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"))
+                            .atZone(ZoneId.systemDefault()).toEpochSecond().toDouble()
+                    }.getOrNull() else null
                     vm.createAutomation(name, prompt, scheduleType, localTime,
                         if (scheduleType == "weekly") weekdays.sorted() else emptyList(),
-                        if (scheduleType == "interval") intervalText.toIntOrNull() else null, selectedProjectId)
+                        if (scheduleType == "interval") intervalText.toIntOrNull() else null, selectedProjectId, oneTimeRun)
                     name = ""; prompt = ""
                 }, enabled = !vm.automationBusy && vm.agentServerConfigured && name.isNotBlank() &&
                     prompt.trim().length >= 3 && (scheduleType != "weekly" || weekdays.isNotEmpty()) &&
-                    (scheduleType != "interval" || (intervalText.toIntOrNull() ?: 0) >= 5)
+                    (scheduleType != "interval" || (intervalText.toIntOrNull() ?: 0) >= 5) &&
+                    (scheduleType != "once" || (runCatching { LocalDateTime.parse(onceDateTime, DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")).atZone(ZoneId.systemDefault()).toEpochSecond() > Instant.now().epochSecond }.getOrDefault(false)))
                 ) { Text("Создать автоматизацию") }
                 vm.automationMessage?.let { Text(it, color = Muted, fontSize = 10.sp) }
                 Divider(color = DividerTone)
