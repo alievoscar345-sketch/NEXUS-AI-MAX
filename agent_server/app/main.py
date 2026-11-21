@@ -2500,26 +2500,28 @@ async def _github_build_android(tid: str, integration: dict[str, str],
     repo_path = quote(integration["repo_full_name"], safe="/")
     workflow = "build-android.yml"
     workflow_endpoint = f"/repos/{repo_path}/actions/workflows/{workflow}"
-    started_at = time.time()
+    task_run_label = "NEXUS-" + tid
     await run_db(_assert_task_lease_for_github_write, tid)
-    await _github_api(token, "POST", workflow_endpoint + "/dispatches", {
-        "ref": selected_branch,
-        "inputs": {"require_signed_release": "true" if require_signed_release else "false"},
-    })
-    run: dict[str, Any] | None = None
+    runs = await _github_api(token, "GET",
+        workflow_endpoint + "/runs?branch=" + quote(selected_branch, safe="") +
+        "&event=workflow_dispatch&per_page=100")
+    candidates = (runs or {}).get("workflow_runs", [])
+    run = next((candidate for candidate in candidates
+                if candidate.get("display_title") == task_run_label), None)
+    if run is None:
+        await _github_api(token, "POST", workflow_endpoint + "/dispatches", {
+            "ref": selected_branch,
+            "inputs": {"require_signed_release": "true" if require_signed_release else "false",
+                       "nexus_task_id": tid},
+        })
     while run is None:
+        await run_db(_assert_task_lease_for_github_write, tid)
         runs = await _github_api(token, "GET",
             workflow_endpoint + "/runs?branch=" + quote(selected_branch, safe="") +
-            "&event=workflow_dispatch&per_page=10")
+            "&event=workflow_dispatch&per_page=100")
         candidates = (runs or {}).get("workflow_runs", [])
-        for candidate in candidates:
-            try:
-                created = datetime.fromisoformat(str(candidate.get("created_at", "")).replace("Z", "+00:00")).timestamp()
-            except ValueError:
-                continue
-            if created >= started_at - 30 and candidate.get("head_branch") == selected_branch:
-                run = candidate
-                break
+        run = next((candidate for candidate in candidates
+                    if candidate.get("display_title") == task_run_label), None)
         if run is None:
             if await run_db(_task_cancelled, tid):
                 return {"build_status": "cancelled_before_run_discovery", "branch": selected_branch}
@@ -2527,6 +2529,7 @@ async def _github_build_android(tid: str, integration: dict[str, str],
     run_id = int(run["id"])
     run_url = str(run.get("html_url", ""))
     while True:
+        await run_db(_assert_task_lease_for_github_write, tid)
         if await run_db(_task_cancelled, tid):
             await _github_api(token, "POST", f"/repos/{repo_path}/actions/runs/{run_id}/cancel")
             return {"build_status": "cancellation_requested", "run_id": run_id,
