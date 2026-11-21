@@ -36,6 +36,11 @@ data class NexusMemory(val id: String, val title: String, val content: String, v
 data class MemorySuggestion(val title: String, val content: String, val category: String)
 data class NexusSkill(val id: String, val name: String, val description: String, val instructions: String, val category: String, val enabled: Boolean)
 data class NexusProject(val id: String, val name: String, val description: String, val context: String, val status: String, val taskCount: Int)
+data class NexusProjectFile(
+    val path: String, val revision: Int, val bytes: Long, val sha256: String,
+    val message: String, val createdAt: Double
+)
+data class NexusProjectFileContent(val file: NexusProjectFile, val content: String)
 data class NexusAutomationRun(val id: String, val taskId: String, val scheduledFor: Double, val taskStatus: String, val taskSummary: String, val taskError: String)
 
 data class NexusAutomation(
@@ -307,6 +312,48 @@ class AgentTaskClient(
     }
 
     fun deleteProject(id: String) { request("DELETE", listOf("v1", "projects", id)) }
+
+    fun listProjectFiles(projectId: String): List<NexusProjectFile> {
+        val items = request("GET", listOf("v1", "projects", projectId, "files"))
+            .optJSONArray("files") ?: JSONArray()
+        return (0 until items.length()).mapNotNull { items.optJSONObject(it)?.toNexusProjectFile() }
+    }
+
+    fun readProjectFile(projectId: String, path: String): NexusProjectFileContent {
+        val response = request("GET", listOf("v1", "projects", projectId, "files", "content"),
+            query = mapOf("path" to path))
+        val item = response
+        return NexusProjectFileContent(item.toNexusProjectFile(), item.optString("content"))
+    }
+
+    fun writeProjectFile(projectId: String, path: String, content: String,
+                         message: String = "Updated from NEXUS Android"): NexusProjectFile {
+        require(content.toByteArray(Charsets.UTF_8).size <= 2 * 1024 * 1024) {
+            "Project text files are limited to 2 MiB"
+        }
+        val body = JSONObject().put("path", path).put("content", content).put("message", message)
+        return request("PUT", listOf("v1", "projects", projectId, "files"), body)
+            .optJSONObject("file")?.toNexusProjectFile()
+            ?: throw IOException("Project file API did not return a revision")
+    }
+
+    fun listProjectFileVersions(projectId: String, path: String): List<NexusProjectFile> {
+        val items = request("GET", listOf("v1", "projects", projectId, "files", "versions"),
+            query = mapOf("path" to path)).optJSONArray("versions") ?: JSONArray()
+        return (0 until items.length()).mapNotNull { items.optJSONObject(it)?.toNexusProjectFile() }
+    }
+
+    fun restoreProjectFile(projectId: String, path: String, revision: Int): NexusProjectFile {
+        val body = JSONObject().put("revision", revision).put("message", "Restored from Android")
+        return request("POST", listOf("v1", "projects", projectId, "files", "restore"),
+            body, mapOf("path" to path)).optJSONObject("file")?.toNexusProjectFile()
+            ?: throw IOException("Project restore API did not return a revision")
+    }
+
+    private fun JSONObject.toNexusProjectFile() = NexusProjectFile(
+        optString("path"), optInt("revision"), optLong("bytes"), optString("sha256"),
+        optString("message"), optDouble("created_at")
+    )
 
     private fun JSONObject.toNexusProject() = NexusProject(
         optString("id"), optString("name"), optString("description"), optString("context"),
