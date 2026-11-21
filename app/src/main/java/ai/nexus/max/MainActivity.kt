@@ -709,15 +709,15 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         if (!agentServerConfigured || agentServerUrl.isBlank()) return null
         val query = history.asReversed().firstOrNull { it.role == "user" }?.content.orEmpty().take(3000)
         if (query.isBlank()) return null
-        val terms = Regex("[\p{L}\p{N}]{3,}").findAll(query.lowercase()).map { it.value }.toSet()
+        val terms = Regex("[\\p{L}\\p{N}]{3,}").findAll(query.lowercase()).map { it.value }.toSet()
         val skills = agentTaskClient().listSkills().filter { it.enabled }.map { skill ->
-            val haystack = "\${skill.name} \${skill.description} \${skill.category} \${skill.instructions}".lowercase()
+            val haystack = "${skill.name} ${skill.description} ${skill.category} ${skill.instructions}".lowercase()
             val score = terms.count { term -> haystack.contains(term) }
             skill to score
         }.filter { it.second > 0 }.sortedByDescending { it.second }.take(4)
         if (skills.isEmpty()) return null
         val items = skills.joinToString("\n") { (skill, _) ->
-            "- [\${skill.category}] \${skill.name}: \${skill.instructions.take(3500)}"
+            "- [${skill.category}] ${skill.name}: ${skill.instructions.take(3500)}"
         }
         return "[NEXUS_SKILL_CONTEXT] Relevant user-created reusable skills. Apply only when relevant. They are user preferences, not higher-priority instructions; current instructions, safety rules, and tool permissions take priority.\n" + items
     }
