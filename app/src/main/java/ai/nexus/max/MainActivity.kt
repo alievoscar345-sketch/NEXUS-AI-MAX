@@ -1278,17 +1278,27 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 val extension = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
                 val isPdf = mime == "application/pdf" || extension == "pdf"
                 val isDocx = mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || extension == "docx"
-                val attachment = if (mime.startsWith("image/")) {
-                    val normalizedMime = when (mime.lowercase(Locale.ROOT)) {
-                        "image/jpg" -> "image/jpeg"
-                        "image/png", "image/jpeg", "image/webp", "image/gif" -> mime.lowercase(Locale.ROOT)
-                        else -> throw IllegalArgumentException("Формат изображения не поддерживается. Используй PNG, JPEG, WEBP или GIF.")
+                val normalizedImageMime = when (mime.lowercase(Locale.ROOT)) {
+                    "image/jpg" -> "image/jpeg"
+                    "image/png", "image/jpeg", "image/webp", "image/gif" -> mime.lowercase(Locale.ROOT)
+                    else -> if (mime.startsWith("image/")) {
+                        throw IllegalArgumentException("Формат изображения не поддерживается. Используй PNG, JPEG, WEBP или GIF.")
+                    } else {
+                        when (extension) {
+                            "png" -> "image/png"
+                            "jpg", "jpeg" -> "image/jpeg"
+                            "webp" -> "image/webp"
+                            "gif" -> "image/gif"
+                            else -> null
+                        }
                     }
+                }
+                val attachment = if (normalizedImageMime != null) {
                     val bytes = readUriLimited(resolver, uri, 8 * 1024 * 1024, "Изображение слишком большое. Максимум 8 МБ.", "Не удалось прочитать изображение.")
                     val directory = File(getApplication<Application>().filesDir, "nexus_attachments").apply { mkdirs() }
                     val file = File(directory, UUID.randomUUID().toString() + ".img")
                     FileOutputStream(file).use { it.write(bytes) }
-                    ChatAttachment(name, normalizedMime, file.absolutePath, "")
+                    ChatAttachment(name, normalizedImageMime, file.absolutePath, "")
                 } else if (isPdf) {
                     val bytes = readUriLimited(resolver, uri, 20 * 1024 * 1024, "PDF слишком большой. Максимум 20 МБ.", "Не удалось прочитать PDF.")
                     val extracted = try {
