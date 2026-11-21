@@ -4511,10 +4511,11 @@ private fun ProjectFilesDialog(vm: NexusViewModel, project: NexusProject, onDism
                     items(vm.projectFiles, key = { it.path }) { file ->
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                             Column(Modifier.weight(1f).clickable(enabled = !vm.projectFilesBusy) {
-                                vm.openProjectFile(project.id, file.path)
+                                if (file.isBinary) vm.projectFilesMessage = "Бинарный файл нельзя редактировать как текст. Используй «Скачать»."
+                                else vm.openProjectFile(project.id, file.path)
                             }.padding(vertical = 6.dp)) {
                                 Text(file.path, color = MainText, fontSize = 10.sp)
-                                Text("v${file.revision} · ${file.bytes} байт · ${file.sha256.take(10)}…",
+                                Text("v${file.revision} · ${file.bytes} байт · ${file.sha256.take(10)}… · ${if (file.isBinary) file.contentType else "UTF-8"}",
                                     color = Muted, fontSize = 8.sp)
                             }
                             TextButton(onClick = {
