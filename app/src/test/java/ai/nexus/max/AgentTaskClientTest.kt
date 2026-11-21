@@ -11,6 +11,9 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 class AgentTaskClientTest {
     private lateinit var transport: FakeTransport
@@ -65,6 +68,28 @@ class AgentTaskClientTest {
         val task = client.getTask("t1", afterEventId = 21L)
         assertEquals(22L, task.events.single().id)
         assertEquals("21", transport.lastRequest!!.url.queryParameter("after_event_id"))
+    }
+
+    @Test fun streamTaskEventsParsesSseAndSendsCursor() {
+        transport.responseBody = "id: 31\\nevent: task_event\\ndata: {\\"id\\":31,\\"created_at\\":3.1,\\"kind\\":\\"progress\\",\\"message\\":\\"working\\"}\\n\\n"
+        val received = CountDownLatch(1)
+        val failure = AtomicReference<IOException?>()
+        val event = AtomicReference<AgentTaskEvent?>()
+        val closed = CountDownLatch(1)
+        client.streamTaskEvents(
+            "task-31",
+            30L,
+            onEvent = { event.set(it); received.countDown() },
+            onFailure = { failure.set(it) },
+            onClosed = { closed.countDown() }
+        )
+        assertTrue("SSE event was not received", received.await(2, TimeUnit.SECONDS))
+        assertTrue("SSE stream did not close", closed.await(2, TimeUnit.SECONDS))
+        assertNull(failure.get())
+        assertEquals(31L, event.get()!!.id)
+        assertEquals("working", event.get()!!.message)
+        assertEquals("30", transport.lastRequest!!.url.queryParameter("after_event_id"))
+        assertEquals("text/event-stream", transport.lastRequest!!.header("Accept"))
     }
 
     @Test fun taskIdIsEncodedAsOnePathSegment() {

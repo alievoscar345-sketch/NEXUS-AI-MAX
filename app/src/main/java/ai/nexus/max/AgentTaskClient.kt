@@ -1,5 +1,8 @@
 package ai.nexus.max
 
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Response
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -68,6 +71,81 @@ class AgentTaskClient(
             events = events,
             steps = steps
         )
+    }
+
+    fun streamTaskEvents(
+        taskId: String,
+        afterEventId: Long,
+        onEvent: (AgentTaskEvent) -> Unit,
+        onFailure: (IOException) -> Unit,
+        onClosed: () -> Unit = {}
+    ): Call {
+        require(afterEventId >= 0) { "Event cursor must be non-negative" }
+        val url = base.newBuilder()
+            .addPathSegment("v1")
+            .addPathSegment("tasks")
+            .addPathSegment(taskId)
+            .addPathSegment("events")
+            .addQueryParameter("after_event_id", afterEventId.toString())
+            .build()
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", "Bearer $token")
+            .header("Accept", "text/event-stream")
+            .get()
+            .build()
+        val streamHttp = http.newBuilder()
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .callTimeout(0, TimeUnit.MILLISECONDS)
+            .build()
+        val call = streamHttp.newCall(request)
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, error: IOException) {
+                if (!call.isCanceled()) onFailure(error)
+                onClosed()
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.use {
+                    try {
+                        if (!it.isSuccessful) {
+                            val raw = it.body?.string().orEmpty()
+                            val detail = try { JSONObject(raw).optString("detail") } catch (_: Exception) { "" }
+                            throw IOException(detail.ifBlank { "Agent event stream returned HTTP ${it.code}" })
+                        }
+                        val source = it.body?.source() ?: throw IOException("Agent event stream body is empty")
+                        val parser = SseDataParser()
+                        while (!call.isCanceled()) {
+                            val line = source.readUtf8Line() ?: break
+                            val payload = parser.acceptLine(line) ?: continue
+                            val item = try { JSONObject(payload) } catch (error: Exception) {
+                                throw IOException("Agent event stream returned invalid JSON", error)
+                            }
+                            onEvent(AgentTaskEvent(
+                                item.optLong("id"),
+                                item.optDouble("created_at"),
+                                item.optString("kind"),
+                                item.optString("message")
+                            ))
+                        }
+                        parser.finish()?.let { payload ->
+                            val item = try { JSONObject(payload) } catch (error: Exception) {
+                                throw IOException("Agent event stream returned invalid JSON", error)
+                            }
+                            onEvent(AgentTaskEvent(item.optLong("id"), item.optDouble("created_at"),
+                                item.optString("kind"), item.optString("message")))
+                        }
+                    } catch (error: Exception) {
+                        if (!call.isCanceled()) {
+                            onFailure(if (error is IOException) error else IOException("Agent event stream failed", error))
+                        }
+                    } finally {
+                        onClosed()
+                    }
+                }
+            }
+        })
+        return call
     }
 
     fun listTasks(limit: Int = 30): List<AgentTaskSnapshot> {
