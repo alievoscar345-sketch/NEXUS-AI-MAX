@@ -2213,7 +2213,7 @@ async def upload_project_binary_file(project_id: str, path: str, request: Reques
         if len(chunks) > MAX_PROJECT_FILE_BYTES:
             raise HTTPException(413, f"Project files are limited to {MAX_PROJECT_FILE_BYTES} bytes per revision")
     content_type = request.headers.get("content-type", "application/octet-stream").split(";", 1)[0].strip().lower()
-    if not re.fullmatch(r"[a-z0-9][a-z0-9!#@app.get("/v1/projects/{project_id}/files/versions", dependencies=[Depends(auth)])^_.+-]*/[a-z0-9][a-z0-9!#@app.get("/v1/projects/{project_id}/files/versions", dependencies=[Depends(auth)])^_.+-]*", content_type):
+    if not re.fullmatch(r"[a-z0-9][a-z0-9!#&^_.+-]*/[a-z0-9][a-z0-9!#&^_.+-]*", content_type):
         content_type = "application/octet-stream"
     result = await run_db(_write_project_file_bytes, project_id, owner_id, path, bytes(chunks),
                           message, content_type, True)
