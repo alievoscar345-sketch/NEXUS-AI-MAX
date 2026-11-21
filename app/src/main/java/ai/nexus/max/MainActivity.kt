@@ -245,6 +245,17 @@ data class ChatLine(
 )
 
 private const val MAX_CHAT_ATTACHMENT_TEXT_CHARS = 180_000
+internal const val MAX_CHAT_REQUEST_BYTES = 12 * 1024 * 1024 - 512 * 1024
+
+internal fun validateChatRequestSize(payload: String, maxBytes: Int = MAX_CHAT_REQUEST_BYTES) {
+    val sizeBytes = payload.toByteArray(Charsets.UTF_8).size
+    if (sizeBytes > maxBytes) {
+        throw IllegalArgumentException(
+            "Запрос с историей и вложениями занимает ${sizeBytes / (1024 * 1024)} МБ. " +
+                "Лимит NEXUS — 11,5 МБ. Удали часть старых изображений или отправь их отдельными сообщениями."
+        )
+    }
+}
 
 /**
  * Builds one bounded text part for document attachments.
@@ -1563,8 +1574,10 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                             .header("HTTP-Referer", "https://github.com/alievoscar345-sketch/NEXUS-AI-MAX")
                             .header("X-OpenRouter-Title", "NEXUS AI MAX")
                     }
+                    val serializedBody = body.toString()
+                    validateChatRequestSize(serializedBody)
                     val request = requestBuilder
-                        .post(body.toString().toRequestBody("application/json".toMediaType()))
+                        .post(serializedBody.toRequestBody("application/json".toMediaType()))
                         .build()
                     val call = client.newCall(request)
                     activeCall = call
