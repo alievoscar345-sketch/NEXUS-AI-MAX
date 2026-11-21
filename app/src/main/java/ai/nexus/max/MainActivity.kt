@@ -428,6 +428,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var agentBusy by mutableStateOf(false)
         private set
+    var agentRefreshing by mutableStateOf(false)
+        private set
     var agentMessage by mutableStateOf<String?>(null)
         private set
     var remoteProviders by mutableStateOf<List<RemoteProvider>>(emptyList())
@@ -560,6 +562,30 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun agentTaskClient(): AgentTaskClient =
         AgentTaskClient(agentServerUrl, agentAuthorization(), client)
+
+    fun refreshAgentConsole(taskId: String? = null) {
+        if (agentBusy || agentRefreshing || !agentServerConfigured || agentServerUrl.isBlank()) return
+        agentRefreshing = true
+        viewModelScope.launch {
+            try {
+                val api = agentTaskClient()
+                val loadedTasks = withContext(Dispatchers.IO) { api.listTasks() }
+                agentTasks = loadedTasks
+                val targetId = taskId ?: activeAgentTask?.id
+                if (targetId != null) {
+                    val loadedTask = withContext(Dispatchers.IO) { api.getTask(targetId) }
+                    activeAgentTask = loadedTask
+                    agentTasks = listOf(loadedTask) + agentTasks.filterNot { it.id == loadedTask.id }
+                }
+                agentApprovals = withContext(Dispatchers.IO) { api.listApprovals() }
+                agentMessage = null
+            } catch (e: Exception) {
+                agentMessage = e.message ?: "Не удалось обновить состояние автономного агента."
+            } finally {
+                agentRefreshing = false
+            }
+        }
+    }
 
     fun refreshAgentTasks() {
         if (agentBusy) return
@@ -1852,8 +1878,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                             DropdownMenuItem(text = { Text("Автономный агент") }, onClick = {
                                 showAgentConsole = true
                                 topMenuExpanded = false
-                                vm.refreshAgentTasks()
-                                vm.refreshAgentApprovals()
+                                vm.refreshAgentConsole()
                             })
                             DropdownMenuItem(text = { Text("Поделиться") }, leadingIcon = { Icon(Icons.Filled.Share, null, tint = ambientAccent) }, onClick = {
                                 val chat = vm.activeChat
@@ -3054,13 +3079,7 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
         if (vm.agentServerConfigured && vm.agentServerUrl.isNotBlank()) {
             while (true) {
                 delay(3000)
-                val taskId = selectedTask ?: vm.activeAgentTask?.id
-                if (taskId != null) {
-                    vm.refreshAgentTask(taskId)
-                } else {
-                    vm.refreshAgentTasks()
-                }
-                vm.refreshAgentApprovals()
+                vm.refreshAgentConsole(selectedTask)
             }
         }
     }
@@ -3089,7 +3108,7 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                         onClick = { vm.createAgentTask(prompt); prompt = "" },
                         enabled = prompt.trim().length >= 3 && !vm.agentBusy && vm.agentServerConfigured && vm.agentServerUrl.isNotBlank()
                     ) { Text("Запустить") }
-                    OutlinedButton(onClick = { vm.refreshAgentTasks(); vm.refreshAgentApprovals() }, enabled = !vm.agentBusy) {
+                    OutlinedButton(onClick = { vm.refreshAgentConsole(selectedTask) }, enabled = !vm.agentBusy && !vm.agentRefreshing) {
                         Text("Обновить")
                     }
                 }
