@@ -2327,6 +2327,84 @@ class DurableTaskTests(unittest.TestCase):
         finally:
             main._LEASE_OWNER.reset(token)
 
+
+    def test_checkpoint_restores_project_file_revisions_and_published_artifacts(self):
+        now = time.time()
+        owner = main.WORKER_ID + ":project-artifact-checkpoint"
+        project_id = "checkpoint-project"
+        task_id = "project-artifact-task"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO projects(id,owner_id,name,description,context,status,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (project_id, "owner-a", "Checkpoint project", "", "", "active", now, now),
+            )
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id,project_id,plan_json,results_json,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (task_id, "restore complete project state", "running", now, now, "owner-a",
+                 project_id, "[]", "[]", owner, now + 600),
+            )
+        main._write_project_file_bytes(
+            project_id, "owner-a", "src/main.py", b"stable project source",
+            "initial source", "text/plain; charset=utf-8", False,
+        )
+        workspace = Path(self.temp.name) / "workspace"
+        checkpoint_root = Path(self.temp.name) / "checkpoints"
+        task_root = workspace / task_id
+        task_root.mkdir(parents=True)
+        (task_root / "src").mkdir()
+        (task_root / "src" / "main.py").write_bytes(b"stable project source")
+        artifact = workspace / (task_id + "-release.apk")
+        artifact.write_bytes(b"stable apk bytes")
+        token = main._LEASE_OWNER.set(owner)
+        try:
+            with patch.object(main, "WORKSPACE", workspace), patch.object(main, "CHECKPOINT_ROOT", checkpoint_root):
+                saved = main._create_task_checkpoint(task_id, "release_published")
+                self.assertEqual(saved["project_files"], 1)
+                self.assertEqual(saved["artifacts"], 1)
+
+                main._write_project_file_bytes(
+                    project_id, "owner-a", "src/main.py", b"failed source mutation",
+                    "failed build source", "text/plain; charset=utf-8", False,
+                )
+                main._write_project_file_bytes(
+                    project_id, "owner-a", "generated/temporary.txt", b"not in checkpoint",
+                    "temporary file", "text/plain; charset=utf-8", False,
+                )
+                (task_root / "src" / "main.py").write_bytes(b"partial workspace mutation")
+                artifact.write_bytes(b"corrupted apk")
+                (workspace / (task_id + "-failed.apk")).write_bytes(b"failed artifact")
+
+                restored = main._restore_latest_task_checkpoint(task_id)
+                self.assertEqual(restored["project_revisions_restored"], 2)
+                self.assertEqual(restored["artifacts"], 1)
+                self.assertEqual((task_root / "src" / "main.py").read_bytes(), b"stable project source")
+                self.assertEqual(artifact.read_bytes(), b"stable apk bytes")
+                self.assertFalse((workspace / (task_id + "-failed.apk")).exists())
+
+                project_files = main.list_project_files(project_id, "owner-a")["files"]
+                self.assertEqual([item["path"] for item in project_files], ["src/main.py"])
+                latest = main.read_project_file(project_id, "src/main.py", "owner-a")
+                self.assertEqual(latest["content"], "stable project source")
+                with main.db() as conn:
+                    history = conn.execute(
+                        "SELECT revision,is_deleted FROM project_file_versions "
+                        "WHERE project_id=? AND path='src/main.py' ORDER BY revision",
+                        (project_id,),
+                    ).fetchall()
+                self.assertEqual([row["revision"] for row in history], [1, 2, 3])
+                self.assertTrue(all(not row["is_deleted"] for row in history))
+                with main.db() as conn:
+                    tombstone = conn.execute(
+                        "SELECT is_deleted FROM project_file_versions "
+                        "WHERE project_id=? AND path='generated/temporary.txt' ORDER BY revision DESC LIMIT 1",
+                        (project_id,),
+                    ).fetchone()
+                self.assertEqual(tombstone["is_deleted"], 1)
+        finally:
+            main._LEASE_OWNER.reset(token)
+
     def test_db_context_commits_and_closes_connection(self):
         now = time.time()
         with main.db() as conn:
