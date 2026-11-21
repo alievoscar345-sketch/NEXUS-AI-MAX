@@ -843,6 +843,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         if (projectBusy || projectNameDraft.isBlank()) return
         projectBusy = true
         val name = projectNameDraft.trim(); val description = projectDescriptionDraft.trim(); val context = projectContextDraft.trim()
+        val wasEditing = editingProjectId != null
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
@@ -857,7 +858,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 nexusProjects = withContext(Dispatchers.IO) { agentTaskClient().listProjects() }
                 projectNameDraft = ""; projectDescriptionDraft = ""; projectContextDraft = ""; editingProjectId = null
-                projectMessage = if (editingProjectId == null) "Проект создан. Контекст будет передаваться агенту в задачах этого проекта." else "Проект обновлён."
+                projectMessage = if (!wasEditing) "Проект создан. Контекст будет передаваться агенту в задачах этого проекта." else "Проект обновлён."
             } catch (e: Exception) { projectMessage = e.message ?: "Не удалось создать проект." }
             finally { projectBusy = false }
         }
