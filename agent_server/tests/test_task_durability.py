@@ -509,6 +509,12 @@ class DurableTaskTests(unittest.TestCase):
                 "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id) VALUES(?,?,?,?,?,?)",
                 ("task-cancel-race", "cancel before completion", "running", now, now, "tenant-cancel"),
             )
+            conn.execute(
+                "INSERT INTO approvals(id,task_id,description,status,created_at,idempotency_key) "
+                "VALUES(?,?,?,?,?,?)",
+                ("approval-cancel-race", "task-cancel-race", "Pending action", "pending", now,
+                 "approval-cancel-race-key"),
+            )
 
         response = main.cancel_task("task-cancel-race", owner_id="tenant-cancel")
         self.assertEqual(response["status"], "cancellation_requested")
@@ -523,9 +529,42 @@ class DurableTaskTests(unittest.TestCase):
                 "SELECT COUNT(*) AS n FROM events WHERE task_id=? AND kind='cancel_requested'",
                 ("task-cancel-race",),
             ).fetchone()["n"]
+            approval = conn.execute(
+                "SELECT status FROM approvals WHERE id=?", ("approval-cancel-race",)
+            ).fetchone()
+        self.assertEqual(approval["status"], "cancelled")
         self.assertEqual(task["status"], "cancelled")
         self.assertEqual(task["cancel_requested"], 1)
         self.assertEqual(event_count, 1)
+
+    def test_worker_cancellation_finalization_cancels_pending_approvals(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,cancel_requested) "
+                "VALUES(?,?,?,?,?,1)",
+                ("task-worker-cancel-approval", "cancel pending action", "running", now, now),
+            )
+            conn.execute(
+                "INSERT INTO approvals(id,task_id,description,status,created_at,idempotency_key) "
+                "VALUES(?,?,?,?,?,?)",
+                ("approval-worker-cancel", "task-worker-cancel-approval", "Pending action",
+                 "pending", now, "approval-worker-cancel-key"),
+            )
+
+        main._mark_task_cancelled("task-worker-cancel-approval")
+
+        with main.db() as conn:
+            task = conn.execute(
+                "SELECT status,cancel_requested FROM tasks WHERE id=?",
+                ("task-worker-cancel-approval",),
+            ).fetchone()
+            approval = conn.execute(
+                "SELECT status FROM approvals WHERE id=?", ("approval-worker-cancel",)
+            ).fetchone()
+        self.assertEqual(task["status"], "cancelled")
+        self.assertEqual(task["cancel_requested"], 1)
+        self.assertEqual(approval["status"], "cancelled")
 
     def test_concurrent_approval_decisions_have_single_winner(self):
         now = time.time()

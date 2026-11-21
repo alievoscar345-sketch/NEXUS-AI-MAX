@@ -454,9 +454,13 @@ def _set_task_planning(tid: str) -> bool:
 
 
 def _mark_task_cancelled(tid: str):
+    now = time.time()
     with db() as c:
+        c.execute("BEGIN IMMEDIATE")
         c.execute("UPDATE tasks SET status='cancelled',cancel_requested=1,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
-                  (time.time(), tid))
+                  (now, tid))
+        c.execute("UPDATE approvals SET status='cancelled' WHERE task_id=? AND status='pending'",
+                  (tid,))
 
 
 def _next_pending_step(tid: str, now: float):
@@ -988,6 +992,8 @@ def _cancel_task_record(tid: str, owner_id: str) -> dict[str, str]:
                       (now, tid))
         else:
             c.execute("UPDATE tasks SET cancel_requested=1,updated_at=? WHERE id=?", (now, tid))
+        c.execute("UPDATE approvals SET status='cancelled' WHERE task_id=? AND status='pending'",
+                  (tid,))
         c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
                   (tid, now, "cancel_requested", "Cancellation requested by user"))
     return {"id": tid, "status": "cancellation_requested"}
