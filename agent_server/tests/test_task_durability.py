@@ -519,7 +519,7 @@ class DurableTaskTests(unittest.TestCase):
         helper_names = [
             "_get_task_row", "_set_task_planning", "_persist_plan",
             "_task_cancelled", "_next_pending_step", "_step_summary",
-            "_complete_task", "event",
+            "_complete_task", "_worker_event",
         ]
         patches = []
         for name in helper_names:
