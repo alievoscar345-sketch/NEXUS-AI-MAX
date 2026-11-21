@@ -890,11 +890,20 @@ def _step_summary(tid: str):
     with db() as c:
         waiting = c.execute("SELECT COUNT(*) AS n FROM task_steps WHERE task_id=? AND status='waiting_for_approval'",
                             (tid,)).fetchone()["n"]
-        unfinished = c.execute("SELECT COUNT(*) AS n FROM task_steps WHERE task_id=? AND status NOT IN ('completed','skipped')",
+        unfinished = c.execute("""SELECT COUNT(*) AS n FROM task_steps WHERE task_id=?
+            AND status IN ('pending','retry_wait','running','waiting_for_approval')""",
                                (tid,)).fetchone()["n"]
         results_rows = c.execute("SELECT result_json FROM task_steps WHERE task_id=? AND result_json!='' ORDER BY step_index",
                                  (tid,)).fetchall()
-    return waiting, unfinished, results_rows
+        failed_rows = c.execute("""SELECT title,action,error FROM task_steps
+            WHERE task_id=? AND status='failed' ORDER BY step_index""", (tid,)).fetchall()
+    failure_context = [
+        {"result_json": json.dumps({"status": "failed", "title": row["title"],
+                                    "action": row["action"], "error": row["error"]},
+                                   ensure_ascii=False)}
+        for row in failed_rows
+    ]
+    return waiting, unfinished, list(results_rows) + failure_context
 
 
 def _set_task_waiting_for_approval(tid: str) -> bool:
