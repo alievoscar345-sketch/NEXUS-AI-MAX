@@ -468,28 +468,54 @@ def _save_step_result(tid: str, step_id: str, status: str, result_json: str) -> 
         return True
 
 
-def _record_step_failure(tid: str, step_id: str, retry: bool, next_at: float | None, error: str):
+def _record_step_failure(tid: str, step_id: str, retry: bool, next_at: float | None, error: str) -> bool:
+    now = time.time()
     with db() as c:
-        c.execute("UPDATE task_steps SET status=?,error=?,next_attempt_at=?,updated_at=? WHERE id=?",
-                  ("retry_wait" if retry else "failed", error[:2000], next_at, time.time(), step_id))
+        c.execute("BEGIN IMMEDIATE")
+        owned = c.execute("""SELECT 1 FROM tasks WHERE id=? AND status='running'
+            AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
+            (tid, WORKER_ID, now)).fetchone()
+        if not owned:
+            return False
+        changed = c.execute("""UPDATE task_steps SET status=?,error=?,next_attempt_at=?,updated_at=?
+            WHERE id=? AND task_id=? AND status='running'""",
+            ("retry_wait" if retry else "failed", error[:2000], next_at, now, step_id, tid)).rowcount
+        if not changed:
+            return False
         if retry:
-            c.execute("UPDATE tasks SET status='retry_wait',next_attempt_at=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND cancel_requested=0 AND status!='cancelled'",
-                      (next_at, time.time(), tid))
+            task_changed = c.execute("""UPDATE tasks SET status='retry_wait',next_attempt_at=?,
+                lease_owner='',lease_expires_at=NULL,updated_at=?
+                WHERE id=? AND status='running' AND cancel_requested=0
+                AND lease_owner=? AND lease_expires_at>?""",
+                (next_at, now, tid, WORKER_ID, now)).rowcount
         else:
-            c.execute("UPDATE tasks SET status='failed',error=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND cancel_requested=0 AND status!='cancelled'",
-                      (error[:2000], time.time(), tid))
+            task_changed = c.execute("""UPDATE tasks SET status='failed',error=?,lease_owner='',
+                lease_expires_at=NULL,updated_at=? WHERE id=? AND status='running'
+                AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
+                (error[:2000], now, tid, WORKER_ID, now)).rowcount
+        if not task_changed:
+            c.rollback()
+            return False
+        return True
 
 
-def _record_task_failure(tid: str, exc: Exception, error: str) -> bool:
+def _record_task_failure(tid: str, exc: Exception, error: str) -> bool | None:
+    now = time.time()
     with db() as c:
-        current = c.execute("SELECT attempt_count,max_attempts,cancel_requested FROM tasks WHERE id=?", (tid,)).fetchone()
-        cancelled = bool(current and current["cancel_requested"])
-        retry = bool(current and not cancelled and _is_transient(exc) and current["attempt_count"] < current["max_attempts"])
-        next_at = time.time() + _retry_delay(current["attempt_count"]) if retry else None
-        status = "cancelled" if cancelled else ("retry_wait" if retry else "failed")
-        c.execute("UPDATE tasks SET status=?,error=?,next_attempt_at=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND status!='cancelled'",
-                  (status, error[:2000], next_at, time.time(), tid))
-    return retry
+        c.execute("BEGIN IMMEDIATE")
+        current = c.execute("""SELECT attempt_count,max_attempts FROM tasks WHERE id=?
+            AND status='running' AND cancel_requested=0 AND lease_owner=?
+            AND lease_expires_at>?""", (tid, WORKER_ID, now)).fetchone()
+        if not current:
+            return None
+        retry = bool(_is_transient(exc) and current["attempt_count"] < current["max_attempts"])
+        next_at = now + _retry_delay(current["attempt_count"]) if retry else None
+        status = "retry_wait" if retry else "failed"
+        changed = c.execute("""UPDATE tasks SET status=?,error=?,next_attempt_at=?,
+            lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND status='running'
+            AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
+            (status, error[:2000], next_at, now, tid, WORKER_ID, now)).rowcount
+        return retry if changed else None
 
 
 async def process(tid: str):
@@ -570,7 +596,9 @@ async def process(tid: str):
                 attempts = claimed["attempt_count"]
                 retry = _is_transient(exc) and attempts < claimed["max_attempts"]
                 next_at = time.time() + _retry_delay(attempts) if retry else None
-                await run_db(_record_step_failure, tid, claimed["id"], retry, next_at, str(exc)[:2000])
+                recorded = await run_db(_record_step_failure, tid, claimed["id"], retry, next_at, str(exc)[:2000])
+                if not recorded:
+                    return
                 if await run_db(_task_cancelled, tid):
                     await run_db(_mark_task_cancelled, tid)
                     await run_db(event, tid, "cancelled", "Task cancellation acknowledged")
@@ -579,6 +607,8 @@ async def process(tid: str):
                 return
     except Exception as exc:
         retry = await run_db(_record_task_failure, tid, exc, str(exc)[:2000])
+        if retry is None:
+            return
         if await run_db(_task_cancelled, tid):
             await run_db(_mark_task_cancelled, tid)
             await run_db(event, tid, "cancelled", "Task cancellation acknowledged")

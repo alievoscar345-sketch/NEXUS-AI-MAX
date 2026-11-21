@@ -109,6 +109,53 @@ class DurableTaskTests(unittest.TestCase):
                                 ("task-expired-claim",)).fetchone()
         self.assertIsNone(main._claim_step("task-expired-claim", step["id"]))
 
+    def test_step_failure_write_rejects_lost_lease(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("task-stale-failure", "stale failure", "running", now, now, "new-worker", now + 600),
+            )
+            conn.execute(
+                "INSERT INTO task_steps(id,task_id,step_index,title,action,input_json,idempotency_key,status,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                ("step-stale-failure", "task-stale-failure", 0, "Read", "fetch_url", "{}", "stale-failure-key",
+                 "running", now, now),
+            )
+        saved = main._record_step_failure(
+            "task-stale-failure", "step-stale-failure", False, None, "late failure"
+        )
+        self.assertFalse(saved)
+        with main.db() as conn:
+            task = conn.execute("SELECT status,lease_owner FROM tasks WHERE id=?",
+                                ("task-stale-failure",)).fetchone()
+            step = conn.execute("SELECT status,error FROM task_steps WHERE id=?",
+                                ("step-stale-failure",)).fetchone()
+        self.assertEqual(task["status"], "running")
+        self.assertEqual(task["lease_owner"], "new-worker")
+        self.assertEqual(step["status"], "running")
+        self.assertEqual(step["error"], "")
+
+    def test_task_failure_write_rejects_lost_lease(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("task-stale-task-failure", "stale task failure", "running", now, now, "new-worker", now + 600),
+            )
+        result = main._record_task_failure(
+            "task-stale-task-failure", RuntimeError("late failure"), "late failure"
+        )
+        self.assertIsNone(result)
+        with main.db() as conn:
+            task = conn.execute("SELECT status,lease_owner,error FROM tasks WHERE id=?",
+                                ("task-stale-task-failure",)).fetchone()
+        self.assertEqual(task["status"], "running")
+        self.assertEqual(task["lease_owner"], "new-worker")
+        self.assertEqual(task["error"], "")
+
     def test_step_result_write_rejects_lost_lease(self):
         now = time.time()
         with main.db() as conn:
