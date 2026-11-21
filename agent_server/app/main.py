@@ -2379,6 +2379,8 @@ async def _github_task_action(tid: str, owner_id: str, action: str,
         message = str(args.get("message", "NEXUS: update " + file_path)).strip()[:200]
         existing = await _github_api(token, "GET", contents_endpoint + "?ref=" + quote(branch_name, safe=""),
                                      allow_not_found=True)
+        if existing and int(existing.get("size", 0)) > 1_000_000:
+            raise ValueError("Existing GitHub file exceeds the 1 MB text-editing limit")
         payload: dict[str, Any] = {
             "message": message or ("NEXUS: update " + file_path),
             "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
