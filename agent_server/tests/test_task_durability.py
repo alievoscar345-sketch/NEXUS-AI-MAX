@@ -28,6 +28,50 @@ class DurableTaskTests(unittest.TestCase):
         self.patch.stop()
         self.temp.cleanup()
 
+    def test_workspace_write_read_and_list_are_scoped_to_task(self):
+        workspace = Path(self.temp.name) / "workspace"
+        with patch.object(main, "WORKSPACE", workspace):
+            written = main._workspace_write("task-1", "notes/report.md", "NEXUS report")
+            read = main._workspace_read("task-1", "notes/report.md")
+            listing = main._workspace_list("task-1", "notes")
+        self.assertEqual(written["bytes"], len("NEXUS report"))
+        self.assertEqual(read["content"], "NEXUS report")
+        self.assertEqual(listing["entries"][0]["name"], "report.md")
+        self.assertFalse((workspace / "task-2" / "notes" / "report.md").exists())
+
+    def test_workspace_rejects_traversal_and_absolute_paths(self):
+        workspace = Path(self.temp.name) / "workspace"
+        with patch.object(main, "WORKSPACE", workspace):
+            for path in ("../outside.txt", "/etc/passwd", "a/../../outside", "a\\b"):
+                with self.subTest(path=path):
+                    with self.assertRaises(ValueError):
+                        main._workspace_write("task-1", path, "blocked")
+
+    def test_workspace_enforces_file_size_limit(self):
+        workspace = Path(self.temp.name) / "workspace"
+        with patch.object(main, "WORKSPACE", workspace):
+            with self.assertRaises(ValueError):
+                main._workspace_write("task-1", "large.txt", "x" * 100_001)
+
+    def test_workspace_search_finds_text_with_line_numbers(self):
+        workspace = Path(self.temp.name) / "workspace"
+        with patch.object(main, "WORKSPACE", workspace):
+            main._workspace_write("task-1", "src/readme.md", "first line\\nNEXUS agent\\nlast line")
+            result = main._workspace_search("task-1", "nexus")
+        self.assertEqual(len(result["matches"]), 1)
+        self.assertEqual(result["matches"][0]["line"], 2)
+        self.assertEqual(result["matches"][0]["path"], "src/readme.md")
+
+    def test_workspace_rejects_symlink_escape(self):
+        workspace = Path(self.temp.name) / "workspace"
+        outside = Path(self.temp.name) / "outside"
+        outside.mkdir()
+        (workspace / "task-1").mkdir(parents=True)
+        (workspace / "task-1" / "escape").symlink_to(outside, target_is_directory=True)
+        with patch.object(main, "WORKSPACE", workspace):
+            with self.assertRaises(ValueError):
+                main._workspace_write("task-1", "escape/secret.txt", "blocked")
+
     def test_migrates_legacy_task_schema(self):
         with main.db() as conn:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}

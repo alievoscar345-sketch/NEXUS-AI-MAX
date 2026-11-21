@@ -445,6 +445,108 @@ def _save_artifact(tid: str, filename: str, content: str) -> str | None:
     return target.name
 
 
+def _task_workspace_root(tid: str) -> Path:
+    root = (WORKSPACE / tid).resolve()
+    if root.parent != WORKSPACE.resolve():
+        raise ValueError("Invalid task workspace")
+    return root
+
+
+def _workspace_target(tid: str, relative_path: str) -> tuple[Path, Path]:
+    if not isinstance(relative_path, str) or not relative_path.strip() or len(relative_path) > 240:
+        raise ValueError("Workspace path must be a non-empty relative path up to 240 characters")
+    if "\\x00" in relative_path or relative_path.startswith(("/", "\\")) or "\\" in relative_path:
+        raise ValueError("Workspace path must be a safe relative POSIX path")
+    parts = relative_path.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("Workspace path contains an invalid component")
+    root = _task_workspace_root(tid)
+    target = root.joinpath(*parts)
+    resolved = target.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Workspace path escapes the task workspace") from exc
+    current = root
+    for part in parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError("Symbolic links are not allowed in the task workspace")
+    return root, resolved
+
+
+def _workspace_write(tid: str, relative_path: str, content: str) -> dict[str, Any]:
+    if not isinstance(content, str) or len(content.encode("utf-8")) > 100_000:
+        raise ValueError("Workspace files are limited to 100 KB of UTF-8 text")
+    root, target = _workspace_target(tid, relative_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Revalidate after directory creation before writing.
+    _, target = _workspace_target(tid, relative_path)
+    temporary = target.with_name(target.name + ".tmp-" + uuid.uuid4().hex)
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        os.replace(temporary, target)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return {"path": relative_path, "bytes": len(content.encode("utf-8"))}
+
+
+def _workspace_read(tid: str, relative_path: str) -> dict[str, Any]:
+    _, target = _workspace_target(tid, relative_path)
+    if not target.is_file():
+        raise FileNotFoundError("Workspace file not found")
+    size = target.stat().st_size
+    if size > 100_000:
+        raise ValueError("Workspace files are limited to 100 KB")
+    return {"path": relative_path, "content": target.read_text(encoding="utf-8")}
+
+
+def _workspace_list(tid: str, relative_path: str = ".") -> dict[str, Any]:
+    if relative_path == ".":
+        root = _task_workspace_root(tid)
+        target = root
+    else:
+        _, target = _workspace_target(tid, relative_path)
+    if not target.is_dir():
+        raise NotADirectoryError("Workspace directory not found")
+    entries = []
+    for child in sorted(target.iterdir(), key=lambda item: item.name)[:100]:
+        if child.is_symlink():
+            continue
+        entries.append({"name": child.name, "type": "directory" if child.is_dir() else "file",
+                        "bytes": child.stat().st_size if child.is_file() else None})
+    return {"path": relative_path, "entries": entries}
+
+
+def _workspace_search(tid: str, query: str) -> dict[str, Any]:
+    if not isinstance(query, str) or not query or len(query) > 200:
+        raise ValueError("Search query must contain 1 to 200 characters")
+    root = _task_workspace_root(tid)
+    matches = []
+    scanned_bytes = 0
+    for path in sorted(root.rglob("*")):
+        if len(matches) >= 100 or path.is_symlink() or not path.is_file():
+            continue
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(root)
+            size = path.stat().st_size
+            if size > 100_000 or scanned_bytes + size > 2_000_000:
+                continue
+            scanned_bytes += size
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        for line_number, line in enumerate(content.splitlines(), 1):
+            if query.casefold() in line.casefold():
+                matches.append({"path": path.relative_to(root).as_posix(),
+                                "line": line_number, "text": line[:500]})
+                if len(matches) >= 100:
+                    break
+    return {"query": query, "matches": matches}
+
+
 async def run_step(step: dict[str, Any], tid: str, idempotency_key: str):
     action = str(step.get("action", ""))
     args = step.get("input") if isinstance(step.get("input"), dict) else {}
@@ -461,6 +563,19 @@ async def run_step(step: dict[str, Any], tid: str, idempotency_key: str):
         url = safe_url(str(args.get("url", "")))
         content = await _fetch_public_text(url)
         return {"title": title, "status": "completed", "url": url, "content": content}
+    if action == "workspace_list":
+        result = await run_db(_workspace_list, tid, str(args.get("path", ".")))
+        return {"title": title, "status": "completed", **result}
+    if action == "workspace_read":
+        result = await run_db(_workspace_read, tid, str(args.get("path", "")))
+        return {"title": title, "status": "completed", **result}
+    if action == "workspace_write":
+        result = await run_db(_workspace_write, tid, str(args.get("path", "")),
+                              str(args.get("content", "")))
+        return {"title": title, "status": "completed", **result}
+    if action == "workspace_search":
+        result = await run_db(_workspace_search, tid, str(args.get("query", "")))
+        return {"title": title, "status": "completed", **result}
     if action == "save_artifact":
         name = Path(str(args.get("filename", "result.md"))).name[:100]
         if not name or name in {".", ".."}:
@@ -687,7 +802,7 @@ async def process(tid: str):
                 return
             await run_db(_worker_event, tid, "status", "Planning task")
             plan = await llm_json(
-                'You are NEXUS Agent Planner. Return strict JSON only: {"summary":"...","steps":[{"title":"...","action":"web_search|fetch_url|save_artifact|draft_external_action","input":{}}]}. Use only listed actions. For publishing, messaging, purchases or account changes use draft_external_action. Never claim external actions succeeded.',
+                'You are NEXUS Agent Planner. Return strict JSON only: {"summary":"...","steps":[{"title":"...","action":"web_search|fetch_url|save_artifact|workspace_list|workspace_read|workspace_write|workspace_search|draft_external_action","input":{}}]}. Use only listed actions. Use workspace_list/read/search to inspect task files and workspace_write to create or update files. Keep file paths relative to the task workspace. For publishing, messaging, purchases or account changes use draft_external_action. Never claim external actions succeeded.',
                 row["prompt"], purpose="planning", task_id=tid, owner_id=row["owner_id"])
             steps = plan.get("steps", [])
             if not isinstance(steps, list):
