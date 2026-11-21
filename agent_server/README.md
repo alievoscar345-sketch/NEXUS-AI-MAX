@@ -6,6 +6,7 @@ Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent 
 
 - Authenticated API for creating, listing, inspecting, and cancelling tasks.
 - Persistent SQLite task queue, ordered task steps, event log, retry scheduling, safe pause/resume, and lease-fenced worker writes.
+- Configurable in-process worker concurrency (`NEXUS_AGENT_WORKER_CONCURRENCY`, default 2; supported range 1–8) with isolated per-task lease context; one worker process remains required for this SQLite deployment.
 - Long tasks retain durable checkpoints and automatically recover after backend restarts; the active worker renews its lease rather than stopping at a fixed task-duration budget.
 - Task planning and evaluation through a provider-agnostic OpenAI-compatible Model Gateway.
 - Multi-provider routing using task category, configured benchmark metadata, cost/latency metadata, and provider priority.
@@ -36,7 +37,7 @@ For phone-independent execution, deploy both services from `docker-compose.yml` 
 5. Verify `GET /health/worker` returns HTTP 200; it reports a durable worker heartbeat and returns HTTP 503 if the worker has stopped or its heartbeat is older than 90 seconds. The Compose worker health check uses this endpoint.
 6. Configure host-level backups for that volume and securely back up the encryption key separately.
 
-The API service has `NEXUS_AGENT_WORKER_ENABLED=false`; it accepts requests but does not execute tasks. The separate `worker` service runs `python -m app.worker`, claims durable tasks, renews leases, and recovers expired in-progress tasks after restart. Both services must use the same persistent volume and identical environment configuration. Run exactly one worker replica with this SQLite deployment. Do not deploy this Compose file to a scale-to-zero/serverless platform: both services must remain running. Android is only a client; closing or powering off the phone does not stop work already accepted by the server. Tasks that require files or hardware available only on the phone cannot continue while it is offline.
+The API service has `NEXUS_AGENT_WORKER_ENABLED=false`; it accepts requests but does not execute tasks. The separate `worker` service runs `python -m app.worker`, claims durable tasks, renews leases, and recovers expired in-progress tasks after restart. Within that process, `NEXUS_AGENT_WORKER_CONCURRENCY` controls how many independent tasks can execute concurrently (default 2; set to 1 for strictly sequential work), while `NEXUS_AGENT_WORKER_POLL_SECONDS` controls the idle queue polling interval. Both services must use the same persistent volume and identical environment configuration. Run exactly one worker replica with this SQLite deployment. Do not deploy this Compose file to a scale-to-zero/serverless platform: both services must remain running. Android is only a client; closing or powering off the phone does not stop work already accepted by the server. Tasks that require files or hardware available only on the phone cannot continue while it is offline.
 
 This is a single-host deployment profile, not high availability. A host outage pauses execution until the host returns. Multi-host workers require moving from SQLite/local volume to PostgreSQL and a shared durable workspace/object store before enabling replicas.
 
