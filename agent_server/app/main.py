@@ -430,15 +430,20 @@ def _complete_task(tid: str, summary: str, results_json: str) -> bool:
     return bool(changed)
 
 
-def _claim_step(step_id: str):
+def _claim_step(tid: str, step_id: str):
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         changed = c.execute("""UPDATE task_steps SET status='running',attempt_count=attempt_count+1,
-            error='',updated_at=? WHERE id=? AND status IN ('pending','retry_wait')""",
-            (time.time(), step_id)).rowcount
+            error='',updated_at=? WHERE id=? AND task_id=? AND status IN ('pending','retry_wait')
+            AND EXISTS (
+                SELECT 1 FROM tasks WHERE id=? AND status='running'
+                AND cancel_requested=0 AND lease_owner=?
+            )""",
+            (time.time(), step_id, tid, tid, WORKER_ID)).rowcount
         if not changed:
             return None
-        return c.execute("SELECT * FROM task_steps WHERE id=?", (step_id,)).fetchone()
+        return c.execute("SELECT * FROM task_steps WHERE id=? AND task_id=?",
+                         (step_id, tid)).fetchone()
 
 
 def _save_step_result(tid: str, step_id: str, status: str, result_json: str):
@@ -529,9 +534,10 @@ async def process(tid: str):
                     await run_db(event, tid, "cancelled", "Task cancellation acknowledged")
                 return
 
-            claimed = await run_db(_claim_step, step["id"])
+            claimed = await run_db(_claim_step, tid, step["id"])
             if not claimed:
-                continue
+                # Another worker claimed it, or this task lost its lease / was cancelled.
+                return
             await run_db(event, tid, "step_started", f"{claimed['step_index'] + 1}: {claimed['title']}")
             try:
                 step_data = {"title": claimed["title"], "action": claimed["action"],
