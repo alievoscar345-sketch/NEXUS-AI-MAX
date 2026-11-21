@@ -4196,15 +4196,19 @@ async def stream_task_events(
 
 
 @app.get("/v1/tasks/{tid}/checkpoints", dependencies=[Depends(auth)])
-def list_task_checkpoints(tid: str, owner_id: str = Depends(auth)):
+def list_task_checkpoints(tid: str, after_sequence: int = 0, owner_id: str = Depends(auth)):
+    if after_sequence < 0:
+        raise HTTPException(422, "after_sequence must be non-negative")
     _require_owned_task(tid, owner_id)
     with db() as c:
+        latest_row = c.execute("""SELECT COALESCE(MAX(sequence),0) AS sequence
+            FROM task_checkpoints WHERE task_id=? AND owner_id=?""", (tid, owner_id)).fetchone()
+        latest = int(latest_row["sequence"])
         rows = c.execute("""SELECT id,sequence,step_id,reason,plan_json,steps_json,
             archive_path,archive_sha256,archive_bytes,project_manifest_json,
             artifact_manifest_json,created_at FROM task_checkpoints
-            WHERE task_id=? AND owner_id=? ORDER BY sequence DESC""",
-            (tid, owner_id)).fetchall()
-        latest = int(rows[0]["sequence"]) if rows else 0
+            WHERE task_id=? AND owner_id=? AND sequence>? ORDER BY sequence DESC""",
+            (tid, owner_id, after_sequence)).fetchall()
     checkpoints = []
     for row in rows:
         archive = Path(row["archive_path"])
