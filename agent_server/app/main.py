@@ -869,7 +869,7 @@ def _create_task_checkpoint(tid: str, reason: str = "step_completed",
     now = time.time()
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
-        task = c.execute("""SELECT owner_id,plan_json,results_json FROM tasks
+        task = c.execute("""SELECT owner_id,project_id,plan_json,results_json FROM tasks
             WHERE id=? AND status IN ('running','planning') AND cancel_requested=0
             AND lease_owner=? AND lease_expires_at>?""",
             (tid, _current_lease_owner(), now)).fetchone()
@@ -885,9 +885,42 @@ def _create_task_checkpoint(tid: str, reason: str = "step_completed",
         plan_json = task["plan_json"]
         results_json = task["results_json"]
         owner_id = task["owner_id"]
+        project_id = task["project_id"]
+        project_manifest: dict[str, Any] = {"project_id": project_id, "files": []}
+        if project_id:
+            project_rows = c.execute("""SELECT v.id,v.path,v.revision,v.sha256,v.size_bytes,
+                v.content_type,v.is_binary FROM project_file_versions v
+                JOIN (SELECT path,MAX(revision) AS revision FROM project_file_versions
+                      WHERE project_id=? GROUP BY path) latest
+                ON latest.path=v.path AND latest.revision=v.revision
+                WHERE v.project_id=? AND v.owner_id=? AND v.is_deleted=0 ORDER BY v.path""",
+                (project_id, project_id, owner_id)).fetchall()
+            project_manifest["files"] = [dict(row) for row in project_rows]
 
     root = _task_workspace_root(tid)
     root.mkdir(parents=True, exist_ok=True)
+    internal_artifacts_dir = root / "__nexus_internal_artifacts__"
+    if internal_artifacts_dir.exists():
+        raise ValueError("Task workspace uses a reserved internal checkpoint directory name")
+    artifact_manifest: list[dict[str, Any]] = []
+    artifact_sources: list[tuple[str, Path]] = []
+    artifact_prefix = tid + "-"
+    if WORKSPACE.exists():
+        for candidate in sorted(WORKSPACE.iterdir(), key=lambda item: item.name.casefold()):
+            if not candidate.name.startswith(artifact_prefix) or candidate.is_symlink():
+                continue
+            artifact_name = candidate.name[len(artifact_prefix):]
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", artifact_name):
+                continue
+            resolved = candidate.resolve(strict=True)
+            if resolved.parent != WORKSPACE.resolve() or not resolved.is_file():
+                continue
+            artifact_digest = _sha256_file(resolved)
+            artifact_size = resolved.stat().st_size
+            artifact_manifest.append({"name": artifact_name, "bytes": artifact_size,
+                "sha256": artifact_digest,
+                "content_type": mimetypes.guess_type(artifact_name)[0] or "application/octet-stream"})
+            artifact_sources.append((artifact_name, resolved))
     archive = _checkpoint_archive_path(tid, sequence)
     temporary = archive.with_name(archive.name + ".tmp-" + uuid.uuid4().hex)
     total_bytes = 0
@@ -917,6 +950,8 @@ def _create_task_checkpoint(tid: str, reason: str = "step_completed",
                         raise ValueError("Task workspace exceeds the configured checkpoint file-count limit")
                     relative = source.relative_to(root).as_posix()
                     bundle.write(source, relative)
+            for artifact_name, artifact_source in artifact_sources:
+                bundle.write(artifact_source, "__nexus_internal_artifacts__/" + artifact_name)
         with temporary.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
@@ -942,10 +977,12 @@ def _create_task_checkpoint(tid: str, reason: str = "step_completed",
             return None
         c.execute("""INSERT INTO task_checkpoints(
             id,task_id,owner_id,sequence,step_id,reason,plan_json,results_json,steps_json,
-            archive_path,archive_sha256,archive_bytes,created_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            archive_path,archive_sha256,archive_bytes,project_manifest_json,artifact_manifest_json,created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (checkpoint_id, tid, owner_id, sequence, step_id, reason, plan_json,
-             results_json, steps_json, str(archive), digest.hexdigest(), archive_bytes, created_at))
+             results_json, steps_json, str(archive), digest.hexdigest(), archive_bytes,
+             json.dumps(project_manifest, ensure_ascii=False),
+             json.dumps(artifact_manifest, ensure_ascii=False), created_at))
         old_rows = c.execute("""SELECT id,archive_path FROM task_checkpoints
             WHERE task_id=? AND sequence<=?""",
             (tid, sequence - TASK_CHECKPOINT_RETENTION)).fetchall()
@@ -964,7 +1001,8 @@ def _create_task_checkpoint(tid: str, reason: str = "step_completed",
             logging.getLogger("nexus.checkpoint").warning("Unable to prune old checkpoint archive")
     return {"id": checkpoint_id, "sequence": sequence, "files": file_count,
             "bytes": total_bytes, "archive_bytes": archive_bytes,
-            "sha256": digest.hexdigest()}
+            "sha256": digest.hexdigest(), "project_files": len(project_manifest["files"]),
+            "artifacts": len(artifact_manifest)}
 
 
 def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True) -> dict[str, Any] | None:
@@ -1453,7 +1491,7 @@ def _materialize_project_files(tid: str, owner_id: str, project_id: str) -> dict
             JOIN (SELECT path,MAX(revision) AS revision FROM project_file_versions
                   WHERE project_id=? GROUP BY path) latest
             ON latest.path=v.path AND latest.revision=v.revision
-            WHERE v.project_id=? AND v.owner_id=? ORDER BY v.path""",
+            WHERE v.project_id=? AND v.owner_id=? AND v.is_deleted=0 ORDER BY v.path""",
             (project_id, project_id, owner_id)).fetchall()
     written = 0
     for row in rows:
@@ -2457,7 +2495,7 @@ def list_project_files(project_id: str, owner_id: str = Depends(auth)):
             JOIN (SELECT path,MAX(revision) AS revision FROM project_file_versions
                   WHERE project_id=? GROUP BY path) latest
             ON latest.path=v.path AND latest.revision=v.revision
-            WHERE v.project_id=? AND v.owner_id=? ORDER BY v.path COLLATE NOCASE""",
+            WHERE v.project_id=? AND v.owner_id=? AND v.is_deleted=0 ORDER BY v.path COLLATE NOCASE""",
             (project_id, project_id, owner_id)).fetchall()
     return {"files": [_project_file_dict(row) for row in rows]}
 
@@ -2468,7 +2506,7 @@ def read_project_file(project_id: str, path: str, owner_id: str = Depends(auth))
     with db() as c:
         row = c.execute("""SELECT v.* FROM project_file_versions v
             JOIN projects p ON p.id=v.project_id
-            WHERE v.project_id=? AND v.owner_id=? AND p.owner_id=? AND v.path=?
+            WHERE v.project_id=? AND v.owner_id=? AND p.owner_id=? AND v.path=? AND v.is_deleted=0
             ORDER BY v.revision DESC LIMIT 1""",
             (project_id, owner_id, owner_id, safe_path)).fetchone()
     if not row:
@@ -2575,7 +2613,7 @@ def restore_project_file(project_id: str, path: str, body: ProjectFileRestoreInp
         if not project:
             raise HTTPException(404, "Project not found")
         source = c.execute("""SELECT content,sha256,size_bytes,content_type,is_binary FROM project_file_versions
-            WHERE project_id=? AND owner_id=? AND path=? AND revision=?""",
+            WHERE project_id=? AND owner_id=? AND path=? AND revision=? AND is_deleted=0""",
             (project_id, owner_id, safe_path, body.revision)).fetchone()
         if not source:
             raise HTTPException(404, "Project file revision not found")
