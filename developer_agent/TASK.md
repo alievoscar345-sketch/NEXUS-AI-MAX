@@ -1,22 +1,24 @@
-Проведи ограниченный smoke-test инструментов записи NEXUS Developer Agent.
+Реализуй первый ограниченный P0-A патч для SQLite connection lifecycle в основном NEXUS backend.
 
-Цель: проверить write_file и create_pull_request на безопасном тестовом документе.
+Контекст:
+- Целевая ветка для PR: gemini-hydrogen-development.
+- Файлы backend находятся в agent_server/.
+- В agent_server/app/main.py функция db() вызывает sqlite3.connect(), а большинство мест используют конструкцию with db() as c.
+- В стандартном sqlite3 контекстный менеджер Connection завершает транзакцию, но сам по себе НЕ закрывает соединение. Это приводит к утечкам файловых дескрипторов/соединений при повторных вызовах.
 
-1. Используй list_files, чтобы убедиться, что developer_agent/ существует.
-2. Создай ровно один новый файл developer_agent/SMOKE_TEST.md со следующим содержимым:
+Задача:
+1. Прочитай agent_server/app/main.py и agent_server/tests/test_task_durability.py.
+2. В main.py реализуй минимальный безопасный механизм закрытия SQLite connection после выхода из with db() as c. Предпочтительно определить подкласс sqlite3.Connection с переопределённым __exit__: вызвать super().__exit__(...), а затем гарантированно вызвать close() в finally; передать этот класс в sqlite3.connect через factory=. Сохрани существующий интерфейс db() и поведение commit/rollback.
+3. Добавь тесты в agent_server/tests/test_task_durability.py, которые доказывают:
+   - успешный выход из with db() as c коммитит транзакцию и соединение после выхода закрыто;
+   - выход с исключением откатывает транзакцию и соединение после выхода закрыто.
+   Используй временную тестовую БД из существующего setUp.
+4. Не выполняй масштабный рефакторинг async/event-loop в этом патче. Не меняй бизнес-логику worker, schema, миграции, API, маршруты, Android-код или другие файлы. Следующим отдельным этапом будет offloading синхронного SQLite I/O из async event loop.
+5. Добавь/обнови только эти два файла:
+   - agent_server/app/main.py
+   - agent_server/tests/test_task_durability.py
+6. Проверь diff на отсутствие посторонних изменений. Не записывай API-ключи, секреты или пользовательские данные.
+7. Создай изолированную ветку nexus-agent/<run-id> от gemini-hydrogen-development и один Draft PR в gemini-hydrogen-development. Не делай merge.
+8. Если есть неоднозначность при записи/создании PR — остановись без повторных попыток и сообщи точную ошибку.
 
-# NEXUS Developer Agent Smoke Test
-
-This file verifies that the NEXUS Developer Agent can create a text file on an isolated branch and open a draft pull request.
-
-- Test scope: write_file and create_pull_request
-- Repository files outside this document must remain unchanged.
-- This test document is temporary and must not be merged into the development branch.
-
-3. Проверь, что write_file вернул успешный результат.
-4. Создай один Draft Pull Request в gemini-hydrogen-development с кратким описанием теста.
-5. Не изменяй никакие другие файлы.
-6. Не запускай повторные попытки создания файла или PR, если инструмент вернул неоднозначный результат. В таком случае остановись и сообщи точную ошибку.
-7. В конце укажи имя ветки, ссылку на созданный PR и результат каждого инструмента.
-
-Это тест реальных GitHub write permissions. Не пытайся обойти ограничения инструментов.
+В итоговом сообщении укажи изменённые файлы, суть решения, тесты и ссылку на Draft PR.
