@@ -1294,7 +1294,7 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
         result = await gateway.complete_messages(messages, purpose="general")
     except ModelGatewayError as exc:
         status = 503 if "No configured model supports" in str(exc) else 502
-        raise HTTPException(status, str(exc)) from exc
+        raise HTTPException(status, _chat_gateway_error_message(exc, requires_vision)) from exc
     return {
         "id": "nexus-" + str(uuid.uuid4()),
         "object": "chat.completion",
