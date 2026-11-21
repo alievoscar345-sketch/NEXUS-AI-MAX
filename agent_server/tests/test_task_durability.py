@@ -62,6 +62,27 @@ class DurableTaskTests(unittest.TestCase):
         self.assertEqual(result["matches"][0]["line"], 2)
         self.assertEqual(result["matches"][0]["path"], "src/readme.md")
 
+    def test_stale_worker_cannot_write_to_task_workspace(self):
+        now = time.time()
+        current_owner = main.WORKER_ID + ":current-claim"
+        stale_owner = main.WORKER_ID + ":stale-claim"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("task-workspace-fence", "workspace fencing", "running", now, now,
+                 current_owner, now + 600),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        token = main._LEASE_OWNER.set(stale_owner)
+        try:
+            with patch.object(main, "WORKSPACE", workspace):
+                result = main._leased_workspace_write("task-workspace-fence", "late.txt", "stale write")
+        finally:
+            main._LEASE_OWNER.reset(token)
+        self.assertIsNone(result)
+        self.assertFalse((workspace / "task-workspace-fence" / "late.txt").exists())
+
     def test_workspace_rejects_symlink_escape(self):
         workspace = Path(self.temp.name) / "workspace"
         outside = Path(self.temp.name) / "outside"

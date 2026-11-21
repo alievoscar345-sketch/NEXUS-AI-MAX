@@ -492,6 +492,18 @@ def _workspace_write(tid: str, relative_path: str, content: str) -> dict[str, An
     return {"path": relative_path, "bytes": len(content.encode("utf-8"))}
 
 
+def _leased_workspace_write(tid: str, relative_path: str, content: str) -> dict[str, Any] | None:
+    now = time.time()
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        owned = c.execute("""SELECT 1 FROM tasks WHERE id=? AND status='running'
+            AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
+            (tid, _current_lease_owner(), now)).fetchone()
+        if not owned:
+            return None
+        return _workspace_write(tid, relative_path, content)
+
+
 def _workspace_read(tid: str, relative_path: str) -> dict[str, Any]:
     _, target = _workspace_target(tid, relative_path)
     if not target.is_file():
@@ -571,8 +583,10 @@ async def run_step(step: dict[str, Any], tid: str, idempotency_key: str):
         result = await run_db(_workspace_read, tid, str(args.get("path", "")))
         return {"title": title, "status": "completed", **result}
     if action == "workspace_write":
-        result = await run_db(_workspace_write, tid, str(args.get("path", "")),
+        result = await run_db(_leased_workspace_write, tid, str(args.get("path", "")),
                               str(args.get("content", "")))
+        if result is None:
+            raise RuntimeError("Worker lease lost before workspace write")
         return {"title": title, "status": "completed", **result}
     if action == "workspace_search":
         result = await run_db(_workspace_search, tid, str(args.get("query", "")))
