@@ -21,6 +21,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.ByteArrayOutputStream
 import java.util.zip.ZipInputStream
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
@@ -988,6 +989,55 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 projectMessage = "Проект удалён. История задач сохранена без привязки к проекту."
             } catch (e: Exception) { projectMessage = e.message ?: "Не удалось удалить проект." }
             finally { projectBusy = false }
+        }
+    }
+
+    fun uploadProjectBinaryFile(projectId: String, uri: Uri, displayName: String) {
+        if (projectFilesBusy) return
+        projectFilesBusy = true
+        viewModelScope.launch {
+            try {
+                val resolver = getApplication<Application>().contentResolver
+                val bytes = withContext(Dispatchers.IO) {
+                    resolver.openInputStream(uri)?.use { input ->
+                        val output = ByteArrayOutputStream()
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            if (output.size() + count > 50 * 1024 * 1024) throw IOException("Файл превышает 50 МиБ.")
+                            output.write(buffer, 0, count)
+                        }
+                        output.toByteArray()
+                    } ?: throw IOException("Не удалось открыть выбранный файл.")
+                }
+                val mime = resolver.getType(uri) ?: "application/octet-stream"
+                val safeName = displayName.replace(Regex("[\\\\/\\\\\\\\]"), "_").take(180).ifBlank { "upload.bin" }
+                val revision = withContext(Dispatchers.IO) {
+                    agentTaskClient().uploadProjectBinaryFile(projectId, safeName, bytes, mime)
+                }
+                projectFiles = withContext(Dispatchers.IO) { agentTaskClient().listProjectFiles(projectId) }
+                selectedProjectFilePath = safeName
+                projectFileVersions = withContext(Dispatchers.IO) { agentTaskClient().listProjectFileVersions(projectId, safeName) }
+                projectFilesMessage = "Загружен $safeName · версия ${revision.revision} · ${revision.bytes} байт."
+            } catch (e: Exception) { projectFilesMessage = e.message ?: "Не удалось загрузить файл." }
+            finally { projectFilesBusy = false }
+        }
+    }
+
+    fun downloadProjectBinaryFile(projectId: String, path: String, destination: Uri) {
+        if (projectFilesBusy) return
+        projectFilesBusy = true
+        viewModelScope.launch {
+            try {
+                val bytes = withContext(Dispatchers.IO) { agentTaskClient().downloadProjectBinaryFile(projectId, path) }
+                withContext(Dispatchers.IO) {
+                    getApplication<Application>().contentResolver.openOutputStream(destination, "w")?.use { it.write(bytes) }
+                        ?: throw IOException("Не удалось сохранить файл на устройстве.")
+                }
+                projectFilesMessage = "Файл $path сохранён на устройстве (${bytes.size} байт)."
+            } catch (e: Exception) { projectFilesMessage = e.message ?: "Не удалось скачать файл." }
+            finally { projectFilesBusy = false }
         }
     }
 
