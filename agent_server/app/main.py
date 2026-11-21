@@ -1157,6 +1157,8 @@ def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True) -> dic
                 if total_bytes > MAX_TASK_CHECKPOINT_BYTES or file_count > MAX_TASK_CHECKPOINT_FILES:
                     raise ValueError("Checkpoint exceeds configured restore limits")
                 if path.parts[0] == "__nexus_internal_artifacts__":
+                    if legacy_checkpoint:
+                        raise ValueError("Legacy checkpoint unexpectedly contains published artifact data")
                     if len(path.parts) != 2:
                         raise ValueError("Checkpoint artifact path is invalid")
                     artifact_name = path.parts[1]
@@ -1174,14 +1176,15 @@ def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True) -> dic
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with bundle.open(info, "r") as source, target.open("wb") as destination:
                     shutil.copyfileobj(source, destination, 1024 * 1024)
-        if restored_artifact_names != set(expected_artifacts):
+        if not legacy_checkpoint and restored_artifact_names != set(expected_artifacts):
             raise ValueError("Checkpoint artifact set is incomplete")
         if root.is_symlink():
             raise ValueError("Task workspace root cannot be a symbolic link")
         artifact_prefix = tid + "-"
-        for artifact_name in expected_artifacts:
-            if (WORKSPACE / (artifact_prefix + artifact_name)).is_symlink():
-                raise ValueError("Existing task artifact destination is a symbolic link")
+        if not legacy_checkpoint:
+            for artifact_name in expected_artifacts:
+                if (WORKSPACE / (artifact_prefix + artifact_name)).is_symlink():
+                    raise ValueError("Existing task artifact destination is a symbolic link")
         if root.exists():
             os.replace(root, backup)
         try:
@@ -1192,28 +1195,28 @@ def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True) -> dic
             raise
         if backup.exists():
             shutil.rmtree(backup)
-        for candidate in WORKSPACE.iterdir():
-            if not candidate.name.startswith(artifact_prefix):
-                continue
-            if candidate.is_symlink() or not candidate.is_file():
-                continue
-            artifact_name = candidate.name[len(artifact_prefix):]
-            if artifact_name not in expected_artifacts:
-                candidate.unlink(missing_ok=True)
-        for artifact_name in sorted(expected_artifacts):
-            destination = WORKSPACE / (artifact_prefix + artifact_name)
-            if destination.is_symlink():
-                raise ValueError("Existing task artifact destination is a symbolic link")
-            os.replace(artifact_staging / artifact_name, destination)
+        if not legacy_checkpoint:
+            for candidate in WORKSPACE.iterdir():
+                if not candidate.name.startswith(artifact_prefix):
+                    continue
+                if candidate.is_symlink() or not candidate.is_file():
+                    continue
+                artifact_name = candidate.name[len(artifact_prefix):]
+                if artifact_name not in expected_artifacts:
+                    candidate.unlink(missing_ok=True)
+            for artifact_name in sorted(expected_artifacts):
+                destination = WORKSPACE / (artifact_prefix + artifact_name)
+                if destination.is_symlink():
+                    raise ValueError("Existing task artifact destination is a symbolic link")
+                os.replace(artifact_staging / artifact_name, destination)
     finally:
         if staging.exists():
             shutil.rmtree(staging)
         if artifact_staging.exists():
             shutil.rmtree(artifact_staging)
 
-    project_revisions_restored = _restore_checkpoint_project_files(
-        tid, checkpoint["project_manifest_json"]
-    )
+    project_revisions_restored = (0 if legacy_checkpoint else
+        _restore_checkpoint_project_files(tid, checkpoint["project_manifest_json"]))
     if not restore_state:
         return {"sequence": int(checkpoint["sequence"]), "files": file_count,
                 "bytes": total_bytes, "workspace_only": True}
