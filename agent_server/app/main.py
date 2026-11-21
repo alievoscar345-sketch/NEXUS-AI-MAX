@@ -2396,6 +2396,8 @@ def _extract_github_zipball(tid: str, archive_path: Path, branch: str,
             _, target = _workspace_target(tid, relative)
             with archive.open(info, "r") as source, target.open("wb") as output:
                 shutil.copyfileobj(source, output, length=1024 * 1024)
+            if mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+                target.chmod(0o755)
             files_written += 1
             bytes_written += info.file_size
     _assert_task_lease_for_github_write(tid)
@@ -2603,7 +2605,9 @@ async def _github_commit_task_workspace(tid: str, integration: dict[str, str],
     skipped: list[str] = []
     for relative in existing:
         parts = PurePosixPath(relative).parts
-        if not parts or any(part in excluded_dirs for part in parts):
+        if (not parts or any(part in excluded_dirs for part in parts)
+                or PurePosixPath(relative).name in excluded_names
+                or PurePosixPath(relative).suffix.lower() in excluded_suffixes):
             continue
         local_path = root.joinpath(*parts)
         if not local_path.exists() and not local_path.is_symlink():
@@ -2636,14 +2640,16 @@ async def _github_commit_task_workspace(tid: str, integration: dict[str, str],
             ).hexdigest()
             if existing.get(relative) == git_blob_sha:
                 continue
-            pending.append((relative, resolved, git_blob_sha, len(data)))
+            executable = bool(resolved.stat().st_mode & 0o111)
+            pending.append((relative, resolved, git_blob_sha, len(data),
+                            "100755" if executable else "100644"))
     if not pending and not deleted:
         return {"branch": selected_branch, "unchanged": True, "files_committed": 0,
                 "files_deleted": 0, "files_skipped": len(skipped),
                 "skipped_paths": skipped[:100], "commit": None}
     semaphore = asyncio.Semaphore(4)
-    async def create_blob(item: tuple[str, Path, str, int]) -> dict[str, Any]:
-        relative, source_path, _, _ = item
+    async def create_blob(item: tuple[str, Path, str, int, str]) -> dict[str, Any]:
+        relative, source_path, _, _, mode = item
         data = source_path.read_bytes()
         async with semaphore:
             blob = await _github_api(token, "POST", f"/repos/{repo_path}/git/blobs", {
@@ -2652,7 +2658,7 @@ async def _github_commit_task_workspace(tid: str, integration: dict[str, str],
         sha = str((blob or {}).get("sha", ""))
         if not sha:
             raise RuntimeError("GitHub did not return a blob SHA for " + relative)
-        return {"path": relative, "mode": "100644", "type": "blob", "sha": sha}
+        return {"path": relative, "mode": mode, "type": "blob", "sha": sha}
     entries = await asyncio.gather(*(create_blob(item) for item in pending))
     entries.extend({"path": relative, "mode": "100644", "type": "blob", "sha": None}
                    for relative in deleted)
