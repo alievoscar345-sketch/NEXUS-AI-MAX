@@ -194,6 +194,8 @@ def init_db():
         """)
         if "project_id" not in _columns(c, "tasks"):
             c.execute("ALTER TABLE tasks ADD COLUMN project_id TEXT")
+        if "project_id" not in _columns(c, "automations"):
+            c.execute("ALTER TABLE automations ADD COLUMN project_id TEXT")
         c.execute("CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner_id,status,updated_at DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(owner_id,project_id,created_at DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id,enabled,name)")
@@ -326,6 +328,7 @@ class AutomationInput(BaseModel):
     weekdays: list[int] = Field(default_factory=list, max_length=7)
     interval_minutes: int | None = Field(default=None, ge=5, le=10080)
     enabled: bool = True
+    project_id: str | None = Field(default=None, max_length=64)
 
 
 class ProviderCredentialInput(BaseModel):
@@ -1153,6 +1156,7 @@ def _automation_row(row: sqlite3.Row) -> dict[str, Any]:
         "local_time": row["local_time"], "timezone": row["timezone"],
         "weekdays": json.loads(row["weekdays_json"]),
         "interval_minutes": row["interval_minutes"], "enabled": bool(row["enabled"]),
+        "project_id": row["project_id"] if "project_id" in row.keys() else None,
         "next_run_at": row["next_run_at"], "last_run_at": row["last_run_at"],
         "created_at": row["created_at"], "updated_at": row["updated_at"],
     }
@@ -1176,9 +1180,9 @@ def _dispatch_due_automations() -> int:
             else:
                 task_id = str(uuid.uuid4())
                 c.execute("""INSERT INTO tasks(id,prompt,status,created_at,updated_at,max_attempts,
-                    max_steps,client_request_key,owner_id) VALUES(?,?,?,?,?,?,?,?,?)""",
+                    max_steps,client_request_key,owner_id,project_id) VALUES(?,?,?,?,?,?,?,?,?,?)""",
                     (task_id, row["prompt"], "queued", now, now, MAX_STEP_ATTEMPTS,
-                     min(8, MAX_STEPS), run_key, row["owner_id"]))
+                     min(8, MAX_STEPS), run_key, row["owner_id"], row["project_id"]))
                 c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
                           (task_id, now, "created", "Scheduled automation dispatched"))
             c.execute("INSERT OR IGNORE INTO automation_runs(id,automation_id,owner_id,task_id,scheduled_for,created_at) VALUES(?,?,?,?,?,?)",
@@ -1659,14 +1663,20 @@ def list_automations(owner_id: str = Depends(auth)):
 def create_automation(body: AutomationInput, owner_id: str = Depends(auth)):
     now = time.time()
     next_at = _validate_automation(body, now) if body.enabled else None
+    if body.project_id:
+        with db() as c:
+            project = c.execute("SELECT id FROM projects WHERE id=? AND owner_id=? AND status='active'",
+                                (body.project_id, owner_id)).fetchone()
+        if not project:
+            raise HTTPException(404, "Active project not found")
     automation_id = str(uuid.uuid4())
     with db() as c:
         c.execute("""INSERT INTO automations(id,owner_id,name,prompt,schedule_type,run_at,local_time,
-            timezone,weekdays_json,interval_minutes,enabled,next_run_at,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            timezone,weekdays_json,interval_minutes,enabled,next_run_at,created_at,updated_at,project_id)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (automation_id, owner_id, body.name.strip(), body.prompt.strip(), body.schedule_type,
              body.run_at, body.local_time, body.timezone, json.dumps(sorted(set(body.weekdays))),
-             body.interval_minutes, 1 if body.enabled else 0, next_at, now, now))
+             body.interval_minutes, 1 if body.enabled else 0, next_at, now, now, body.project_id))
         row = c.execute("SELECT * FROM automations WHERE id=? AND owner_id=?", (automation_id, owner_id)).fetchone()
     return {"automation": _automation_row(row)}
 
@@ -1675,13 +1685,19 @@ def create_automation(body: AutomationInput, owner_id: str = Depends(auth)):
 def update_automation(automation_id: str, body: AutomationInput, owner_id: str = Depends(auth)):
     now = time.time()
     next_at = _validate_automation(body, now) if body.enabled else None
+    if body.project_id:
+        with db() as c:
+            project = c.execute("SELECT id FROM projects WHERE id=? AND owner_id=? AND status='active'",
+                                (body.project_id, owner_id)).fetchone()
+        if not project:
+            raise HTTPException(404, "Active project not found")
     with db() as c:
         changed = c.execute("""UPDATE automations SET name=?,prompt=?,schedule_type=?,run_at=?,
-            local_time=?,timezone=?,weekdays_json=?,interval_minutes=?,enabled=?,next_run_at=?,updated_at=?
+            local_time=?,timezone=?,weekdays_json=?,interval_minutes=?,enabled=?,next_run_at=?,updated_at=?,project_id=?
             WHERE id=? AND owner_id=?""",
             (body.name.strip(), body.prompt.strip(), body.schedule_type, body.run_at,
              body.local_time, body.timezone, json.dumps(sorted(set(body.weekdays))),
-             body.interval_minutes, 1 if body.enabled else 0, next_at, now, automation_id, owner_id)).rowcount
+             body.interval_minutes, 1 if body.enabled else 0, next_at, now, body.project_id, automation_id, owner_id)).rowcount
         if not changed:
             raise HTTPException(404, "Automation not found")
         row = c.execute("SELECT * FROM automations WHERE id=? AND owner_id=?", (automation_id, owner_id)).fetchone()
@@ -1728,8 +1744,8 @@ def run_automation_now(automation_id: str, owner_id: str = Depends(auth)):
         if not row:
             raise HTTPException(404, "Automation not found")
         c.execute("""INSERT INTO tasks(id,prompt,status,created_at,updated_at,max_attempts,max_steps,
-            client_request_key,owner_id) VALUES(?,?,?,?,?,?,?,?,?)""",
-            (task_id, row["prompt"], "queued", now, now, MAX_STEP_ATTEMPTS, min(8, MAX_STEPS), request_key, owner_id))
+            client_request_key,owner_id,project_id) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (task_id, row["prompt"], "queued", now, now, MAX_STEP_ATTEMPTS, min(8, MAX_STEPS), request_key, owner_id, row["project_id"]))
         c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
                   (task_id, now, "created", "Automation manually triggered"))
         c.execute("INSERT INTO automation_runs(id,automation_id,owner_id,task_id,scheduled_for,created_at) VALUES(?,?,?,?,?,?)",
