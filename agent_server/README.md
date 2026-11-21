@@ -118,7 +118,7 @@ The supported worker actions are deliberately constrained. Do not interpret appr
 
 ## Projects and reusable skills
 
-Projects are owner-scoped containers for a durable name, description, and context. A task or scheduled automation can be linked to an active project ID; the planner receives that project's context before producing a task plan. Scheduled runs inherit the project association. Archiving prevents new tasks from being attached while preserving project history. Deleting a project leaves its tasks intact and clears their project association.
+Projects are owner-scoped containers for a durable name, description, and context. A task or scheduled automation can be linked to an active project ID; the planner receives that project's context before producing a task plan. Scheduled runs inherit the project association. Android also allows selecting a persistent active-project context for ordinary chat; that context is added alongside relevant personal memory and skills. Archiving prevents new tasks from being attached while preserving project history. Deleting a project leaves its tasks intact and clears their project association.
 
 - `GET /v1/projects`, `POST /v1/projects`, `PATCH /v1/projects/{id}`, and `DELETE /v1/projects/{id}` manage projects.
 - `POST /v1/tasks` and `POST/PUT /v1/automations` accept an optional `project_id`; it must refer to an active project owned by the authenticated account.
