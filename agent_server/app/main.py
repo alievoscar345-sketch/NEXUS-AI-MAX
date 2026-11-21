@@ -1118,11 +1118,13 @@ def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True) -> dic
     artifact_staging = WORKSPACE / (".artifact-restore-" + uuid.uuid4().hex)
     root = _task_workspace_root(tid)
     backup = WORKSPACE / (".backup-" + uuid.uuid4().hex)
-    artifact_manifest = json.loads(checkpoint["artifact_manifest_json"] or "[]")
-    if not isinstance(artifact_manifest, list):
+    legacy_checkpoint = (checkpoint["project_manifest_json"] or "{}").strip() == "{}"
+    artifact_manifest = (None if legacy_checkpoint
+                         else json.loads(checkpoint["artifact_manifest_json"] or "[]"))
+    if artifact_manifest is not None and not isinstance(artifact_manifest, list):
         raise ValueError("Checkpoint artifact manifest is invalid")
     expected_artifacts = {}
-    for item in artifact_manifest:
+    for item in artifact_manifest or []:
         if not isinstance(item, dict) or not re.fullmatch(
                 r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", str(item.get("name", ""))):
             raise ValueError("Checkpoint contains an invalid artifact entry")
