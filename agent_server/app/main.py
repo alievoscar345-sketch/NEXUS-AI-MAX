@@ -1005,6 +1005,89 @@ def _create_task_checkpoint(tid: str, reason: str = "step_completed",
             "artifacts": len(artifact_manifest)}
 
 
+
+
+def _restore_checkpoint_project_files(tid: str, project_manifest_json: str) -> int:
+    manifest = json.loads(project_manifest_json or "{}")
+    project_id = manifest.get("project_id")
+    if not project_id:
+        return 0
+    files = manifest.get("files", [])
+    if not isinstance(files, list):
+        raise ValueError("Checkpoint project-file manifest is invalid")
+    restored = 0
+    now = time.time()
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        task = c.execute("SELECT owner_id,project_id FROM tasks WHERE id=?", (tid,)).fetchone()
+        if not task:
+            raise ValueError("Task disappeared while restoring project revisions")
+        if task["project_id"] != project_id:
+            raise ValueError("Task project association changed since the checkpoint")
+        project = c.execute("SELECT id FROM projects WHERE id=? AND owner_id=?",
+                            (project_id, task["owner_id"])).fetchone()
+        if not project:
+            raise ValueError("Checkpoint project is no longer available to this task")
+        expected: dict[str, dict[str, Any]] = {}
+        for item in files:
+            if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                raise ValueError("Checkpoint contains an invalid project-file entry")
+            safe_path = _validate_project_file_path(item["path"])
+            if safe_path in expected:
+                raise ValueError("Checkpoint contains duplicate project-file paths")
+            expected[safe_path] = item
+
+        current_rows = c.execute("""SELECT v.* FROM project_file_versions v
+            JOIN (SELECT path,MAX(revision) AS revision FROM project_file_versions
+                  WHERE project_id=? GROUP BY path) latest
+            ON latest.path=v.path AND latest.revision=v.revision
+            WHERE v.project_id=? AND v.owner_id=?""",
+            (project_id, project_id, task["owner_id"])).fetchall()
+        current = {row["path"]: row for row in current_rows}
+
+        for path, row in current.items():
+            if path in expected or row["is_deleted"]:
+                continue
+            revision = int(row["revision"]) + 1
+            empty_digest = hashlib.sha256(b"").hexdigest()
+            c.execute("""INSERT INTO project_file_versions(
+                id,project_id,owner_id,path,revision,content,sha256,size_bytes,message,created_at,
+                content_type,is_binary,is_deleted)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1)""",
+                (str(uuid.uuid4()), project_id, task["owner_id"], path, revision,
+                 sqlite3.Binary(b""), empty_digest, 0,
+                 f"Checkpoint rollback: {path} was not present", now,
+                 "application/octet-stream", 1))
+            restored += 1
+
+        for path, item in expected.items():
+            source = c.execute("""SELECT * FROM project_file_versions
+                WHERE id=? AND project_id=? AND owner_id=? AND path=? AND revision=?""",
+                (item.get("id"), project_id, task["owner_id"], path, item.get("revision"))).fetchone()
+            if not source:
+                raise ValueError(f"Checkpoint project revision is missing: {path}")
+            content = _verified_project_file_bytes(source)
+            if (source["sha256"] != item.get("sha256")
+                    or len(content) != int(item.get("size_bytes", -1))):
+                raise ValueError(f"Checkpoint project revision metadata mismatch: {path}")
+            latest = current.get(path)
+            if latest and not latest["is_deleted"] and latest["sha256"] == source["sha256"]:
+                continue
+            revision = int(latest["revision"] if latest else 0) + 1
+            c.execute("""INSERT INTO project_file_versions(
+                id,project_id,owner_id,path,revision,content,sha256,size_bytes,message,created_at,
+                content_type,is_binary,is_deleted)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0)""",
+                (str(uuid.uuid4()), project_id, task["owner_id"], path, revision,
+                 sqlite3.Binary(content), source["sha256"], source["size_bytes"],
+                 f"Checkpoint rollback to revision {source['revision']}", now,
+                 source["content_type"], source["is_binary"]))
+            restored += 1
+        if restored:
+            c.execute("UPDATE projects SET updated_at=? WHERE id=? AND owner_id=?",
+                      (now, project_id, task["owner_id"]))
+    return restored
+
 def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True) -> dict[str, Any] | None:
     """Verify and restore the newest workspace checkpoint, optionally restoring its DB state."""
     with db() as c:
@@ -1027,9 +1110,23 @@ def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True) -> dic
         raise ValueError("Checkpoint archive SHA-256 verification failed")
 
     staging = WORKSPACE / (".restore-" + uuid.uuid4().hex)
+    artifact_staging = WORKSPACE / (".artifact-restore-" + uuid.uuid4().hex)
     root = _task_workspace_root(tid)
     backup = WORKSPACE / (".backup-" + uuid.uuid4().hex)
+    artifact_manifest = json.loads(checkpoint["artifact_manifest_json"] or "[]")
+    if not isinstance(artifact_manifest, list):
+        raise ValueError("Checkpoint artifact manifest is invalid")
+    expected_artifacts = {}
+    for item in artifact_manifest:
+        if not isinstance(item, dict) or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", str(item.get("name", ""))):
+            raise ValueError("Checkpoint contains an invalid artifact entry")
+        if item["name"] in expected_artifacts:
+            raise ValueError("Checkpoint contains duplicate artifact entries")
+        expected_artifacts[item["name"]] = item
     staging.mkdir(parents=True, exist_ok=False)
+    artifact_staging.mkdir(parents=True, exist_ok=False)
+    restored_artifact_names: set[str] = set()
     total_bytes = 0
     file_count = 0
     try:
@@ -1044,16 +1141,34 @@ def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True) -> dic
                 if stat.S_ISLNK(mode):
                     raise ValueError("Checkpoint contains a symbolic link")
                 if info.is_dir():
+                    if path.parts and path.parts[0] == "__nexus_internal_artifacts__":
+                        continue
                     staging.joinpath(*path.parts).mkdir(parents=True, exist_ok=True)
                     continue
                 file_count += 1
                 total_bytes += info.file_size
                 if total_bytes > MAX_TASK_CHECKPOINT_BYTES or file_count > MAX_TASK_CHECKPOINT_FILES:
                     raise ValueError("Checkpoint exceeds configured restore limits")
+                if path.parts[0] == "__nexus_internal_artifacts__":
+                    if len(path.parts) != 2:
+                        raise ValueError("Checkpoint artifact path is invalid")
+                    artifact_name = path.parts[1]
+                    item = expected_artifacts.get(artifact_name)
+                    if not item or artifact_name in restored_artifact_names:
+                        raise ValueError("Checkpoint contains an undeclared or duplicate artifact")
+                    target = artifact_staging / artifact_name
+                    with bundle.open(info, "r") as source, target.open("wb") as destination:
+                        shutil.copyfileobj(source, destination, 1024 * 1024)
+                    if target.stat().st_size != int(item["bytes"]) or _sha256_file(target) != item["sha256"]:
+                        raise ValueError("Checkpoint artifact integrity verification failed")
+                    restored_artifact_names.add(artifact_name)
+                    continue
                 target = staging.joinpath(*path.parts)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with bundle.open(info, "r") as source, target.open("wb") as destination:
                     shutil.copyfileobj(source, destination, 1024 * 1024)
+        if restored_artifact_names != set(expected_artifacts):
+            raise ValueError("Checkpoint artifact set is incomplete")
         if root.is_symlink():
             raise ValueError("Task workspace root cannot be a symbolic link")
         if root.exists():
@@ -1066,10 +1181,29 @@ def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True) -> dic
             raise
         if backup.exists():
             shutil.rmtree(backup)
+        artifact_prefix = tid + "-"
+        for candidate in WORKSPACE.iterdir():
+            if not candidate.name.startswith(artifact_prefix):
+                continue
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            artifact_name = candidate.name[len(artifact_prefix):]
+            if artifact_name not in expected_artifacts:
+                candidate.unlink(missing_ok=True)
+        for artifact_name in sorted(expected_artifacts):
+            destination = WORKSPACE / (artifact_prefix + artifact_name)
+            if destination.is_symlink():
+                raise ValueError("Existing task artifact destination is a symbolic link")
+            os.replace(artifact_staging / artifact_name, destination)
     finally:
         if staging.exists():
             shutil.rmtree(staging)
+        if artifact_staging.exists():
+            shutil.rmtree(artifact_staging)
 
+    project_revisions_restored = _restore_checkpoint_project_files(
+        tid, checkpoint["project_manifest_json"]
+    )
     if not restore_state:
         return {"sequence": int(checkpoint["sequence"]), "files": file_count,
                 "bytes": total_bytes, "workspace_only": True}
@@ -1097,7 +1231,8 @@ def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True) -> dic
                   (tid, restored_at, "checkpoint_restored",
                    f"Restored checkpoint {checkpoint['sequence']} after worker interruption"))
     return {"sequence": int(checkpoint["sequence"]), "files": file_count,
-            "bytes": total_bytes}
+            "bytes": total_bytes, "project_revisions_restored": project_revisions_restored,
+            "artifacts": len(expected_artifacts)}
 
 
 def _workspace_search(tid: str, query: str) -> dict[str, Any]:
