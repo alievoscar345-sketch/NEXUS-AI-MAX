@@ -148,6 +148,32 @@ class DurableTaskTests(unittest.TestCase):
                                  ("task-stale-plan",)).fetchone()["n"]
         self.assertEqual(count, 0)
 
+    def test_worker_event_rejects_previous_claim_from_same_process(self):
+        now = time.time()
+        old_owner = main.WORKER_ID + ":old-claim"
+        new_owner = main.WORKER_ID + ":new-claim"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("task-stale-same-process", "stale same-process claim", "running", now, now,
+                 new_owner, now + 600),
+            )
+        context_token = main._LEASE_OWNER.set(old_owner)
+        try:
+            accepted = main._worker_event(
+                "task-stale-same-process", "step_finished", "late event from previous claim"
+            )
+        finally:
+            main._LEASE_OWNER.reset(context_token)
+        self.assertFalse(accepted)
+        with main.db() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) AS n FROM events WHERE task_id=? AND kind='step_finished'",
+                ("task-stale-same-process",),
+            ).fetchone()["n"]
+        self.assertEqual(count, 0)
+
     def test_worker_event_rejects_lost_lease(self):
         now = time.time()
         with main.db() as conn:
