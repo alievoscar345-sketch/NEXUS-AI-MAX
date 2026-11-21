@@ -1170,7 +1170,10 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 .post(body.toString().toRequestBody("application/json".toMediaType()))
                 .build()
 
-            val payloadText = client.newCall(request).execute().use { response ->
+            val call = client.newCall(request)
+            activeCall = call
+            if (cancelRequested) call.cancel()
+            val payloadText = call.execute().use { response ->
                 val raw = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     throw IllegalStateException("Поиск API " + response.code + ": " + raw.take(350))
