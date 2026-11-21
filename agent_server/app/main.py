@@ -851,10 +851,11 @@ def _workspace_list(tid: str, relative_path: str = ".") -> dict[str, Any]:
 
 
 def _task_has_checkpoint(tid: str) -> bool:
+    """Return true only when the latest checkpoint includes project/artifact manifests."""
     with db() as c:
-        return c.execute(
-            "SELECT 1 FROM task_checkpoints WHERE task_id=? LIMIT 1", (tid,)
-        ).fetchone() is not None
+        row = c.execute("""SELECT project_manifest_json FROM task_checkpoints
+            WHERE task_id=? ORDER BY sequence DESC LIMIT 1""", (tid,)).fetchone()
+    return bool(row and (row["project_manifest_json"] or "{}").strip() != "{}")
 
 
 def _safe_task_artifact_name(name: Any) -> bool:
