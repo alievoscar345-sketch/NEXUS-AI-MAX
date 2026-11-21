@@ -17,7 +17,6 @@ from typing import Any
 
 
 IMAGE_ENV = "NEXUS_SANDBOX_IMAGE"
-MAX_TIMEOUT_SECONDS = 300
 MAX_OUTPUT_BYTES = 64 * 1024
 MAX_ARGUMENTS = 100
 MAX_ARGUMENT_LENGTH = 2000
@@ -84,7 +83,6 @@ def build_docker_argv(image: str, workspace: Path, cidfile: str,
         "--network=none", "--ipc=none",
         "--read-only", "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
-        "--pids-limit=128", "--memory=1g", "--cpus=1",
         "--user", f"{uid}:{gid}",
         "--env", "HOME=/tmp/home",
         "--env", "GRADLE_USER_HOME=/tmp/gradle",
@@ -127,14 +125,16 @@ async def _stop_container(cidfile: str) -> None:
         pass
 
 
-async def execute(workspace: Path, command: Any, timeout_seconds: Any = 60) -> dict[str, Any]:
+async def execute(workspace: Path, command: Any, timeout_seconds: Any = None) -> dict[str, Any]:
     argv = validate_command(command)
-    try:
-        timeout = int(timeout_seconds)
-    except (TypeError, ValueError):
-        raise SandboxValidationError("timeout_seconds must be an integer from 1 to 300")
-    if isinstance(timeout_seconds, bool) or not 1 <= timeout <= MAX_TIMEOUT_SECONDS:
-        raise SandboxValidationError("timeout_seconds must be an integer from 1 to 300")
+    timeout = None
+    if timeout_seconds is not None:
+        try:
+            timeout = int(timeout_seconds)
+        except (TypeError, ValueError):
+            raise SandboxValidationError("timeout_seconds must be a positive integer or null")
+        if isinstance(timeout_seconds, bool) or timeout < 1:
+            raise SandboxValidationError("timeout_seconds must be a positive integer or null")
 
     image = os.getenv(IMAGE_ENV, "").strip()
     docker = shutil.which("docker")
@@ -166,7 +166,10 @@ async def execute(workspace: Path, command: Any, timeout_seconds: Any = 60) -> d
         stderr_task = asyncio.create_task(_read_capped(process.stderr, MAX_OUTPUT_BYTES))
         timed_out = False
         try:
-            await asyncio.wait_for(process.wait(), timeout=timeout)
+            if timeout is None:
+                await process.wait()
+            else:
+                await asyncio.wait_for(process.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             timed_out = True
             await _stop_container(cidfile)
