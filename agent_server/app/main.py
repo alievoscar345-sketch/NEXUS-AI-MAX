@@ -1369,13 +1369,13 @@ async def test_provider(provider_id: str, owner_id: str = Depends(auth)):
 def _vision_test_data_url() -> str:
     """Build a tiny deterministic green PNG without external image dependencies."""
     width = height = 16
-    pixels = b"".join(b"\\x00" + (b"\\x00\\xff\\x00" * width) for _ in range(height))
+    pixels = b"".join(b"\x00" + (b"\x00\xff\x00" * width) for _ in range(height))
 
     def chunk(kind: bytes, data: bytes) -> bytes:
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
 
     header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    png = b"\\x89PNG\\r\\n\\x1a\\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b"")
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b"")
     return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
 
 
@@ -1406,7 +1406,7 @@ async def test_provider_vision(provider_id: str, owner_id: str = Depends(auth)):
         result = await ModelGateway(models=[probe_model]).complete_messages(messages, purpose="general")
     except ModelGatewayError as exc:
         raise HTTPException(502, "Vision test failed: " + str(exc)) from exc
-    confirmed = bool(re.search(r"\\bgreen\\b", result.content, flags=re.IGNORECASE))
+    confirmed = bool(re.search(r"\bgreen\b", result.content, flags=re.IGNORECASE))
     if confirmed:
         await run_db(_enable_provider_vision, owner_id, provider_id)
     return {
