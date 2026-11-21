@@ -7,6 +7,25 @@ from app.main import validate_chat_messages
 
 
 class ChatValidationTests(unittest.TestCase):
+    def test_missing_vision_provider_error_is_actionable(self):
+        from app.main import _chat_gateway_error_message
+        from app.model_gateway import ModelGatewayError
+
+        message = _chat_gateway_error_message(
+            ModelGatewayError("No configured model supports purpose: general with capability vision"),
+            requires_vision=True,
+        )
+
+        self.assertIn("provider is configured for image input", message)
+        self.assertIn("image-understanding test", message)
+
+    def test_text_chat_keeps_original_provider_error(self):
+        from app.main import _chat_gateway_error_message
+        from app.model_gateway import ModelGatewayError
+
+        error = ModelGatewayError("All eligible model providers failed (HTTP 401)")
+        self.assertEqual(_chat_gateway_error_message(error, requires_vision=False), str(error))
+
     def test_accepts_text_only_chat(self):
         self.assertFalse(validate_chat_messages([
             {"role": "user", "content": "Summarize this document"}
