@@ -189,6 +189,26 @@ class AgentTaskClientTest {
         assertEquals("/v1/memories/m-2", transport.lastRequest!!.url.encodedPath)
     }
 
+    @Test fun downloadArtifactReturnsRawBytesAndUsesAuthenticatedDownloadRoute() {
+        transport.responseBody = "APK-binary-content"
+        val bytes = client.downloadArtifact("task-10", "release.apk")
+        assertEquals("APK-binary-content", bytes.toString(Charsets.UTF_8))
+        val request = transport.lastRequest!!
+        assertEquals("GET", request.method)
+        assertEquals("/v1/tasks/task-10/artifacts/download", request.url.encodedPath)
+        assertEquals("release.apk", request.url.queryParameter("name"))
+        assertEquals("Bearer test-token", request.header("Authorization"))
+        assertEquals("application/octet-stream", request.header("Accept"))
+    }
+
+    @Test fun createTaskDoesNotApplyAnArtificialThirtyStepMetadataCeiling() {
+        transport.responseBody = """{"id":"task-large-plan","status":"queued"}"""
+        client.createTask("Build a complex application", maxSteps = 500)
+        val body = Buffer()
+        transport.lastRequest!!.body!!.writeTo(body)
+        assertEquals(500, org.json.JSONObject(body.readUtf8()).getInt("max_steps"))
+    }
+
     @Test fun rejectsNonHttpsServer() {
         try {
             AgentTaskClient("http://example.com", "token")
