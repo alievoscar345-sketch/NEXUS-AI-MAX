@@ -9,6 +9,7 @@ Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent 
 - Long tasks retain durable checkpoints and automatically recover after backend restarts; the active worker renews its lease rather than stopping at a fixed task-duration budget.
 - Task planning and evaluation through a provider-agnostic OpenAI-compatible Model Gateway.
 - Multi-provider routing using task category, configured benchmark metadata, cost/latency metadata, and provider priority.
+- Autonomous tasks accept a persisted per-task model selection: `auto` uses the task-category router, while an explicit provider model ID pins every planner, continuation, specialist-review, and evaluation call to that model without cross-model fallback. Model IDs are validated when the task is queued.
 - Limited provider fallback for network failures, timeouts, and transient HTTP errors. No fallback after streamed output has started.
 - Server-sent event streams for chat responses and task events.
 - Encrypted per-owner provider credentials and GitHub repository tokens; secrets are never returned by status or listing endpoints.
