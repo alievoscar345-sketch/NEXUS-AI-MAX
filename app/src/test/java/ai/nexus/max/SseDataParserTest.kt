@@ -18,7 +18,7 @@ class SseDataParserTest {
         val parser = SseDataParser()
         parser.acceptLine("data: first")
         parser.acceptLine("data:second")
-        assertEquals("first\\nsecond", parser.acceptLine(""))
+        assertEquals("first\nsecond", parser.acceptLine(""))
     }
 
     @Test
