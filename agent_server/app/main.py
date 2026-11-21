@@ -4308,12 +4308,20 @@ def restore_task_checkpoint(tid: str, checkpoint_id: str, body: dict[str, Any],
                                                    checkpoint_id=checkpoint_id, manual=True)
     except Exception as exc:
         with db() as c:
-            c.execute("""UPDATE tasks SET status=?,restore_checkpoint_id='',
+            failed_at = time.time()
+            c.execute("""UPDATE tasks SET status='failed',error=?,restore_checkpoint_id='',
                 restore_previous_status='',lease_owner='',lease_expires_at=NULL,updated_at=?
                 WHERE id=? AND owner_id=? AND status='restoring'""",
-                (previous_status, time.time(), tid, owner_id))
+                ("Checkpoint restore failed: " + str(exc)[:800], failed_at, tid, owner_id))
+            c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                      (tid, failed_at, "checkpoint_restore_failed",
+                       "Task stopped because the selected checkpoint could not be restored safely"))
         raise HTTPException(422, f"Checkpoint restore failed: {exc}") from exc
     if not restored:
+        with db() as c:
+            c.execute("""UPDATE tasks SET status='failed',restore_checkpoint_id='',
+                restore_previous_status='',lease_owner='',lease_expires_at=NULL,updated_at=?
+                WHERE id=? AND owner_id=? AND status='restoring'""", (time.time(), tid, owner_id))
         raise HTTPException(404, "Checkpoint not found")
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
