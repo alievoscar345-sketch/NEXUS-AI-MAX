@@ -17,10 +17,11 @@ Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent 
 - Task-scoped workspace files, artifact creation/listing/reading, and Android agent-console integration.
 - Optional Tavily search and HTTPS text/JSON fetching with private-network destination protections.
 - Approval records for proposed external side effects.
+- Optional isolated code execution through a digest-pinned Docker runner with bounded commands, no network, resource limits, and task-workspace-only write access.
 
 ## Not yet implemented
 
-Avito Messenger/listing connectors, general browser automation, isolated arbitrary code execution, push notifications, and automatic execution of approved external actions. Approval currently records the decision and resumes the task; it does not send messages, publish listings, make purchases, or modify third-party accounts. Do not connect a real Avito account until official API credentials and permissions are configured.
+Avito Messenger/listing connectors, general browser automation, production-grade VM/microVM isolation, push notifications, and automatic execution of approved external actions. Approval currently records the decision and resumes the task; it does not send messages, publish listings, make purchases, or modify third-party accounts. Do not connect a real Avito account until official API credentials and permissions are configured.
 
 ## Deployment and security
 
@@ -30,7 +31,7 @@ Avito Messenger/listing connectors, general browser automation, isolated arbitra
 4. Expose port 8080 over HTTPS only and verify `GET /health`.
 5. Back up the database and encryption key separately. If the encryption key is lost, stored provider credentials cannot be recovered.
 
-The worker is a single-process, single-replica SQLite prototype. Do not run multiple replicas. PostgreSQL plus a durable queue and distributed locking are required before multi-worker production deployment. The service is not an arbitrary shell sandbox and must not be exposed to untrusted users.
+The worker is a single-process, single-replica SQLite prototype. Do not run multiple replicas. PostgreSQL plus a durable queue and distributed locking are required before multi-worker production deployment. Code execution is disabled by default and experimental. Do not expose this prototype to untrusted users. A Docker daemon socket grants highly privileged control of its host; do not mount the host Docker socket into a publicly reachable API container. Prefer a separately administered sandbox daemon/host reachable through a tightly restricted, authenticated Docker endpoint (for example, a TLS-protected DOCKER_HOST), and treat the runner host as a separate security boundary. For hostile multi-tenant workloads, replace this Docker runner with a dedicated VM/microVM service.
 
 ## Model Gateway configuration
 
@@ -112,13 +113,13 @@ Execution is disabled unless all prerequisites are explicitly configured:
 
 Each invocation uses a disposable container with network and IPC disabled, a read-only container root, all Linux capabilities dropped, no-new-privileges, PID/memory/CPU limits, a non-root container user matching the backend UID/GID, and only the current task workspace mounted writable. Stdout and stderr are each capped at 64 KiB; the worker attempts to stop timed-out containers. The runner image itself must be built and audited by the operator. This is a hardened Docker boundary, not a substitute for a dedicated VM/microVM isolation service against hostile multi-tenant workloads.
 
-The feature returns a blocked result instead of pretending execution occurred when Docker, the image, or safe backend-user configuration is missing. The Android app does not need Docker access.
+The feature returns a blocked result instead of pretending execution occurred when Docker, the image, or safe backend-user configuration is missing. The Docker CLI honors the standard `DOCKER_HOST` environment variable, allowing an operator to target a separately administered runner daemon rather than mounting the host socket into the API container. Access to that daemon must be restricted because Docker control is effectively host-level authority. The Android app does not need Docker access.
 
 ### Autonomous software project planning
 
 For software-development tasks, the planner now prioritizes explicit requirements and acceptance criteria, workspace inspection, architecture/file layout, ordered file-level implementation, build configuration, tests, and setup documentation. It maintains a requirements-to-deliverables progress document, reviews written files, and can request independent architect/implementer/critic review before finalizing. The default plan budget is 24 steps (server maximum 30).
 
-Important limitation: the current agent has workspace file read/write and review tools, but no shell, compiler, test runner, or repository checkout integration. It can author source code and test files and provide exact build/test commands, but cannot yet execute those commands or truthfully report a successful build. Full autonomous software delivery therefore still requires a sandboxed execution service and repository integration.
+Important limitation: the agent can now execute allowlisted commands in an optional isolated Docker runner when the operator provisions it. Without that runner, it can author source code and test files but cannot execute them. Repository checkout/branch integration and production-grade VM/microVM isolation are still missing.
 
 ### Long-running background work
 
