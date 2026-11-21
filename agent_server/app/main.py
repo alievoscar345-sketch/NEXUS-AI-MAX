@@ -211,6 +211,11 @@ class Approval(BaseModel):
     note: str = Field(default="", max_length=1000)
 
 
+class WorkspaceFileInput(BaseModel):
+    path: str = Field(min_length=1, max_length=240)
+    content: str
+
+
 class ProviderCredentialInput(BaseModel):
     provider_id: str = Field(min_length=2, max_length=64, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
     base_url: str = Field(min_length=12, max_length=300)
@@ -1296,6 +1301,47 @@ def _cancel_task_record(tid: str, owner_id: str) -> dict[str, str]:
         c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
                   (tid, now, "cancel_requested", "Cancellation requested by user"))
     return {"id": tid, "status": "cancellation_requested"}
+
+
+
+def _require_owned_task(tid: str, owner_id: str) -> sqlite3.Row:
+    with db() as c:
+        row = c.execute("SELECT id,status FROM tasks WHERE id=? AND owner_id=?",
+                        (tid, owner_id)).fetchone()
+    if not row:
+        raise HTTPException(404, "Task not found")
+    return row
+
+
+@app.get("/v1/tasks/{tid}/workspace", dependencies=[Depends(auth)])
+def list_task_workspace(tid: str, path: str = ".", owner_id: str = Depends(auth)):
+    _require_owned_task(tid, owner_id)
+    try:
+        return _workspace_list(tid, path)
+    except (ValueError, NotADirectoryError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/v1/tasks/{tid}/workspace/file", dependencies=[Depends(auth)])
+def read_task_workspace_file(tid: str, path: str, owner_id: str = Depends(auth)):
+    _require_owned_task(tid, owner_id)
+    try:
+        return _workspace_read(tid, path)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Workspace file not found") from exc
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.put("/v1/tasks/{tid}/workspace/file", dependencies=[Depends(auth)])
+def write_task_workspace_file(tid: str, body: WorkspaceFileInput, owner_id: str = Depends(auth)):
+    task = _require_owned_task(tid, owner_id)
+    if task["status"] not in {"completed", "failed", "cancelled"}:
+        raise HTTPException(409, "Workspace editing is available after the task has finished")
+    try:
+        return _workspace_write(tid, body.path, body.content)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.post("/v1/tasks/{tid}/cancel", dependencies=[Depends(auth)])
