@@ -296,6 +296,20 @@ def _persist_plan(tid: str, steps: list[Any], max_attempts: int):
                   (json.dumps(safe_steps, ensure_ascii=False), now, tid))
 
 
+def _create_approval(tid: str, description: str, idempotency_key: str) -> str:
+    approval_id = str(uuid.uuid5(uuid.NAMESPACE_URL, idempotency_key))
+    with db() as c:
+        c.execute("""INSERT OR IGNORE INTO approvals(id,task_id,description,status,created_at,idempotency_key)
+                     VALUES(?,?,?,'pending',?,?)""",
+                  (approval_id, tid, description, time.time(), idempotency_key))
+        approval = c.execute("SELECT id,status FROM approvals WHERE idempotency_key=?",
+                             (idempotency_key,)).fetchone()
+        c.execute("UPDATE tasks SET status='waiting_for_approval',updated_at=? WHERE id=?",
+                  (time.time(), tid))
+    event(tid, "approval_required", description)
+    return approval["id"]
+
+
 async def run_step(step: dict[str, Any], tid: str, idempotency_key: str):
     action = str(step.get("action", ""))
     args = step.get("input") if isinstance(step.get("input"), dict) else {}
@@ -329,17 +343,8 @@ async def run_step(step: dict[str, Any], tid: str, idempotency_key: str):
         return {"title": title, "status": "completed", "artifact": target.name}
     if action == "draft_external_action":
         description = str(args.get("description", "External action requested"))[:1000]
-        approval_id = str(uuid.uuid5(uuid.NAMESPACE_URL, idempotency_key))
-        with db() as c:
-            c.execute("""INSERT OR IGNORE INTO approvals(id,task_id,description,status,created_at,idempotency_key)
-                         VALUES(?,?,?,'pending',?,?)""",
-                      (approval_id, tid, description, time.time(), idempotency_key))
-            approval = c.execute("SELECT id,status FROM approvals WHERE idempotency_key=?",
-                                 (idempotency_key,)).fetchone()
-            c.execute("UPDATE tasks SET status='waiting_for_approval',updated_at=? WHERE id=?",
-                      (time.time(), tid))
-        event(tid, "approval_required", description)
-        return {"title": title, "status": "awaiting_approval", "approval_id": approval["id"],
+        approval_id = await run_db(_create_approval, tid, description, idempotency_key)
+        return {"title": title, "status": "awaiting_approval", "approval_id": approval_id,
                 "detail": "No external action was executed. A service-specific connector is required."}
     raise ValueError("Unsupported tool: " + action)
 
@@ -682,7 +687,7 @@ async def list_available_models(owner_id: str = Depends(auth)):
 
 
 @app.get("/v1/providers", dependencies=[Depends(auth)])
-async def list_providers(owner_id: str = Depends(auth)):
+def list_providers(owner_id: str = Depends(auth)):
     with db() as c:
         rows = c.execute("""SELECT provider_id,base_url,model,supports_vision,created_at,updated_at
             FROM provider_credentials WHERE owner_id=? ORDER BY provider_id""", (owner_id,)).fetchall()
@@ -690,7 +695,7 @@ async def list_providers(owner_id: str = Depends(auth)):
 
 
 @app.post("/v1/providers", dependencies=[Depends(auth)])
-async def save_provider(body: ProviderCredentialInput, owner_id: str = Depends(auth)):
+def save_provider(body: ProviderCredentialInput, owner_id: str = Depends(auth)):
     base_url = validate_provider_base_url(body.base_url)
     provider_key = body.api_key.get_secret_value()
     if not 8 <= len(provider_key) <= 4096:
@@ -712,7 +717,7 @@ async def save_provider(body: ProviderCredentialInput, owner_id: str = Depends(a
 
 
 @app.delete("/v1/providers/{provider_id}", dependencies=[Depends(auth)])
-async def delete_provider(provider_id: str, owner_id: str = Depends(auth)):
+def delete_provider(provider_id: str, owner_id: str = Depends(auth)):
     with db() as c:
         changed = c.execute("DELETE FROM provider_credentials WHERE owner_id=? AND provider_id=?",
                             (owner_id, provider_id)).rowcount
@@ -738,7 +743,7 @@ async def test_provider(provider_id: str, owner_id: str = Depends(auth)):
 
 
 @app.post("/v1/tasks", dependencies=[Depends(auth)])
-async def create_task(body: NewTask, owner_id: str = Depends(auth)):
+def create_task(body: NewTask, owner_id: str = Depends(auth)):
     tid = str(uuid.uuid4())
     now = time.time()
     with db() as c:
@@ -756,7 +761,7 @@ async def create_task(body: NewTask, owner_id: str = Depends(auth)):
 
 
 @app.get("/v1/tasks", dependencies=[Depends(auth)])
-async def list_tasks(limit: int = 30, owner_id: str = Depends(auth)):
+def list_tasks(limit: int = 30, owner_id: str = Depends(auth)):
     with db() as c:
         rows = c.execute("SELECT * FROM tasks WHERE owner_id=? ORDER BY created_at DESC LIMIT ?",
                          (owner_id, max(1, min(limit, 100)))).fetchall()
@@ -764,7 +769,7 @@ async def list_tasks(limit: int = 30, owner_id: str = Depends(auth)):
 
 
 @app.get("/v1/tasks/{tid}", dependencies=[Depends(auth)])
-async def get_task(tid: str, owner_id: str = Depends(auth)):
+def get_task(tid: str, owner_id: str = Depends(auth)):
     with db() as c:
         row = c.execute("SELECT * FROM tasks WHERE id=? AND owner_id=?", (tid, owner_id)).fetchone()
         if not row:
@@ -780,7 +785,7 @@ async def get_task(tid: str, owner_id: str = Depends(auth)):
 
 
 @app.post("/v1/tasks/{tid}/cancel", dependencies=[Depends(auth)])
-async def cancel_task(tid: str, owner_id: str = Depends(auth)):
+def cancel_task(tid: str, owner_id: str = Depends(auth)):
     with db() as c:
         row = c.execute("SELECT status FROM tasks WHERE id=? AND owner_id=?", (tid, owner_id)).fetchone()
         if not row:
@@ -795,7 +800,7 @@ async def cancel_task(tid: str, owner_id: str = Depends(auth)):
 
 
 @app.get("/v1/approvals", dependencies=[Depends(auth)])
-async def list_approvals(owner_id: str = Depends(auth)):
+def list_approvals(owner_id: str = Depends(auth)):
     with db() as c:
         rows = c.execute("""SELECT a.* FROM approvals a JOIN tasks t ON t.id=a.task_id
             WHERE a.status='pending' AND t.owner_id=? ORDER BY a.created_at""", (owner_id,)).fetchall()
@@ -803,7 +808,7 @@ async def list_approvals(owner_id: str = Depends(auth)):
 
 
 @app.post("/v1/approvals/{approval_id}", dependencies=[Depends(auth)])
-async def decide_approval(approval_id: str, body: Approval, owner_id: str = Depends(auth)):
+def decide_approval(approval_id: str, body: Approval, owner_id: str = Depends(auth)):
     with db() as c:
         row = c.execute("""SELECT a.* FROM approvals a JOIN tasks t ON t.id=a.task_id
             WHERE a.id=? AND t.owner_id=?""", (approval_id, owner_id)).fetchone()
