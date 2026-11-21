@@ -424,6 +424,44 @@ class DurableTaskTests(unittest.TestCase):
         finally:
             main._LEASE_OWNER.reset(token)
 
+    def test_github_workspace_commit_tracks_deleted_source_files(self):
+        from unittest.mock import AsyncMock
+        now = time.time()
+        worker = main.WORKER_ID + ":workspace-delete"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("workspace-delete", "delete source", "running", now, now, worker, now + 600),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        (workspace / "workspace-delete").mkdir(parents=True)
+        token = main._LEASE_OWNER.set(worker)
+        try:
+            with patch.object(main, "WORKSPACE", workspace), \
+                 patch.object(main, "_github_api", new=AsyncMock(side_effect=[
+                     {"object": {"sha": "parent-sha"}},
+                     {"tree": {"sha": "base-tree"}},
+                     {"tree": [{"path": "README.md", "type": "blob", "sha": "old-blob"}],
+                      "truncated": False},
+                     {"sha": "deleted-tree"},
+                     {"sha": "delete-commit", "html_url": "https://github.com/owner/repo/commit/delete-commit"},
+                     {},
+                 ])) as github_api:
+                result = asyncio.run(main._github_commit_task_workspace(
+                    "workspace-delete",
+                    {"token": "ghp_test", "repo_full_name": "owner/repo"},
+                    "nexus-agent/task-workspace-delete",
+                ))
+            self.assertEqual(result["files_committed"], 0)
+            self.assertEqual(result["files_deleted"], 1)
+            tree_payload = github_api.await_args_list[3].args[3]
+            self.assertEqual(tree_payload["tree"], [
+                {"path": "README.md", "mode": "100644", "type": "blob", "sha": None}
+            ])
+        finally:
+            main._LEASE_OWNER.reset(token)
+
     def test_github_write_actions_reject_protected_branches(self):
         for branch_name in ("main", "master", "nexus-1.0-development", "feature/unsafe"):
             with self.subTest(branch=branch_name):
