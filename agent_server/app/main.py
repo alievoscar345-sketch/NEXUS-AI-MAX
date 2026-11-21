@@ -857,7 +857,6 @@ async def run_step(step: dict[str, Any], tid: str, idempotency_key: str):
                     "recommendations": result.get("recommendations", [])[:8] if isinstance(result.get("recommendations", []), list) else []}
         results = await asyncio.gather(*(consult(item) for item in requested))
         return {"title": title, "status": "completed", "mode": "parallel_specialists", "agents": results}
-    if action == "web_search":
     if action in {"github_create_branch", "github_checkout", "github_commit_workspace", "github_build_android", "github_list_files", "github_read_file", "github_write_file"}:
         task_row = await run_db(_get_task_row, tid)
         if not task_row:
