@@ -334,13 +334,20 @@ class ModelGateway:
                             return normalized
 
                         async for line in response.aiter_lines():
-                            if line == "":
+                            if line.strip() == "":
                                 event = await consume_event()
                                 if event == "done":
                                     return
                                 if event is not None:
                                     yield event
                             elif line.startswith("data:"):
+                                # Dispatch a previous data field if an upstream omits the blank separator.
+                                if data_lines:
+                                    event = await consume_event()
+                                    if event == "done":
+                                        return
+                                    if event is not None:
+                                        yield event
                                 data_lines.append(line[5:].lstrip())
                         event = await consume_event()
                         if event == "done":
