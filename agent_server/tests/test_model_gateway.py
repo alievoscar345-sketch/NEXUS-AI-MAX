@@ -22,9 +22,9 @@ def config(name="test", purposes=("general", "planning", "evaluation"), priority
 class GatewayTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_parses_content_and_done(self):
         body = (
-            'data: {"choices":[{"index":0,"delta":{"role":"assistant"}}]}\\n\\n'
-            'data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}\\n\\n'
-            'data: [DONE]\\n\\n'
+            'data: {"choices":[{"index":0,"delta":{"role":"assistant"}}]}\n\n'
+            'data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}\n\n'
+            'data: [DONE]\n\n'
         )
         def handler(request):
             self.assertTrue(json.loads(request.content)["stream"])
@@ -40,7 +40,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             calls.append(1)
             if len(calls) == 1:
                 raise httpx.ConnectError("offline", request=request)
-            return httpx.Response(200, text='data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\\n\\ndata: [DONE]\\n\\n')
+            return httpx.Response(200, text='data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\ndata: [DONE]\n\n')
         gateway = ModelGateway([config("first"), config("second", priority=2)],
                                transport=httpx.MockTransport(handler))
         chunks = [chunk async for chunk in gateway.stream_messages([{"role":"user","content":"hi"}])]
@@ -52,12 +52,12 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         def handler(request):
             calls.append(1)
             async def body():
-                yield b'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\\n\\n'
+                yield b'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\n\n'
                 raise httpx.ReadError("connection dropped", request=request)
             return httpx.Response(200, stream=httpx.AsyncByteStream.__subclasshook__ if False else None)
         class BrokenStream(httpx.AsyncByteStream):
             async def __aiter__(self):
-                yield b'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\\n\\n'
+                yield b'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\n\n'
                 raise httpx.ReadError("connection dropped")
             async def aclose(self):
                 return None

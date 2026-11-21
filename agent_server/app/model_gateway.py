@@ -272,7 +272,7 @@ class ModelGateway:
                         text_parts.append(part["text"])
                     elif isinstance(part, dict) and part.get("type") == "image_url":
                         requires_vision = True
-        task_type = "vision" if requires_vision else infer_task_type("\\n".join(text_parts))
+        task_type = "vision" if requires_vision else infer_task_type("\n".join(text_parts))
         candidates = self._select(purpose, task_type, "vision" if requires_vision else None)
         stream_id = "nexus-" + __import__("uuid").uuid4().hex
         created = int(__import__("time").time())
@@ -298,7 +298,7 @@ class ModelGateway:
                             nonlocal emitted
                             if not data_lines:
                                 return None
-                            raw = "\\n".join(data_lines)
+                            raw = "\n".join(data_lines)
                             data_lines.clear()
                             if raw.strip() == "[DONE]":
                                 return "done"
