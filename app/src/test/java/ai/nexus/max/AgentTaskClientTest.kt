@@ -236,6 +236,17 @@ class AgentTaskClientTest {
         assertEquals("github_pat_test-secret", payload.getString("token"))
     }
 
+    @Test fun connectGitHubRejectsHttpServerBeforeSendingCredential() {
+        val insecureClient = AgentTaskClient("http://example.com", "test-token", transport)
+        try {
+            insecureClient.connectGitHub("owner/app", "github_pat_test-secret")
+            fail("Expected HTTPS requirement")
+        } catch (error: IllegalArgumentException) {
+            assertTrue(error.message!!.contains("HTTPS"))
+        }
+        assertNull(transport.lastRequest)
+    }
+
     @Test fun connectGitHubRejectsMalformedRepositoryNames() {
         try {
             client.connectGitHub("../private", "github_pat_test-secret")
