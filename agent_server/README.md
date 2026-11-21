@@ -70,6 +70,19 @@ The Android app currently extracts text locally from TXT, MD, CSV, JSON, XML, PD
 
 The chat gateway does not yet proxy provider-specific web-search or reasoning tools. Those remain in the direct-provider mode until compatible server-side tool adapters are implemented.
 
+## Scheduled automations
+
+The backend now stores owner-scoped automations and dispatches due schedules into the same durable task queue used by the autonomous agent. Supported schedules are one-time timestamps, daily local times, selected weekdays, and recurring intervals (5 minutes to 7 days). Daily and weekly schedules use an IANA time-zone identifier, so their wall-clock time follows daylight-saving changes. The scheduler runs inside the single backend worker; the service must remain online for a scheduled run to be dispatched. Missed runs are dispatched once after the service returns rather than replayed repeatedly.
+
+- `GET /v1/automations` — list schedules and latest task status.
+- `POST /v1/automations` — create a schedule.
+- `PUT /v1/automations/{id}` — replace its configuration.
+- `POST /v1/automations/{id}/pause` and `/resume` — pause or resume a schedule.
+- `POST /v1/automations/{id}/run` — trigger it immediately.
+- `DELETE /v1/automations/{id}` — delete the schedule and its run index; already-created tasks remain in task history.
+
+A schedule creates ordinary NEXUS agent tasks. It does not grant new tool permissions: existing restrictions and approval gates still apply. This is a single-instance prototype scheduler, not a highly available distributed scheduler.
+
 ## Task API
 
 Every `/v1` route requires `Authorization: Bearer` with `NEXUS_AGENT_API_KEY`.
