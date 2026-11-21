@@ -8,6 +8,7 @@ import time
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import unittest
@@ -379,6 +380,45 @@ class DurableTaskTests(unittest.TestCase):
                 self.assertTrue(all(call.args[1] != "PATCH" for call in github_api.await_args_list))
         finally:
             main._LEASE_OWNER.reset(stale)
+
+    def test_github_android_build_dispatch_waits_and_publishes_signed_apk(self):
+        from unittest.mock import AsyncMock
+        now = time.time()
+        worker = main.WORKER_ID + ":android-build"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("android-build-task", "build release apk", "running", now, now, worker, now + 600),
+            )
+        created_at = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+        token = main._LEASE_OWNER.set(worker)
+        try:
+            with patch.object(main, "_github_api", new=AsyncMock(side_effect=[
+                {},
+                {"workflow_runs": [{"id": 123, "created_at": created_at,
+                                    "head_branch": "nexus-agent/task-android-build-task",
+                                    "html_url": "https://github.com/owner/repo/actions/runs/123"}]},
+                {"status": "completed", "conclusion": "success"},
+                {"artifacts": [{"id": 77, "name": "NEXUS-AI-MAX-release-apk", "expired": False}]},
+            ])) as github_api, patch.object(
+                main, "_download_github_actions_artifact",
+                new=AsyncMock(return_value=[{"name": "app-release.apk", "bytes": 1234}]),
+            ) as download:
+                result = asyncio.run(main._github_build_android(
+                    "android-build-task",
+                    {"token": "ghp_test", "repo_full_name": "owner/repo"},
+                    "nexus-agent/task-android-build-task",
+                    True,
+                ))
+            self.assertEqual(result["build_status"], "success")
+            self.assertEqual(result["artifacts"][0]["name"], "app-release.apk")
+            dispatch_payload = github_api.await_args_list[0].args[3]
+            self.assertEqual(dispatch_payload["ref"], "nexus-agent/task-android-build-task")
+            self.assertEqual(dispatch_payload["inputs"]["require_signed_release"], "true")
+            download.assert_awaited_once()
+        finally:
+            main._LEASE_OWNER.reset(token)
 
     def test_github_write_actions_reject_protected_branches(self):
         for branch_name in ("main", "master", "nexus-1.0-development", "feature/unsafe"):
