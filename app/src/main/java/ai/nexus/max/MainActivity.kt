@@ -1519,7 +1519,6 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             newTitle = if (editLineIndex == 0) text.trim().replace("\n", " ").take(36).ifBlank { "Новый диалог" } else oldChat.title
         } else {
             val userLine = ChatLine("user", text.trim(), pendingAttachments)
-            pendingAttachments = emptyList()
             history = oldChat.lines + userLine
             newTitle = if (oldChat.lines.isEmpty()) text.trim().replace("\n", " ").take(36).ifBlank { "Новый диалог" } else oldChat.title
         }
@@ -1533,6 +1532,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 return
             }
         }
+        if (editLineIndex == null) pendingAttachments = emptyList()
         val placeholder = ChatLine("assistant", "")
         updateChat(chatId, oldChat.copy(title = newTitle, updatedAt = System.currentTimeMillis(), lines = history + placeholder))
         busy = true
