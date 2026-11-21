@@ -1,0 +1,70 @@
+name: NEXUS Developer Agent
+
+on:
+  push:
+    branches:
+      - nexus-developer-agent/bootstrap
+    paths:
+      - developer_agent/TASK.md
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Engineering task for NEXUS Developer Agent"
+        required: true
+        type: string
+      model:
+        description: "Exact AnyModel model ID"
+        required: true
+        default: "claude-fable-5-2"
+        type: string
+  pull_request:
+    paths:
+      - "developer_agent/**"
+      - ".github/workflows/nexus-developer-agent.yml"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: nexus-developer-agent-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r developer_agent/requirements.txt
+      - name: Compile and run unit tests
+        working-directory: developer_agent
+        run: |
+          python -m compileall -q .
+          python -m unittest discover -s tests -v
+
+  developer-agent:
+    needs: validate
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r developer_agent/requirements.txt
+      - name: Run NEXUS Developer Agent
+        working-directory: developer_agent
+        env:
+          ANYMODEL_API_KEY: ${{ secrets.ANYMODEL_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          NEXUS_DEV_PROMPT: ${{ inputs.prompt }}
+          NEXUS_DEV_PROMPT_FILE: TASK.md
+          NEXUS_DEV_MODEL: ${{ inputs.model || 'claude-fable-5-2' }}
+          NEXUS_DEV_BASE_BRANCH: gemini-hydrogen-development
+        run: python agent.py
