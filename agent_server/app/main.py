@@ -2197,6 +2197,8 @@ async def connect_github(body: GitHubConnectInput, owner_id: str = Depends(auth)
         encrypted = encrypt_secret(token)
     except CredentialEncryptionError as exc:
         raise HTTPException(503, "Credential encryption is not configured") from exc
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(502, f"GitHub API returned HTTP {exc.response.status_code}") from exc
     except RuntimeError as exc:
         raise HTTPException(502, str(exc)) from exc
     now = time.time()
@@ -2303,6 +2305,8 @@ async def _github_api(token: str, method: str, endpoint: str,
                                         headers=headers, json=payload)
     if response.status_code == 404 and allow_not_found:
         return None
+    if response.status_code in {408, 425, 429, 500, 502, 503, 504}:
+        response.raise_for_status()
     if response.status_code >= 400:
         detail = ""
         try:
@@ -2585,7 +2589,7 @@ async def _github_commit_task_workspace(tid: str, integration: dict[str, str],
     excluded_dirs = {".git", ".gradle", ".idea", ".kotlin", "build", "node_modules", "captures"}
     excluded_names = {".nexus-github-checkout.json", "local.properties", ".DS_Store"}
     excluded_suffixes = {".apk", ".aab", ".jks", ".keystore", ".zip"}
-    pending: list[tuple[str, bytes, str]] = []
+    pending: list[tuple[str, Path, str, int]] = []
     skipped: list[str] = []
     for current_root, dirs, files in os.walk(root, followlinks=False):
         current = Path(current_root)
@@ -2615,14 +2619,15 @@ async def _github_commit_task_workspace(tid: str, integration: dict[str, str],
             ).hexdigest()
             if existing.get(relative) == git_blob_sha:
                 continue
-            pending.append((relative, data, git_blob_sha))
+            pending.append((relative, resolved, git_blob_sha, len(data)))
     if not pending:
         return {"branch": selected_branch, "unchanged": True, "files_committed": 0,
                 "files_skipped": len(skipped), "skipped_paths": skipped[:100],
                 "commit": None}
     semaphore = asyncio.Semaphore(4)
-    async def create_blob(item: tuple[str, bytes, str]) -> dict[str, Any]:
-        relative, data, _ = item
+    async def create_blob(item: tuple[str, Path, str, int]) -> dict[str, Any]:
+        relative, source_path, _, _ = item
+        data = source_path.read_bytes()
         async with semaphore:
             blob = await _github_api(token, "POST", f"/repos/{repo_path}/git/blobs", {
                 "content": base64.b64encode(data).decode("ascii"), "encoding": "base64"
@@ -2647,7 +2652,7 @@ async def _github_commit_task_workspace(tid: str, integration: dict[str, str],
     await run_db(_assert_task_lease_for_github_write, tid)
     await _github_api(token, "PATCH", ref_endpoint, {"sha": new_commit_sha, "force": False})
     return {"branch": selected_branch, "unchanged": False,
-            "files_committed": len(entries), "bytes_committed": sum(len(item[1]) for item in pending),
+            "files_committed": len(entries), "bytes_committed": sum(item[3] for item in pending),
             "files_skipped": len(skipped), "skipped_paths": skipped[:100],
             "commit": (created or {}).get("html_url"), "commit_sha": new_commit_sha}
 
