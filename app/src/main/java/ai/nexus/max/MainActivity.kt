@@ -991,36 +991,50 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun uploadProjectBinaryFile(projectId: String, uri: Uri, displayName: String) {
-        if (projectFilesBusy) return
+    fun uploadProjectBinaryFiles(projectId: String, files: List<Pair<Uri, String>>) {
+        if (projectFilesBusy || files.isEmpty()) return
         projectFilesBusy = true
         viewModelScope.launch {
+            val completed = mutableListOf<String>()
+            val failures = mutableListOf<String>()
             try {
                 val resolver = getApplication<Application>().contentResolver
-                val bytes = withContext(Dispatchers.IO) {
-                    resolver.openInputStream(uri)?.use { input ->
-                        val output = ByteArrayOutputStream()
-                        val buffer = ByteArray(64 * 1024)
-                        while (true) {
-                            val count = input.read(buffer)
-                            if (count < 0) break
-                            if (output.size() + count > 50 * 1024 * 1024) throw java.io.IOException("Файл превышает 50 МиБ.")
-                            output.write(buffer, 0, count)
+                for ((uri, displayName) in files) {
+                    try {
+                        val bytes = withContext(Dispatchers.IO) {
+                            resolver.openInputStream(uri)?.use { input ->
+                                val output = ByteArrayOutputStream()
+                                val buffer = ByteArray(64 * 1024)
+                                while (true) {
+                                    val count = input.read(buffer)
+                                    if (count < 0) break
+                                    if (output.size() + count > 50 * 1024 * 1024) throw java.io.IOException("Файл превышает 50 МиБ.")
+                                    output.write(buffer, 0, count)
+                                }
+                                output.toByteArray()
+                            } ?: throw java.io.IOException("Не удалось открыть файл.")
                         }
-                        output.toByteArray()
-                    } ?: throw java.io.IOException("Не удалось открыть выбранный файл.")
-                }
-                val mime = resolver.getType(uri) ?: "application/octet-stream"
-                val safeName = displayName.replace(Regex("[\\\\/\\\\\\\\]"), "_").take(180).ifBlank { "upload.bin" }
-                val revision = withContext(Dispatchers.IO) {
-                    agentTaskClient().uploadProjectBinaryFile(projectId, safeName, bytes, mime)
+                        val mime = resolver.getType(uri) ?: "application/octet-stream"
+                        val safeName = displayName.replace(Regex("[\\\\/\\\\\\\\]"), "_").take(180).ifBlank { "upload.bin" }
+                        withContext(Dispatchers.IO) {
+                            agentTaskClient().uploadProjectBinaryFile(projectId, safeName, bytes, mime)
+                        }
+                        completed += safeName
+                    } catch (error: Exception) {
+                        failures += "$displayName: ${error.message ?: "ошибка загрузки"}"
+                    }
                 }
                 projectFiles = withContext(Dispatchers.IO) { agentTaskClient().listProjectFiles(projectId) }
-                selectedProjectFilePath = safeName
-                projectFileVersions = withContext(Dispatchers.IO) { agentTaskClient().listProjectFileVersions(projectId, safeName) }
-                projectFilesMessage = "Загружен $safeName · версия ${revision.revision} · ${revision.bytes} байт."
-            } catch (e: Exception) { projectFilesMessage = e.message ?: "Не удалось загрузить файл." }
-            finally { projectFilesBusy = false }
+                projectFilesMessage = buildString {
+                    if (completed.isNotEmpty()) append("Загружено: ${completed.joinToString(", ")}.")
+                    if (failures.isNotEmpty()) {
+                        if (isNotEmpty()) append(" ")
+                        append("Ошибки: ${failures.joinToString("; ")}")
+                    }
+                }
+            } catch (e: Exception) {
+                projectFilesMessage = e.message ?: "Не удалось обновить файлы проекта."
+            } finally { projectFilesBusy = false }
         }
     }
 
@@ -4468,12 +4482,15 @@ private fun ProjectFilesDialog(vm: NexusViewModel, project: NexusProject, onDism
     val context = LocalContext.current
     var restoreTarget by remember { mutableStateOf<NexusProjectFile?>(null) }
     var pendingDownloadPath by remember { mutableStateOf<String?>(null) }
-    val binaryImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            val name = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) cursor.getString(0) else null
-            } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "upload.bin"
-            vm.uploadProjectBinaryFile(project.id, uri, name)
+    val binaryImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) {
+            val files = uris.map { uri ->
+                val name = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getString(0) else null
+                } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "upload.bin"
+                uri to name
+            }
+            vm.uploadProjectBinaryFiles(project.id, files)
         }
     }
     val binaryExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
@@ -4503,7 +4520,7 @@ private fun ProjectFilesDialog(vm: NexusViewModel, project: NexusProject, onDism
                     color = Muted, fontSize = 9.sp, lineHeight = 13.sp)
                 Button(onClick = { binaryImportLauncher.launch(arrayOf("*/*")) },
                     enabled = !vm.projectFilesBusy, modifier = Modifier.fillMaxWidth()) {
-                    Text("Импортировать файл с устройства")
+                    Text("Импортировать файлы с устройства")
                 }
                 Text("ФАЙЛЫ · ${vm.projectFiles.size}", color = Muted, fontSize = 9.sp,
                     fontWeight = FontWeight.Bold)
