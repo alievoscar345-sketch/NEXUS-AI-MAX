@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import base64
 import hashlib
 import re
@@ -33,6 +34,11 @@ MAX_STEP_ATTEMPTS = max(1, min(int(os.getenv("NEXUS_AGENT_STEP_MAX_ATTEMPTS", "3
 RETRY_BASE_SECONDS = max(1, min(int(os.getenv("NEXUS_AGENT_RETRY_BASE_SECONDS", "10")), 300))
 LEASE_SECONDS = MAX_SECONDS + 180
 WORKER_ID = str(uuid.uuid4())
+_LEASE_OWNER = contextvars.ContextVar("nexus_lease_owner", default=WORKER_ID)
+
+
+def _current_lease_owner() -> str:
+    return _LEASE_OWNER.get()
 WORKSPACE.mkdir(parents=True, exist_ok=True)
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -160,7 +166,7 @@ def _worker_event(tid: str, kind: str, message: str) -> bool:
         c.execute("BEGIN IMMEDIATE")
         owned = c.execute("""SELECT 1 FROM tasks WHERE id=? AND status IN ('running','planning')
             AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
-            (tid, WORKER_ID, now)).fetchone()
+            (tid, _current_lease_owner(), now)).fetchone()
         if not owned:
             return False
         c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
@@ -294,14 +300,14 @@ def _persist_plan(tid: str, steps: list[Any], max_attempts: int) -> bool:
         c.execute("BEGIN IMMEDIATE")
         owned = c.execute("""SELECT 1 FROM tasks WHERE id=? AND status='planning'
             AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
-            (tid, WORKER_ID, now)).fetchone()
+            (tid, _current_lease_owner(), now)).fetchone()
         if not owned:
             return False
         existing = c.execute("SELECT COUNT(*) AS n FROM task_steps WHERE task_id=?", (tid,)).fetchone()["n"]
         if existing:
             c.execute("""UPDATE tasks SET status='running',updated_at=? WHERE id=?
                 AND status='planning' AND lease_owner=? AND lease_expires_at>?""",
-                (now, tid, WORKER_ID, now))
+                (now, tid, _current_lease_owner(), now))
             return True
         safe_steps = [x for x in steps if isinstance(x, dict)]
         for index, step in enumerate(safe_steps):
@@ -317,7 +323,7 @@ def _persist_plan(tid: str, steps: list[Any], max_attempts: int) -> bool:
         changed = c.execute("""UPDATE tasks SET plan_json=?,status='running',updated_at=?
             WHERE id=? AND status='planning' AND cancel_requested=0
             AND lease_owner=? AND lease_expires_at>?""",
-            (json.dumps(safe_steps, ensure_ascii=False), now, tid, WORKER_ID, now)).rowcount
+            (json.dumps(safe_steps, ensure_ascii=False), now, tid, _current_lease_owner(), now)).rowcount
         return bool(changed)
 
 
@@ -328,7 +334,7 @@ def _create_approval(tid: str, description: str, idempotency_key: str) -> str | 
         c.execute("BEGIN IMMEDIATE")
         owned = c.execute("""SELECT 1 FROM tasks WHERE id=? AND status='running'
             AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
-            (tid, WORKER_ID, now)).fetchone()
+            (tid, _current_lease_owner(), now)).fetchone()
         if not owned:
             return None
         c.execute("""INSERT OR IGNORE INTO approvals(id,task_id,description,status,created_at,idempotency_key)
@@ -355,7 +361,7 @@ def _save_artifact(tid: str, filename: str, content: str) -> str | None:
         changed = c.execute("""UPDATE tasks SET lease_expires_at=?,updated_at=?
             WHERE id=? AND status='running' AND cancel_requested=0
             AND lease_owner=? AND lease_expires_at>?""",
-            (now + LEASE_SECONDS, now, tid, WORKER_ID, now)).rowcount
+            (now + LEASE_SECONDS, now, tid, _current_lease_owner(), now)).rowcount
         if not changed:
             return None
         try:
@@ -422,7 +428,7 @@ def _is_transient(exc: Exception) -> bool:
 def _release_task(tid: str):
     with db() as c:
         c.execute("UPDATE tasks SET lease_owner='',lease_expires_at=NULL WHERE id=? AND lease_owner=?",
-                  (tid, WORKER_ID))
+                  (tid, _current_lease_owner()))
 
 
 def _task_cancelled(tid: str) -> bool:
@@ -442,7 +448,7 @@ def _set_task_planning(tid: str) -> bool:
     with db() as c:
         changed = c.execute("""UPDATE tasks SET status='planning',updated_at=? WHERE id=?
             AND status='running' AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
-            (now, tid, WORKER_ID, now)).rowcount
+            (now, tid, _current_lease_owner(), now)).rowcount
     return bool(changed)
 
 
@@ -476,7 +482,7 @@ def _set_task_waiting_for_approval(tid: str) -> bool:
         changed = c.execute("""UPDATE tasks SET status='waiting_for_approval',lease_owner='',
             lease_expires_at=NULL,updated_at=? WHERE id=? AND status='running'
             AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
-            (now, tid, WORKER_ID, now)).rowcount
+            (now, tid, _current_lease_owner(), now)).rowcount
     return bool(changed)
 
 
@@ -486,7 +492,7 @@ def _set_task_retry_wait(tid: str, next_at: float) -> bool:
         changed = c.execute("""UPDATE tasks SET status='retry_wait',next_attempt_at=?,lease_owner='',
             lease_expires_at=NULL,updated_at=? WHERE id=? AND status='running'
             AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
-            (next_at, now, tid, WORKER_ID, now)).rowcount
+            (next_at, now, tid, _current_lease_owner(), now)).rowcount
     return bool(changed)
 
 
@@ -497,7 +503,7 @@ def _complete_task(tid: str, summary: str, results_json: str) -> bool:
             error='',next_attempt_at=NULL,lease_owner='',lease_expires_at=NULL,updated_at=?
             WHERE id=? AND status='running' AND cancel_requested=0
             AND lease_owner=? AND lease_expires_at>?""",
-            (summary[:12000], results_json, now, tid, WORKER_ID, now)).rowcount
+            (summary[:12000], results_json, now, tid, _current_lease_owner(), now)).rowcount
     return bool(changed)
 
 
@@ -510,7 +516,7 @@ def _claim_step(tid: str, step_id: str):
                 SELECT 1 FROM tasks WHERE id=? AND status='running'
                 AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?
             )""",
-            (time.time(), step_id, tid, tid, WORKER_ID, time.time())).rowcount
+            (time.time(), step_id, tid, tid, _current_lease_owner(), time.time())).rowcount
         if not changed:
             return None
         return c.execute("SELECT * FROM task_steps WHERE id=? AND task_id=?",
@@ -523,7 +529,7 @@ def _save_step_result(tid: str, step_id: str, status: str, result_json: str) -> 
         c.execute("BEGIN IMMEDIATE")
         owned = c.execute("""SELECT 1 FROM tasks WHERE id=? AND status='running'
             AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
-            (tid, WORKER_ID, now)).fetchone()
+            (tid, _current_lease_owner(), now)).fetchone()
         if not owned:
             return False
         changed = c.execute("""UPDATE task_steps SET status=?,result_json=?,updated_at=?
@@ -535,7 +541,7 @@ def _save_step_result(tid: str, step_id: str, status: str, result_json: str) -> 
                          (tid,)).fetchall()
         all_results = [json.loads(x["result_json"]) for x in rows]
         c.execute("UPDATE tasks SET results_json=?,updated_at=? WHERE id=? AND status='running' AND lease_owner=?",
-                  (json.dumps(all_results, ensure_ascii=False), now, tid, WORKER_ID))
+                  (json.dumps(all_results, ensure_ascii=False), now, tid, _current_lease_owner()))
         return True
 
 
@@ -545,7 +551,7 @@ def _record_step_failure(tid: str, step_id: str, retry: bool, next_at: float | N
         c.execute("BEGIN IMMEDIATE")
         owned = c.execute("""SELECT 1 FROM tasks WHERE id=? AND status='running'
             AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
-            (tid, WORKER_ID, now)).fetchone()
+            (tid, _current_lease_owner(), now)).fetchone()
         if not owned:
             return False
         changed = c.execute("""UPDATE task_steps SET status=?,error=?,next_attempt_at=?,updated_at=?
@@ -558,12 +564,12 @@ def _record_step_failure(tid: str, step_id: str, retry: bool, next_at: float | N
                 lease_owner='',lease_expires_at=NULL,updated_at=?
                 WHERE id=? AND status='running' AND cancel_requested=0
                 AND lease_owner=? AND lease_expires_at>?""",
-                (next_at, now, tid, WORKER_ID, now)).rowcount
+                (next_at, now, tid, _current_lease_owner(), now)).rowcount
         else:
             task_changed = c.execute("""UPDATE tasks SET status='failed',error=?,lease_owner='',
                 lease_expires_at=NULL,updated_at=? WHERE id=? AND status='running'
                 AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
-                (error[:2000], now, tid, WORKER_ID, now)).rowcount
+                (error[:2000], now, tid, _current_lease_owner(), now)).rowcount
         if not task_changed:
             c.rollback()
             return False
@@ -576,7 +582,7 @@ def _record_task_failure(tid: str, exc: Exception, error: str) -> bool | None:
         c.execute("BEGIN IMMEDIATE")
         current = c.execute("""SELECT attempt_count,max_attempts FROM tasks WHERE id=?
             AND status='running' AND cancel_requested=0 AND lease_owner=?
-            AND lease_expires_at>?""", (tid, WORKER_ID, now)).fetchone()
+            AND lease_expires_at>?""", (tid, _current_lease_owner(), now)).fetchone()
         if not current:
             return None
         retry = bool(_is_transient(exc) and current["attempt_count"] < current["max_attempts"])
@@ -585,7 +591,7 @@ def _record_task_failure(tid: str, exc: Exception, error: str) -> bool | None:
         changed = c.execute("""UPDATE tasks SET status=?,error=?,next_attempt_at=?,
             lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND status='running'
             AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
-            (status, error[:2000], next_at, now, tid, WORKER_ID, now)).rowcount
+            (status, error[:2000], next_at, now, tid, _current_lease_owner(), now)).rowcount
         return retry if changed else None
 
 
@@ -740,15 +746,28 @@ def claim_task() -> str | None:
         changed = c.execute("""UPDATE tasks SET status='running',lease_owner=?,lease_expires_at=?,
             attempt_count=attempt_count+1,next_attempt_at=NULL,updated_at=?
             WHERE id=? AND status IN ('queued','retry_wait') AND cancel_requested=0""",
-            (WORKER_ID, now + LEASE_SECONDS, now, tid)).rowcount
+            (f"{WORKER_ID}:{uuid.uuid4()}", now + LEASE_SECONDS, now, tid)).rowcount
         return tid if changed else None
+
+
+def _task_lease_owner(tid: str) -> str | None:
+    with db() as c:
+        row = c.execute("SELECT lease_owner FROM tasks WHERE id=?", (tid,)).fetchone()
+    return row["lease_owner"] if row else None
 
 
 async def worker():
     while True:
         tid = await run_db(claim_task)
         if tid:
-            await process(tid)
+            owner = await run_db(_task_lease_owner, tid)
+            if not owner:
+                continue
+            context_token = _LEASE_OWNER.set(owner)
+            try:
+                await process(tid)
+            finally:
+                _LEASE_OWNER.reset(context_token)
         else:
             await asyncio.sleep(2)
 

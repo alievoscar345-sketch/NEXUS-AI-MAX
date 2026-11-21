@@ -48,7 +48,7 @@ class DurableTaskTests(unittest.TestCase):
                                ("task-a",)).fetchone()
         self.assertEqual(row["status"], "running")
         self.assertEqual(row["attempt_count"], 1)
-        self.assertEqual(row["lease_owner"], main.WORKER_ID)
+        self.assertTrue(row["lease_owner"].startswith(main.WORKER_ID + ":"))
         self.assertGreater(row["lease_expires_at"], now)
 
     def test_persists_steps_and_stable_idempotency_key(self):
