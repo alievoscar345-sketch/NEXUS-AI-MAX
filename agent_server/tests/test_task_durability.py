@@ -129,6 +129,29 @@ class DurableTaskTests(unittest.TestCase):
             self.assertEqual(result["bytes"], len("edited".encode("utf-8")))
             self.assertEqual(main._workspace_read("workspace-edit", "report.md")["content"], "edited")
 
+    def test_task_artifact_api_lists_reads_and_enforces_owner_scope(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id) VALUES(?,?,?,?,?,?)",
+                ("artifact-api", "artifact api", "completed", now, now, "owner-a"),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        with patch.object(main, "WORKSPACE", workspace):
+            workspace.mkdir()
+            (workspace / "artifact-api-report.md").write_text("Generated NEXUS report", encoding="utf-8")
+            (workspace / "another-task-secret.txt").write_text("private", encoding="utf-8")
+            listing = main.list_task_artifacts("artifact-api", owner_id="owner-a")
+            read = main.read_task_artifact("artifact-api", "report.md", owner_id="owner-a")
+            self.assertEqual([item["name"] for item in listing["artifacts"]], ["report.md"])
+            self.assertEqual(read["content"], "Generated NEXUS report")
+            with self.assertRaises(main.HTTPException) as denied:
+                main.list_task_artifacts("artifact-api", owner_id="owner-b")
+            self.assertEqual(denied.exception.status_code, 404)
+            with self.assertRaises(main.HTTPException) as traversal:
+                main.read_task_artifact("artifact-api", "../another-task-secret.txt", owner_id="owner-a")
+            self.assertEqual(traversal.exception.status_code, 422)
+
     def test_get_task_returns_event_ids_and_supports_incremental_cursor(self):
         now = time.time()
         with main.db() as conn:
