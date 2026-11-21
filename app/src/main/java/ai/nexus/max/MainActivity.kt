@@ -3184,6 +3184,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     if (vm.remoteProviders.isEmpty()) {
                         Text("Список пуст или сервер ещё не подключён.", color = Muted, fontSize = 10.sp)
                     } else {
+                        Text("Проверка изображений отправляет тестовую картинку провайдеру и может списать небольшое количество токенов.", color = Muted, fontSize = 9.sp, lineHeight = 12.sp)
                         vm.remoteProviders.forEach { remote ->
                             Surface(color = PanelRaised, shape = RoundedCornerShape(10.dp)) {
                                 Column(Modifier.fillMaxWidth().padding(9.dp)) {
