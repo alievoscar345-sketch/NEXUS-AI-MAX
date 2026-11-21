@@ -1460,6 +1460,69 @@ def _validate_automation(body: AutomationInput, after_ts: float) -> float:
     return next_at
 
 
+def _skill_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {"id": row["id"], "name": row["name"], "description": row["description"],
+            "instructions": row["instructions"], "category": row["category"],
+            "enabled": bool(row["enabled"]), "created_at": row["created_at"],
+            "updated_at": row["updated_at"]}
+
+
+@app.get("/v1/skills", dependencies=[Depends(auth)])
+def list_skills(owner_id: str = Depends(auth)):
+    with db() as c:
+        rows = c.execute("SELECT * FROM skills WHERE owner_id=? ORDER BY enabled DESC,updated_at DESC",
+                         (owner_id,)).fetchall()
+    return {"skills": [_skill_dict(row) for row in rows]}
+
+
+@app.post("/v1/skills", dependencies=[Depends(auth)])
+def create_skill(body: SkillInput, owner_id: str = Depends(auth)):
+    now = time.time()
+    skill_id = str(uuid.uuid4())
+    with db() as c:
+        count = c.execute("SELECT COUNT(*) AS n FROM skills WHERE owner_id=?", (owner_id,)).fetchone()["n"]
+        if count >= 100:
+            raise HTTPException(409, "Skill limit reached (100 records)")
+        c.execute("""INSERT INTO skills(id,owner_id,name,description,instructions,category,enabled,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?)""",
+            (skill_id, owner_id, body.name.strip(), body.description.strip(), body.instructions.strip(),
+             body.category, 1 if body.enabled else 0, now, now))
+        row = c.execute("SELECT * FROM skills WHERE id=? AND owner_id=?", (skill_id, owner_id)).fetchone()
+    return {"skill": _skill_dict(row)}
+
+
+@app.patch("/v1/skills/{skill_id}", dependencies=[Depends(auth)])
+def update_skill(skill_id: str, body: SkillUpdateInput, owner_id: str = Depends(auth)):
+    changes = body.model_dump(exclude_unset=True, exclude_none=True)
+    if not changes:
+        raise HTTPException(422, "At least one skill field must be supplied")
+    with db() as c:
+        row = c.execute("SELECT * FROM skills WHERE id=? AND owner_id=?", (skill_id, owner_id)).fetchone()
+        if not row:
+            raise HTTPException(404, "Skill not found")
+        values = {key: changes.get(key, row[key]) for key in
+                  ("name", "description", "instructions", "category", "enabled")}
+        if not str(values["name"]).strip() or not str(values["instructions"]).strip():
+            raise HTTPException(422, "Skill name and instructions cannot be blank")
+        now = time.time()
+        c.execute("""UPDATE skills SET name=?,description=?,instructions=?,category=?,enabled=?,updated_at=?
+            WHERE id=? AND owner_id=?""",
+            (str(values["name"]).strip(), str(values["description"]).strip(),
+             str(values["instructions"]).strip(), values["category"], 1 if values["enabled"] else 0,
+             now, skill_id, owner_id))
+        updated = c.execute("SELECT * FROM skills WHERE id=? AND owner_id=?", (skill_id, owner_id)).fetchone()
+    return {"skill": _skill_dict(updated)}
+
+
+@app.delete("/v1/skills/{skill_id}", dependencies=[Depends(auth)])
+def delete_skill(skill_id: str, owner_id: str = Depends(auth)):
+    with db() as c:
+        changed = c.execute("DELETE FROM skills WHERE id=? AND owner_id=?", (skill_id, owner_id)).rowcount
+    if not changed:
+        raise HTTPException(404, "Skill not found")
+    return {"id": skill_id, "status": "deleted"}
+
+
 @app.get("/v1/automations", dependencies=[Depends(auth)])
 def list_automations(owner_id: str = Depends(auth)):
     with db() as c:
