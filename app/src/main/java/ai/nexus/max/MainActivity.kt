@@ -525,6 +525,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var memoryMessage by mutableStateOf<String?>(null)
         private set
+    var memorySuggestions by mutableStateOf<List<MemorySuggestion>>(emptyList())
+        private set
+    var memorySuggesting by mutableStateOf(false)
     var nexusAutomations by mutableStateOf<List<NexusAutomation>>(emptyList())
         private set
     var automationBusy by mutableStateOf(false)
@@ -700,6 +703,45 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 memoryBusy = false
             }
         }
+    }
+
+    fun suggestMemoriesFromActiveChat() {
+        if (memorySuggesting || !agentServerConfigured || agentServerUrl.isBlank()) return
+        val userMessages = activeChat?.lines.orEmpty().filter { it.role == "user" }.map { line ->
+            buildString {
+                append(line.content)
+                line.attachments.filter { it.textContent.isNotBlank() }.forEach { append("\\n").append(it.textContent.take(2000)) }
+            }
+        }.filter { it.isNotBlank() }
+        if (userMessages.isEmpty()) { memoryMessage = "В текущем диалоге нет пользовательских сообщений для анализа."; return }
+        memorySuggesting = true
+        viewModelScope.launch {
+            try {
+                memorySuggestions = withContext(Dispatchers.IO) { agentTaskClient().suggestMemories(userMessages) }
+                memoryMessage = if (memorySuggestions.isEmpty()) "Подходящих устойчивых фактов не найдено." else "Найдены черновики. Ничего не сохранено без твоего подтверждения."
+            } catch (e: Exception) {
+                memoryMessage = e.message ?: "Не удалось проанализировать диалог."
+            } finally { memorySuggesting = false }
+        }
+    }
+
+    fun saveMemorySuggestion(suggestion: MemorySuggestion) {
+        if (memoryBusy) return
+        memoryBusy = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { agentTaskClient().createMemory(suggestion.title, suggestion.content, suggestion.category, false) }
+                memorySuggestions = memorySuggestions.filterNot { it == suggestion }
+                nexusMemories = withContext(Dispatchers.IO) { agentTaskClient().listMemories("", 100) }
+                memoryMessage = "Запись сохранена в персональную память."
+            } catch (e: Exception) {
+                memoryMessage = e.message ?: "Не удалось сохранить запись."
+            } finally { memoryBusy = false }
+        }
+    }
+
+    fun dismissMemorySuggestion(suggestion: MemorySuggestion) {
+        memorySuggestions = memorySuggestions.filterNot { it == suggestion }
     }
 
     fun createMemory(title: String, content: String, category: String, pinned: Boolean) {
@@ -3671,6 +3713,28 @@ private fun MemoryManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { vm.refreshMemories(query) }, enabled = !vm.memoryBusy) { Text("Найти") }
                     TextButton(onClick = { query = ""; vm.refreshMemories() }, enabled = !vm.memoryBusy) { Text("Все записи", color = Blue) }
+                }
+                OutlinedButton(onClick = { vm.suggestMemoriesFromActiveChat() },
+                    enabled = !vm.memorySuggesting && !vm.memoryBusy && vm.agentServerConfigured && vm.agentServerUrl.isNotBlank()) {
+                    Text(if (vm.memorySuggesting) "Анализ диалога…" else "Найти факты для памяти из текущего диалога")
+                }
+                if (vm.memorySuggestions.isNotEmpty()) {
+                    Text("ЧЕРНОВИКИ · СОХРАНЯЮТСЯ ТОЛЬКО ПО ТВОЕМУ ВЫБОРУ", color = Muted, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    vm.memorySuggestions.forEach { suggestion ->
+                        Column(Modifier.fillMaxWidth().background(PanelRaised, RoundedCornerShape(10.dp)).padding(9.dp)) {
+                            Text(suggestion.title, color = MainText, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            Text(suggestion.category, color = Muted, fontSize = 9.sp)
+                            Text(suggestion.content, color = MainText, fontSize = 10.sp)
+                            Row {
+                                TextButton(onClick = { vm.saveMemorySuggestion(suggestion) }, enabled = !vm.memoryBusy) {
+                                    Text("Сохранить", color = Blue, fontSize = 10.sp)
+                                }
+                                TextButton(onClick = { vm.dismissMemorySuggestion(suggestion) }, enabled = !vm.memoryBusy) {
+                                    Text("Отклонить", color = Muted, fontSize = 10.sp)
+                                }
+                            }
+                        }
+                    }
                 }
                 Divider(color = DividerTone)
                 Text(if (editingId == null) "НОВАЯ ЗАПИСЬ" else "РЕДАКТИРОВАНИЕ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
