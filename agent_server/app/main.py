@@ -1247,12 +1247,15 @@ def _save_project_workspace_file(tid: str, relative_path: str, message: str = ""
     if not source.is_file():
         raise FileNotFoundError("Task workspace file not found")
     data = source.read_bytes()
-    if len(data) > 2 * 1024 * 1024:
-        raise ValueError("Project text files are limited to 2 MiB per revision")
+    if len(data) > MAX_PROJECT_FILE_BYTES:
+        raise ValueError(f"Project files are limited to {MAX_PROJECT_FILE_BYTES} bytes per revision")
     try:
         data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValueError("Only UTF-8 text files can be saved to project history") from exc
+        is_binary = False
+        content_type = "text/plain; charset=utf-8"
+    except UnicodeDecodeError:
+        is_binary = True
+        content_type = mimetypes.guess_type(safe_path)[0] or "application/octet-stream"
     now = time.time()
     version_id = str(uuid.uuid4())
     digest = hashlib.sha256(data).hexdigest()
@@ -1276,10 +1279,11 @@ def _save_project_workspace_file(tid: str, relative_path: str, message: str = ""
             WHERE project_id=? AND path=?""", (project_id, safe_path)).fetchone()
         revision = int(latest["revision"] or 0) + 1
         c.execute("""INSERT INTO project_file_versions(
-            id,project_id,owner_id,path,revision,content,sha256,size_bytes,message,created_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            id,project_id,owner_id,path,revision,content,sha256,size_bytes,message,created_at,content_type,is_binary
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
             (version_id, project_id, owner_id, safe_path, revision, sqlite3.Binary(data),
-             digest, len(data), (message.strip() or "Saved from task workspace")[:200], now))
+             digest, len(data), (message.strip() or "Saved from task workspace")[:200], now,
+             content_type, int(is_binary)))
         c.execute("UPDATE projects SET updated_at=? WHERE id=? AND owner_id=?",
                   (now, project_id, owner_id))
         row = c.execute("SELECT * FROM project_file_versions WHERE id=?", (version_id,)).fetchone()
@@ -2261,7 +2265,7 @@ def restore_project_file(project_id: str, path: str, body: ProjectFileRestoreInp
                             (project_id, owner_id)).fetchone()
         if not project:
             raise HTTPException(404, "Project not found")
-        source = c.execute("""SELECT content,sha256,size_bytes FROM project_file_versions
+        source = c.execute("""SELECT content,sha256,size_bytes,content_type,is_binary FROM project_file_versions
             WHERE project_id=? AND owner_id=? AND path=? AND revision=?""",
             (project_id, owner_id, safe_path, body.revision)).fetchone()
         if not source:
@@ -2271,11 +2275,12 @@ def restore_project_file(project_id: str, path: str, body: ProjectFileRestoreInp
         revision = int(latest["revision"] or 0) + 1
         source_content = _verified_project_file_bytes(source)
         c.execute("""INSERT INTO project_file_versions(
-            id,project_id,owner_id,path,revision,content,sha256,size_bytes,message,created_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            id,project_id,owner_id,path,revision,content,sha256,size_bytes,message,created_at,content_type,is_binary
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
             (new_id, project_id, owner_id, safe_path, revision, sqlite3.Binary(source_content),
              source["sha256"], source["size_bytes"],
-             body.message.strip() or f"Restore revision {body.revision}", now))
+             body.message.strip() or f"Restore revision {body.revision}", now,
+             source["content_type"], source["is_binary"]))
         c.execute("UPDATE projects SET updated_at=? WHERE id=? AND owner_id=?",
                   (now, project_id, owner_id))
         row = c.execute("SELECT * FROM project_file_versions WHERE id=?", (new_id,)).fetchone()
