@@ -430,6 +430,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     val activeChat: ChatSession?
         get() = chats.firstOrNull { it.id == activeChatId }
 
+    @Volatile private var activeCall: okhttp3.Call? = null
+    @Volatile private var cancelRequested: Boolean = false
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(25, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
@@ -901,6 +904,11 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         error = null
     }
 
+    fun cancelGeneration() {
+        cancelRequested = true
+        activeCall?.cancel()
+    }
+
     fun send(text: String, useWebSearch: Boolean = false, editLineIndex: Int? = null, useReasoning: Boolean = false) {
         if (busy || (text.isBlank() && pendingAttachments.isEmpty())) return
         if (editLineIndex == null && pendingAttachments.isEmpty()) {
@@ -950,6 +958,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         val placeholder = ChatLine("assistant", "")
         updateChat(chatId, oldChat.copy(title = newTitle, updatedAt = System.currentTimeMillis(), lines = history + placeholder))
         busy = true
+        cancelRequested = false
+        activeCall = null
         error = null
         var streamedAnswer = ""
         var providerMessagesJson: String? = null
@@ -997,7 +1007,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     val body = JSONObject()
                         .put("model", if (useCloudGateway) "auto" else activeModel)
                         .put("messages", messages)
-                        .put("stream", !useCloudGateway)
+                        .put("stream", true)
                     if (useReasoning && cfg.provider == "OpenRouter") {
                         body.put("reasoning", JSONObject().put("effort", "high"))
                     }
@@ -1021,22 +1031,15 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     val request = requestBuilder
                         .post(body.toString().toRequestBody("application/json".toMediaType()))
                         .build()
-                    client.newCall(request).execute().use { response ->
+                    val call = client.newCall(request)
+                    activeCall = call
+                    if (cancelRequested) call.cancel()
+                    call.execute().use { response ->
                         if (!response.isSuccessful) {
                             val raw = response.body?.string().orEmpty()
                             throw IllegalStateException("API " + response.code + ": " + raw.take(350))
                         }
-                        if (useCloudGateway) {
-                            val raw = response.body?.string().orEmpty()
-                            val content = JSONObject(raw).optJSONArray("choices")
-                                ?.optJSONObject(0)?.optJSONObject("message")
-                                ?.optString("content").orEmpty()
-                            if (content.isBlank()) throw IllegalStateException("NEXUS Model Gateway вернул пустой ответ.")
-                            streamedAnswer = content
-                            withContext(Dispatchers.Main) { updateChatLive(chatId, streamedAnswer) }
-                            streamedAnswer
-                        } else {
-                            val reader = response.body?.charStream()?.buffered()
+                        val reader = response.body?.charStream()?.buffered()
                                 ?: throw IllegalStateException("Пустой ответ API")
                             reader.use { stream ->
                                 while (true) {
@@ -1071,7 +1074,6 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                                 }
                             }
                             streamedAnswer
-                        }
                     }
                 }
                 }
@@ -1091,8 +1093,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     val finalLines = if (streamedAnswer.isBlank()) lines else lines + ChatLine("assistant", streamedAnswer)
                     updateChat(chatId, latest.copy(lines = finalLines, updatedAt = System.currentTimeMillis()))
                 }
-                error = e.message ?: "Ошибка запроса"
+                if (!cancelRequested) error = e.message ?: "Ошибка запроса"
             } finally {
+                activeCall = null
                 busy = false
             }
         }
@@ -1881,12 +1884,16 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                             Icon(Icons.Filled.Mic, contentDescription = "Голосовой ввод", tint = ambientAccent, modifier = Modifier.size(21.dp))
                         }
                         IconButton(
-                            enabled = !vm.busy && (input.isNotBlank() || vm.pendingAttachments.isNotEmpty()),
-                            onClick = { vm.send(input, webSearchEnabled, useReasoning = reasoningEnabled); input = "" },
+                            enabled = vm.busy || input.isNotBlank() || vm.pendingAttachments.isNotEmpty(),
+                            onClick = {
+                                if (vm.busy) vm.cancelGeneration()
+                                else { vm.send(input, webSearchEnabled, useReasoning = reasoningEnabled); input = "" }
+                            },
                             modifier = Modifier.size(38.dp)
-                                .background(if (!vm.busy && (input.isNotBlank() || vm.pendingAttachments.isNotEmpty())) ambientAccent else Color(0xFF3A292B), CircleShape)
+                                .background(if (vm.busy) Color(0xFF7A2631) else if (input.isNotBlank() || vm.pendingAttachments.isNotEmpty()) ambientAccent else Color(0xFF3A292B), CircleShape)
                         ) {
-                            Text(if (vm.busy) "…" else "↑", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                            if (vm.busy) Icon(Icons.Filled.Stop, contentDescription = "Остановить генерацию", tint = Color.White, modifier = Modifier.size(18.dp))
+                            else Text("↑", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                     Text(
