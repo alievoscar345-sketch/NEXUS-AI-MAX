@@ -418,6 +418,17 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var agentServerConfigured by mutableStateOf(SecureSecretStore.load(application).isNotBlank())
         private set
+
+    var agentTasks by mutableStateOf<List<AgentTaskSnapshot>>(emptyList())
+        private set
+    var activeAgentTask by mutableStateOf<AgentTaskSnapshot?>(null)
+        private set
+    var agentApprovals by mutableStateOf<List<AgentApproval>>(emptyList())
+        private set
+    var agentBusy by mutableStateOf(false)
+        private set
+    var agentMessage by mutableStateOf<String?>(null)
+        private set
     var remoteProviders by mutableStateOf<List<RemoteProvider>>(emptyList())
         private set
     var remoteModels by mutableStateOf<List<RemoteModel>>(emptyList())
@@ -544,6 +555,102 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             throw IllegalStateException("Сначала укажи HTTPS-адрес NEXUS Agent Server и токен доступа.")
         }
         return token
+    }
+
+    private fun agentTaskClient(): AgentTaskClient =
+        AgentTaskClient(agentServerUrl, agentAuthorization(), client)
+
+    fun refreshAgentTasks() {
+        if (agentBusy) return
+        viewModelScope.launch {
+            try {
+                val loaded = withContext(Dispatchers.IO) { agentTaskClient().listTasks() }
+                agentTasks = loaded
+                agentMessage = null
+            } catch (e: Exception) {
+                agentMessage = e.message ?: "Не удалось загрузить задачи агента."
+            }
+        }
+    }
+
+    fun refreshAgentTask(taskId: String) {
+        if (agentBusy) return
+        viewModelScope.launch {
+            try {
+                val loaded = withContext(Dispatchers.IO) { agentTaskClient().getTask(taskId) }
+                activeAgentTask = loaded
+                agentTasks = listOf(loaded) + agentTasks.filterNot { it.id == loaded.id }
+                agentMessage = null
+            } catch (e: Exception) {
+                agentMessage = e.message ?: "Не удалось обновить задачу агента."
+            }
+        }
+    }
+
+    fun createAgentTask(prompt: String) {
+        if (agentBusy) return
+        agentBusy = true
+        viewModelScope.launch {
+            try {
+                val id = withContext(Dispatchers.IO) { agentTaskClient().createTask(prompt) }
+                val loaded = withContext(Dispatchers.IO) { agentTaskClient().getTask(id) }
+                activeAgentTask = loaded
+                agentTasks = listOf(loaded) + agentTasks.filterNot { it.id == loaded.id }
+                agentMessage = "Задача передана автономному агенту."
+            } catch (e: Exception) {
+                agentMessage = e.message ?: "Не удалось создать задачу агента."
+            } finally {
+                agentBusy = false
+            }
+        }
+    }
+
+    fun cancelAgentTask(taskId: String) {
+        if (agentBusy) return
+        agentBusy = true
+        viewModelScope.launch {
+            try {
+                val status = withContext(Dispatchers.IO) { agentTaskClient().cancelTask(taskId) }
+                agentMessage = "Состояние отмены: $status"
+                val loaded = withContext(Dispatchers.IO) { agentTaskClient().getTask(taskId) }
+                activeAgentTask = loaded
+                agentTasks = listOf(loaded) + agentTasks.filterNot { it.id == loaded.id }
+            } catch (e: Exception) {
+                agentMessage = e.message ?: "Не удалось отменить задачу."
+            } finally {
+                agentBusy = false
+            }
+        }
+    }
+
+    fun refreshAgentApprovals() {
+        if (agentBusy) return
+        viewModelScope.launch {
+            try {
+                agentApprovals = withContext(Dispatchers.IO) { agentTaskClient().listApprovals() }
+                agentMessage = null
+            } catch (e: Exception) {
+                agentMessage = e.message ?: "Не удалось загрузить запросы на подтверждение."
+            }
+        }
+    }
+
+    fun decideAgentApproval(approvalId: String, approved: Boolean, note: String = "") {
+        if (agentBusy) return
+        agentBusy = true
+        viewModelScope.launch {
+            try {
+                val status = withContext(Dispatchers.IO) {
+                    agentTaskClient().decideApproval(approvalId, approved, note)
+                }
+                agentMessage = "Решение зарегистрировано: $status"
+                agentApprovals = withContext(Dispatchers.IO) { agentTaskClient().listApprovals() }
+            } catch (e: Exception) {
+                agentMessage = e.message ?: "Не удалось отправить решение."
+            } finally {
+                agentBusy = false
+            }
+        }
     }
 
     fun loadRemoteModels() {
