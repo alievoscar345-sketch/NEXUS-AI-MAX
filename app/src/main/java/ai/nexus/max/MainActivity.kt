@@ -1314,6 +1314,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun cleanupUnusedAttachmentFiles(candidates: List<ChatAttachment>) {
+        // A streaming request may still be reading an image file from the chat being removed.
+        if (busy) return
         val retainedPaths = buildSet {
             chats.forEach { chat ->
                 chat.lines.forEach { line ->
