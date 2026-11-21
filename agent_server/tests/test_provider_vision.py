@@ -1,5 +1,4 @@
 import base64
-import json
 import struct
 import tempfile
 import unittest
@@ -33,7 +32,7 @@ class ProviderVisionTests(unittest.IsolatedAsyncioTestCase):
         data_url = main._vision_test_data_url()
         self.assertTrue(data_url.startswith("data:image/png;base64,"))
         png = base64.b64decode(data_url.split(",", 1)[1])
-        self.assertEqual(png[:8], b"\\x89PNG\\r\\n\\x1a\\n")
+        self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
 
         offset = 8
         image_data = b""
@@ -57,7 +56,7 @@ class ProviderVisionTests(unittest.IsolatedAsyncioTestCase):
         for row in range(16):
             start = row * 49
             self.assertEqual(decoded[start], 0)
-            self.assertEqual(decoded[start + 1:start + 49], b"\\x00\\xff\\x00" * 16)
+            self.assertEqual(decoded[start + 1:start + 49], b"\x00\xff\x00" * 16)
 
     async def _call_probe(self, response_text):
         temp = tempfile.TemporaryDirectory()
