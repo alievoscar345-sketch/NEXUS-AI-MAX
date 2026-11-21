@@ -4342,6 +4342,7 @@ private fun ChatProjectPickerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
 @Composable
 private fun ProjectManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
     var deleteTarget by remember { mutableStateOf<NexusProject?>(null) }
+    var filesTarget by remember { mutableStateOf<NexusProject?>(null) }
     LaunchedEffect(Unit) { vm.refreshProjects() }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxWidth(0.96f).fillMaxHeight(0.88f), color = Panel, shape = RoundedCornerShape(20.dp)) {
@@ -4385,6 +4386,9 @@ private fun ProjectManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                                     vm.projectDescriptionDraft = project.description
                                     vm.projectContextDraft = project.context
                                 }, enabled = !vm.projectBusy) { Text("Изменить", color = Blue, fontSize = 10.sp) }
+                                TextButton(onClick = { filesTarget = project }, enabled = !vm.projectBusy) {
+                                    Text("Файлы", color = Blue, fontSize = 10.sp)
+                                }
                                 TextButton(onClick = { vm.archiveProject(project) }, enabled = !vm.projectBusy) {
                                     Text(if (project.status == "active") "В архив" else "Восстановить", color = Blue, fontSize = 10.sp)
                                 }
@@ -4405,6 +4409,105 @@ private fun ProjectManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
             text = { Text("Задачи проекта останутся в истории, но потеряют связь с проектом. ${project.name}", color = Muted) },
             confirmButton = { TextButton(onClick = { vm.deleteProject(project.id); deleteTarget = null }) { Text("Удалить", color = Color(0xFFE5A0A0)) } },
             dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Отмена", color = Muted) } })
+    }
+    filesTarget?.let { project -> ProjectFilesDialog(vm, project) { filesTarget = null } }
+}
+
+
+@Composable
+private fun ProjectFilesDialog(vm: NexusViewModel, project: NexusProject, onDismiss: () -> Unit) {
+    var restoreTarget by remember { mutableStateOf<NexusProjectFile?>(null) }
+    LaunchedEffect(project.id) {
+        vm.projectFilePathDraft = ""
+        vm.projectFileContentDraft = ""
+        vm.selectedProjectFilePath = null
+        vm.projectFileVersions = emptyList()
+        vm.refreshProjectFiles(project.id)
+    }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxWidth(0.96f).fillMaxHeight(0.9f), color = Panel,
+            shape = RoundedCornerShape(20.dp)) {
+            Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("ФАЙЛЫ ПРОЕКТА", color = MainText, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text(project.name, color = Muted, fontSize = 10.sp)
+                    }
+                    TextButton(onClick = onDismiss) { Text("Закрыть", color = Muted) }
+                }
+                Text("Файлы сохраняются на сервере. Каждое сохранение создаёт новую версию. Поддерживаются UTF-8 текстовые файлы до 2 МиБ.",
+                    color = Muted, fontSize = 9.sp, lineHeight = 13.sp)
+                Text("ФАЙЛЫ · ${vm.projectFiles.size}", color = Muted, fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold)
+                LazyColumn(Modifier.fillMaxWidth().weight(0.24f).background(PanelRaised, RoundedCornerShape(9.dp)).padding(6.dp)) {
+                    items(vm.projectFiles, key = { it.path }) { file ->
+                        TextButton(onClick = { vm.openProjectFile(project.id, file.path) },
+                            enabled = !vm.projectFilesBusy, modifier = Modifier.fillMaxWidth()) {
+                            Column(Modifier.fillMaxWidth()) {
+                                Text(file.path, color = MainText, fontSize = 10.sp)
+                                Text("v${file.revision} · ${file.bytes} байт · ${file.sha256.take(10)}…",
+                                    color = Muted, fontSize = 8.sp)
+                            }
+                        }
+                    }
+                    if (vm.projectFiles.isEmpty()) item {
+                        Text("Файлов пока нет. Укажи путь ниже, чтобы создать первый.",
+                            color = Muted, fontSize = 9.sp, modifier = Modifier.padding(8.dp))
+                    }
+                }
+                OutlinedTextField(vm.projectFilePathDraft,
+                    { vm.projectFilePathDraft = it.take(240) }, Modifier.fillMaxWidth(),
+                    singleLine = true, label = { Text("Путь, например src/main.py") })
+                OutlinedTextField(vm.projectFileContentDraft,
+                    { vm.projectFileContentDraft = it }, Modifier.fillMaxWidth().weight(0.38f),
+                    minLines = 5, maxLines = 12, label = { Text("Содержимое UTF-8 файла") })
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Button(onClick = { vm.saveProjectFile(project.id) },
+                        enabled = !vm.projectFilesBusy && vm.projectFilePathDraft.isNotBlank()) {
+                        Text("Сохранить новую версию")
+                    }
+                    if (vm.projectFilesBusy) {
+                        CircularProgressIndicator(Modifier.size(18.dp).padding(start = 5.dp), strokeWidth = 2.dp)
+                    }
+                }
+                vm.projectFilesMessage?.let {
+                    Text(it, color = Muted, fontSize = 9.sp, maxLines = 2)
+                }
+                if (vm.selectedProjectFilePath != null) {
+                    Text("ИСТОРИЯ ВЕРСИЙ · ${vm.selectedProjectFilePath}",
+                        color = Muted, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    LazyColumn(Modifier.fillMaxWidth().weight(0.2f)) {
+                        items(vm.projectFileVersions, key = { "${it.path}-${it.revision}" }) { version ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("Версия ${version.revision} · ${version.message}",
+                                        color = MainText, fontSize = 9.sp, maxLines = 1)
+                                    Text("${version.bytes} байт · ${version.sha256.take(12)}…",
+                                        color = Muted, fontSize = 8.sp)
+                                }
+                                TextButton(onClick = { restoreTarget = version },
+                                    enabled = !vm.projectFilesBusy) {
+                                    Text("Восстановить", color = Blue, fontSize = 8.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    restoreTarget?.let { version ->
+        AlertDialog(onDismissRequest = { restoreTarget = null }, containerColor = Panel,
+            title = { Text("Восстановить версию ${version.revision}?", color = MainText) },
+            text = { Text("Текущая версия останется в истории. Будет создана новая ревизия с содержимым выбранной версии.", color = Muted) },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.restoreProjectFile(project.id, version.revision)
+                    restoreTarget = null
+                }) { Text("Восстановить", color = Blue) }
+            },
+            dismissButton = { TextButton(onClick = { restoreTarget = null }) { Text("Отмена", color = Muted) } }
+        )
     }
 }
 
