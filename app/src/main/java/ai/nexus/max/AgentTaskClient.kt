@@ -64,14 +64,18 @@ class AgentTaskClient(
     }
 
     fun createTask(prompt: String, maxSteps: Int = 24, idempotencyKey: String = UUID.randomUUID().toString(),
-                    projectId: String? = null, contextText: String = ""): String {
+                    projectId: String? = null, contextText: String = "", modelSelection: String = "auto"): String {
         require(prompt.trim().length >= 3) { "Task prompt is too short" }
         require(contextText.length <= 24000) { "Task file context exceeds 24 KB" }
+        require(modelSelection == "auto" || modelSelection.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._-]{1,159}$"))) {
+            "Invalid model selection"
+        }
         val body = JSONObject()
             .put("prompt", prompt.trim())
             .put("autonomy", "level3")
             .put("max_steps", maxSteps.coerceAtLeast(1))
             .put("idempotency_key", idempotencyKey)
+            .put("model_selection", modelSelection)
         projectId?.let { body.put("project_id", it) }
         if (contextText.isNotBlank()) body.put("context_text", contextText)
         return request("POST", listOf("v1", "tasks"), body)["id"]?.toString()
