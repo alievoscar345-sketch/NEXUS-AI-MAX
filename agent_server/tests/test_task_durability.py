@@ -2277,6 +2277,55 @@ class DurableTaskTests(unittest.TestCase):
         finally:
             main._LEASE_OWNER.reset(token)
 
+
+    def test_failed_step_rolls_back_workspace_but_preserves_failure_result(self):
+        now = time.time()
+        owner = main.WORKER_ID + ":failed-step-checkpoint"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id,plan_json,results_json,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                ("failed-step-checkpoint", "rollback failed step", "running", now, now, "owner-a",
+                 '[{"title":"mutate"}]', '[]', owner, now + 600),
+            )
+            conn.execute(
+                "INSERT INTO task_steps(id,task_id,step_index,title,action,input_json,status,attempt_count,"
+                "max_attempts,idempotency_key,result_json,error,next_attempt_at,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("failed-mutation", "failed-step-checkpoint", 0, "Mutate", "code_execute", '{}',
+                 "pending", 0, 3, "failed-mutation-key", "", "", None, now, now),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        checkpoint_root = Path(self.temp.name) / "checkpoints"
+        task_root = workspace / "failed-step-checkpoint"
+        task_root.mkdir(parents=True)
+        target = task_root / "source.txt"
+        target.write_text("last confirmed version", encoding="utf-8")
+        token = main._LEASE_OWNER.set(owner)
+        try:
+            with patch.object(main, "WORKSPACE", workspace), patch.object(main, "CHECKPOINT_ROOT", checkpoint_root):
+                main._create_task_checkpoint("failed-step-checkpoint", "initial_plan_persisted")
+                with main.db() as conn:
+                    conn.execute("UPDATE task_steps SET status='running' WHERE id='failed-mutation'")
+                target.write_text("partial failed mutation", encoding="utf-8")
+                self.assertTrue(main._save_step_result(
+                    "failed-step-checkpoint", "failed-mutation", "failed",
+                    '{"status":"execution_failed","error":"compile failed"}',
+                ))
+                main._restore_latest_task_checkpoint("failed-step-checkpoint", False)
+                main._create_task_checkpoint(
+                    "failed-step-checkpoint", "step_failed", "failed-mutation"
+                )
+                self.assertEqual(target.read_text(encoding="utf-8"), "last confirmed version")
+                with main.db() as conn:
+                    step = conn.execute(
+                        "SELECT status,result_json FROM task_steps WHERE id='failed-mutation'"
+                    ).fetchone()
+                self.assertEqual(step["status"], "failed")
+                self.assertEqual(json.loads(step["result_json"])["status"], "execution_failed")
+        finally:
+            main._LEASE_OWNER.reset(token)
+
     def test_db_context_commits_and_closes_connection(self):
         now = time.time()
         with main.db() as conn:
