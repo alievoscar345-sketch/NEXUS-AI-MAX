@@ -316,3 +316,8 @@ The user's current delivery order is feature-first: finish the agreed product fu
 - Owner-scoped reusable skills can be created, edited, enabled/disabled, and deleted from Android. Relevant enabled skills are selected using lexical token overlap and injected into normal chat and autonomous task planning.
 - Skill text is treated as user preference data and cannot override system rules, tool permissions, or safety controls.
 - Skill relevance is currently keyword-based; embedding-based semantic retrieval remains future work.
+
+
+## Personal context in autonomous tasks
+
+Before the planner creates a task plan, it retrieves a bounded set of relevant user-approved memories, the selected project's brief, and enabled reusable skills. The planner is instructed to treat these as user-provided context rather than higher-priority system instructions. Normal chat separately retrieves relevant memories and a small set of skills based on lexical overlap.
