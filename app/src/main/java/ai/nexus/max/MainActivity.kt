@@ -244,6 +244,50 @@ data class ChatLine(
     val providerMessagesJson: String? = null
 )
 
+private const val MAX_CHAT_ATTACHMENT_TEXT_CHARS = 180_000
+
+/**
+ * Builds one bounded text part for document attachments.
+ * The backend accepts at most 200,000 characters per text part; keep headroom
+ * for JSON/provider metadata and make any truncation explicit to the model.
+ */
+private fun buildChatTextWithAttachments(
+    prompt: String,
+    attachments: List<ChatAttachment>
+): String {
+    val limit = MAX_CHAT_ATTACHMENT_TEXT_CHARS
+    val output = StringBuilder()
+    var truncated = false
+
+    fun appendBounded(value: String) {
+        val remaining = limit - output.length
+        if (remaining <= 0) {
+            if (value.isNotEmpty()) truncated = true
+            return
+        }
+        if (value.length > remaining) {
+            output.append(value, 0, remaining)
+            truncated = true
+        } else {
+            output.append(value)
+        }
+    }
+
+    appendBounded(prompt)
+    attachments.forEach { file ->
+        appendBounded("\n\n[Прикреплённый файл: ${file.name}]\n")
+        appendBounded(file.textContent)
+    }
+
+    if (truncated) {
+        val notice = "\n\n[ВНИМАНИЕ: текст сообщения и/или документов сокращён до 180 000 символов. Для полного анализа отправь документы по отдельности или раздели их на части.]"
+        val contentLimit = (limit - notice.length).coerceAtLeast(0)
+        if (output.length > contentLimit) output.setLength(contentLimit)
+        output.append(notice)
+    }
+    return output.toString()
+}
+
 @Composable
 private fun ChatAttachmentPreview(attachment: ChatAttachment, compact: Boolean = false) {
     if (!attachment.mimeType.startsWith("image/") || attachment.localPath.isBlank()) {
@@ -1235,11 +1279,16 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 val isPdf = mime == "application/pdf" || extension == "pdf"
                 val isDocx = mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || extension == "docx"
                 val attachment = if (mime.startsWith("image/")) {
+                    val normalizedMime = when (mime.lowercase(Locale.ROOT)) {
+                        "image/jpg" -> "image/jpeg"
+                        "image/png", "image/jpeg", "image/webp", "image/gif" -> mime.lowercase(Locale.ROOT)
+                        else -> throw IllegalArgumentException("Формат изображения не поддерживается. Используй PNG, JPEG, WEBP или GIF.")
+                    }
                     val bytes = readUriLimited(resolver, uri, 8 * 1024 * 1024, "Изображение слишком большое. Максимум 8 МБ.", "Не удалось прочитать изображение.")
                     val directory = File(getApplication<Application>().filesDir, "nexus_attachments").apply { mkdirs() }
                     val file = File(directory, UUID.randomUUID().toString() + ".img")
                     FileOutputStream(file).use { it.write(bytes) }
-                    ChatAttachment(name, mime, file.absolutePath, "")
+                    ChatAttachment(name, normalizedMime, file.absolutePath, "")
                 } else if (isPdf) {
                     val bytes = readUriLimited(resolver, uri, 20 * 1024 * 1024, "PDF слишком большой. Максимум 20 МБ.", "Не удалось прочитать PDF.")
                     val extracted = try {
@@ -1425,15 +1474,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         val textAttachments = line.attachments.filter { it.textContent.isNotBlank() }
                         if (line.role == "user" && (imageAttachments.isNotEmpty() || textAttachments.isNotEmpty())) {
                             val parts = JSONArray()
-                            val textPart = buildString {
-                                append(line.content)
-                                textAttachments.forEach { file ->
-                                    append("\n\n[Прикреплённый файл: ")
-                                    append(file.name)
-                                    append("]\n")
-                                    append(file.textContent)
-                                }
-                            }
+                            val textPart = buildChatTextWithAttachments(line.content, textAttachments)
                             if (textPart.isNotBlank()) parts.put(JSONObject().put("type", "text").put("text", textPart))
                             imageAttachments.forEach { image ->
                                 val bytes = File(image.localPath).readBytes()
@@ -1570,15 +1611,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             val textAttachments = line.attachments.filter { it.textContent.isNotBlank() }
             if (line.role == "user" && (imageAttachments.isNotEmpty() || textAttachments.isNotEmpty())) {
                 val parts = JSONArray()
-                val textPart = buildString {
-                    append(line.content)
-                    textAttachments.forEach { file ->
-                        append("\n\n[Прикреплённый файл: ")
-                        append(file.name)
-                        append("]\n")
-                        append(file.textContent)
-                    }
-                }
+                val textPart = buildChatTextWithAttachments(line.content, textAttachments)
                 if (textPart.isNotBlank()) {
                     parts.put(JSONObject().put("type", "text").put("text", textPart))
                 }
