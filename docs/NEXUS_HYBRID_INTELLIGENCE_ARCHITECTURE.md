@@ -308,3 +308,11 @@ The current feature branch now includes the following product-facing pieces in a
 - The autonomous agent still has a constrained tool set. Arbitrary code execution and general browser automation are not implemented; do not represent the current workspace file tools as a secure code sandbox.
 
 The user's current delivery order is feature-first: finish the agreed product functionality before the comprehensive test pass, APK assembly, and release verification. Do not use earlier CI results as validation of newer commits. Keep the pull request in Draft and do not merge without explicit permission.
+
+
+## Project and skill systems — implementation update
+
+- Owner-scoped projects store a durable project brief and can be attached to new autonomous tasks. The planner receives the project brief before planning. Project deletion preserves tasks and clears the association.
+- Owner-scoped reusable skills can be created, edited, enabled/disabled, and deleted from Android. Relevant enabled skills are selected using lexical token overlap and injected into normal chat and autonomous task planning.
+- Skill text is treated as user preference data and cannot override system rules, tool permissions, or safety controls.
+- Skill relevance is currently keyword-based; embedding-based semantic retrieval remains future work.
