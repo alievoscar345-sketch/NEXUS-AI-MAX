@@ -2402,6 +2402,9 @@ class DurableTaskTests(unittest.TestCase):
                         (project_id,),
                     ).fetchone()
                 self.assertEqual(tombstone["is_deleted"], 1)
+                with self.assertRaises(main.HTTPException) as missing:
+                    main.read_project_file(project_id, "generated/temporary.txt", "owner-a")
+                self.assertEqual(missing.exception.status_code, 404)
         finally:
             main._LEASE_OWNER.reset(token)
 
