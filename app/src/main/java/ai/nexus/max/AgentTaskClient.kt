@@ -29,7 +29,7 @@ data class AgentTaskStep(val index: Int, val title: String, val action: String, 
 
 data class AgentApproval(val id: String, val taskId: String, val description: String, val status: String)
 data class AgentWorkspaceEntry(val name: String, val type: String, val bytes: Long?)
-data class AgentArtifact(val name: String, val bytes: Long)
+data class AgentArtifact(val name: String, val bytes: Long, val contentType: String, val sha256: String)
 data class NexusMemory(val id: String, val title: String, val content: String, val category: String, val pinned: Boolean, val updatedAt: Double)
 data class MemorySuggestion(val title: String, val content: String, val category: String)
 data class NexusSkill(val id: String, val name: String, val description: String, val instructions: String, val category: String, val enabled: Boolean)
@@ -61,14 +61,14 @@ class AgentTaskClient(
         require(token.isNotBlank()) { "Agent access token is missing" }
     }
 
-    fun createTask(prompt: String, maxSteps: Int = 16, idempotencyKey: String = UUID.randomUUID().toString(),
+    fun createTask(prompt: String, maxSteps: Int = 24, idempotencyKey: String = UUID.randomUUID().toString(),
                     projectId: String? = null, contextText: String = ""): String {
         require(prompt.trim().length >= 3) { "Task prompt is too short" }
         require(contextText.length <= 24000) { "Task file context exceeds 24 KB" }
         val body = JSONObject()
             .put("prompt", prompt.trim())
             .put("autonomy", "level3")
-            .put("max_steps", maxSteps.coerceIn(1, 30))
+            .put("max_steps", maxSteps.coerceAtLeast(1))
             .put("idempotency_key", idempotencyKey)
         projectId?.let { body.put("project_id", it) }
         if (contextText.isNotBlank()) body.put("context_text", contextText)
@@ -206,13 +206,17 @@ class AgentTaskClient(
             .optJSONArray("artifacts") ?: JSONArray()
         return (0 until items.length()).mapNotNull { index ->
             val item = items.optJSONObject(index) ?: return@mapNotNull null
-            AgentArtifact(item.optString("name"), item.optLong("bytes"))
+            AgentArtifact(item.optString("name"), item.optLong("bytes"),\n                item.optString("content_type", "application/octet-stream"), item.optString("sha256"))
         }
     }
 
     fun readArtifact(taskId: String, name: String): String =
         request("GET", listOf("v1", "tasks", taskId, "artifacts", "file"),
             query = mapOf("name" to name)).optString("content")
+
+    fun downloadArtifact(taskId: String, name: String): ByteArray =
+        requestBytes(listOf("v1", "tasks", taskId, "artifacts", "download"),
+            query = mapOf("name" to name))
 
     fun listProjects(): List<NexusProject> {
         val items = request("GET", listOf("v1", "projects")).optJSONArray("projects") ?: JSONArray()
@@ -422,6 +426,27 @@ class AgentTaskClient(
     fun decideApproval(approvalId: String, approved: Boolean, note: String = ""): String =
         request("POST", listOf("v1", "approvals", approvalId),
             JSONObject().put("approved", approved).put("note", note.take(1000)))["status"]?.toString().orEmpty()
+
+    private fun requestBytes(
+        segments: List<String>,
+        query: Map<String, String> = emptyMap()
+    ): ByteArray {
+        val builder = base.newBuilder()
+        segments.forEach { segment -> builder.addPathSegment(segment) }
+        query.forEach { (key, value) -> builder.addQueryParameter(key, value) }
+        val request = Request.Builder().url(builder.build())
+            .header("Authorization", "Bearer $token")
+            .header("Accept", "application/octet-stream")
+            .get().build()
+        http.newCall(request).execute().use { response ->
+            val bytes = response.body?.bytes() ?: ByteArray(0)
+            if (!response.isSuccessful) {
+                val detail = try { JSONObject(bytes.toString(Charsets.UTF_8)).optString("detail") } catch (_: Exception) { "" }
+                throw IOException(detail.ifBlank { "Artifact download returned HTTP ${response.code}" })
+            }
+            return bytes
+        }
+    }
 
     private fun request(
         method: String,
