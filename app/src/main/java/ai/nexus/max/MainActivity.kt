@@ -642,10 +642,10 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     val previousTask = activeAgentTask?.takeIf { it.id == targetId }
                     val eventCursor = previousTask?.events?.maxOfOrNull { it.id }
                     val loadedTask = withContext(Dispatchers.IO) { api.getTask(targetId, eventCursor) }
-                    val mergedTask = if (previousTask != null && eventCursor != null) {
-                        loadedTask.copy(events = (previousTask.events + loadedTask.events)
-                            .distinctBy { it.id }.sortedBy { it.id })
-                    } else loadedTask
+                    val latestTask = activeAgentTask?.takeIf { it.id == targetId }
+                    val mergedEvents = (previousTask?.events.orEmpty() + latestTask?.events.orEmpty() + loadedTask.events)
+                        .distinctBy { it.id }.sortedBy { it.id }.takeLast(500)
+                    val mergedTask = loadedTask.copy(events = mergedEvents)
                     activeAgentTask = mergedTask
                     if (activeAgentTaskId != mergedTask.id) selectAgentTask(mergedTask.id)
                     agentTasks = listOf(mergedTask) + agentTasks.filterNot { it.id == mergedTask.id }
