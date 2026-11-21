@@ -154,6 +154,21 @@ def event(tid: str, kind: str, message: str):
         c.execute("UPDATE tasks SET updated_at=? WHERE id=?", (now, tid))
 
 
+def _worker_event(tid: str, kind: str, message: str) -> bool:
+    now = time.time()
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        owned = c.execute("""SELECT 1 FROM tasks WHERE id=? AND status IN ('running','planning')
+            AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
+            (tid, WORKER_ID, now)).fetchone()
+        if not owned:
+            return False
+        c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                  (tid, now, kind, message[:2000]))
+        c.execute("UPDATE tasks SET updated_at=? WHERE id=?", (now, tid))
+        return True
+
+
 def serialize(row):
     return {
         "id": row["id"], "prompt": row["prompt"], "status": row["status"],
@@ -273,14 +288,21 @@ def _step_key(tid: str, index: int, action: str, args: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _persist_plan(tid: str, steps: list[Any], max_attempts: int):
+def _persist_plan(tid: str, steps: list[Any], max_attempts: int) -> bool:
     now = time.time()
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
+        owned = c.execute("""SELECT 1 FROM tasks WHERE id=? AND status='planning'
+            AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
+            (tid, WORKER_ID, now)).fetchone()
+        if not owned:
+            return False
         existing = c.execute("SELECT COUNT(*) AS n FROM task_steps WHERE task_id=?", (tid,)).fetchone()["n"]
         if existing:
-            c.execute("UPDATE tasks SET status='running',updated_at=? WHERE id=? AND status='planning'", (now, tid))
-            return
+            c.execute("""UPDATE tasks SET status='running',updated_at=? WHERE id=?
+                AND status='planning' AND lease_owner=? AND lease_expires_at>?""",
+                (now, tid, WORKER_ID, now))
+            return True
         safe_steps = [x for x in steps if isinstance(x, dict)]
         for index, step in enumerate(safe_steps):
             action = str(step.get("action", ""))[:80]
@@ -292,8 +314,11 @@ def _persist_plan(tid: str, steps: list[Any], max_attempts: int):
                 VALUES(?,?,?,?,?,?,'pending',?,?,?,?)
             """, (str(uuid.uuid4()), tid, index, str(step.get("title", action))[:160],
                   action, json.dumps(args, ensure_ascii=False), max_attempts, key, now, now))
-        c.execute("UPDATE tasks SET plan_json=?,status='running',updated_at=? WHERE id=?",
-                  (json.dumps(safe_steps, ensure_ascii=False), now, tid))
+        changed = c.execute("""UPDATE tasks SET plan_json=?,status='running',updated_at=?
+            WHERE id=? AND status='planning' AND cancel_requested=0
+            AND lease_owner=? AND lease_expires_at>?""",
+            (json.dumps(safe_steps, ensure_ascii=False), now, tid, WORKER_ID, now)).rowcount
+        return bool(changed)
 
 
 def _create_approval(tid: str, description: str, idempotency_key: str) -> str:
@@ -541,19 +566,21 @@ async def process(tid: str):
             planning = await run_db(_set_task_planning, tid)
             if not planning:
                 return
-            await run_db(event, tid, "status", "Planning task")
+            await run_db(_worker_event, tid, "status", "Planning task")
             plan = await llm_json(
                 'You are NEXUS Agent Planner. Return strict JSON only: {"summary":"...","steps":[{"title":"...","action":"web_search|fetch_url|save_artifact|draft_external_action","input":{}}]}. Use only listed actions. For publishing, messaging, purchases or account changes use draft_external_action. Never claim external actions succeeded.',
                 row["prompt"], purpose="planning", task_id=tid, owner_id=row["owner_id"])
             steps = plan.get("steps", [])
             if not isinstance(steps, list):
                 raise ValueError("Planner did not return steps")
-            await run_db(_persist_plan, tid, steps[:min(MAX_STEPS, int(row['max_steps']), 8)], MAX_STEP_ATTEMPTS)
+            persisted = await run_db(_persist_plan, tid, steps[:min(MAX_STEPS, int(row['max_steps']), 8)], MAX_STEP_ATTEMPTS)
+            if not persisted:
+                return
 
         while True:
             if await run_db(_task_cancelled, tid):
                 await run_db(_mark_task_cancelled, tid)
-                await run_db(event, tid, "cancelled", "Task cancellation acknowledged")
+                await run_db(_worker_event, tid, "cancelled", "Task cancellation acknowledged")
                 return
             if time.monotonic() - started > MAX_SECONDS:
                 raise TimeoutError("Task time limit reached")
@@ -564,13 +591,13 @@ async def process(tid: str):
                     transitioned = await run_db(_set_task_waiting_for_approval, tid)
                     if not transitioned:
                         await run_db(_mark_task_cancelled, tid)
-                        await run_db(event, tid, "cancelled", "Task cancellation acknowledged")
+                        await run_db(_worker_event, tid, "cancelled", "Task cancellation acknowledged")
                     return
                 if unfinished:
                     transitioned = await run_db(_set_task_retry_wait, tid, time.time() + RETRY_BASE_SECONDS)
                     if not transitioned:
                         await run_db(_mark_task_cancelled, tid)
-                        await run_db(event, tid, "cancelled", "Task cancellation acknowledged")
+                        await run_db(_worker_event, tid, "cancelled", "Task cancellation acknowledged")
                     return
                 results = [json.loads(x["result_json"]) for x in results_rows]
                 final = await llm_json(
@@ -580,17 +607,17 @@ async def process(tid: str):
                 completed = await run_db(_complete_task, tid, str(final.get("summary", "Task finished")),
                                          json.dumps(results, ensure_ascii=False))
                 if completed:
-                    await run_db(event, tid, "completed", "Task completed")
+                    await run_db(_worker_event, tid, "completed", "Task completed")
                 else:
                     await run_db(_mark_task_cancelled, tid)
-                    await run_db(event, tid, "cancelled", "Task cancellation acknowledged")
+                    await run_db(_worker_event, tid, "cancelled", "Task cancellation acknowledged")
                 return
 
             claimed = await run_db(_claim_step, tid, step["id"])
             if not claimed:
                 # Another worker claimed it, or this task lost its lease / was cancelled.
                 return
-            await run_db(event, tid, "step_started", f"{claimed['step_index'] + 1}: {claimed['title']}")
+            await run_db(_worker_event, tid, "step_started", f"{claimed['step_index'] + 1}: {claimed['title']}")
             try:
                 step_data = {"title": claimed["title"], "action": claimed["action"],
                              "input": json.loads(claimed["input_json"])}
@@ -600,12 +627,12 @@ async def process(tid: str):
                                      json.dumps(result, ensure_ascii=False))
                 if not saved:
                     return
-                await run_db(event, tid, "step_finished", f"{claimed['step_index'] + 1}: {status}")
+                await run_db(_worker_event, tid, "step_finished", f"{claimed['step_index'] + 1}: {status}")
                 if status == "waiting_for_approval":
                     transitioned = await run_db(_set_task_waiting_for_approval, tid)
                     if not transitioned:
                         await run_db(_mark_task_cancelled, tid)
-                        await run_db(event, tid, "cancelled", "Task cancellation acknowledged")
+                        await run_db(_worker_event, tid, "cancelled", "Task cancellation acknowledged")
                     return
             except Exception as exc:
                 attempts = claimed["attempt_count"]
@@ -616,9 +643,9 @@ async def process(tid: str):
                     return
                 if await run_db(_task_cancelled, tid):
                     await run_db(_mark_task_cancelled, tid)
-                    await run_db(event, tid, "cancelled", "Task cancellation acknowledged")
+                    await run_db(_worker_event, tid, "cancelled", "Task cancellation acknowledged")
                 else:
-                    await run_db(event, tid, "step_retry" if retry else "error", str(exc)[:1000])
+                    await run_db(_worker_event, tid, "step_retry" if retry else "error", str(exc)[:1000])
                 return
     except Exception as exc:
         retry = await run_db(_record_task_failure, tid, exc, str(exc)[:2000])
@@ -626,9 +653,9 @@ async def process(tid: str):
             return
         if await run_db(_task_cancelled, tid):
             await run_db(_mark_task_cancelled, tid)
-            await run_db(event, tid, "cancelled", "Task cancellation acknowledged")
+            await run_db(_worker_event, tid, "cancelled", "Task cancellation acknowledged")
         else:
-            await run_db(event, tid, "task_retry" if retry else "error", str(exc)[:1000])
+            await run_db(_worker_event, tid, "task_retry" if retry else "error", str(exc)[:1000])
 
 
 def recover_interrupted_tasks():
