@@ -141,10 +141,20 @@ def call_model(client: httpx.Client, model: str, messages: list[dict[str, Any]])
     return data["choices"][0]["message"]
 
 def main() -> int:
-    required = ["ANYMODEL_API_KEY","GITHUB_TOKEN","GITHUB_REPOSITORY","NEXUS_DEV_PROMPT"]
+    prompt = os.getenv("NEXUS_DEV_PROMPT", "").strip()
+    prompt_file = os.getenv("NEXUS_DEV_PROMPT_FILE", "").strip()
+    if not prompt and prompt_file:
+        try:
+            with open(prompt_file, "r", encoding="utf-8") as task_file:
+                prompt = task_file.read().strip()
+        except OSError as exc:
+            print(f"Cannot read task prompt file: {exc}", file=sys.stderr)
+            return 2
+    required = ["ANYMODEL_API_KEY","GITHUB_TOKEN","GITHUB_REPOSITORY"]
     missing = [x for x in required if not os.getenv(x)]
-    if missing:
-        print("Missing required environment variables: " + ", ".join(missing), file=sys.stderr)
+    if missing or not prompt:
+        missing_config = missing + (["NEXUS_DEV_PROMPT or NEXUS_DEV_PROMPT_FILE"] if not prompt else [])
+        print("Missing required configuration: " + ", ".join(missing_config), file=sys.stderr)
         return 2
     model = os.getenv("NEXUS_DEV_MODEL", "claude-fable-5-2")
     base_branch = os.getenv("NEXUS_DEV_BASE_BRANCH", "gemini-hydrogen-development")
@@ -152,7 +162,7 @@ def main() -> int:
     github = GitHub(os.environ["GITHUB_TOKEN"], os.environ["GITHUB_REPOSITORY"], base_branch, run_id)
     messages: list[dict[str, Any]] = [
         {"role":"system","content":SYSTEM_PROMPT},
-        {"role":"user","content":f"Repository: {github.repository}\nBase branch: {base_branch}\nWorking branch: {github.branch}\nTask:\n{os.environ['NEXUS_DEV_PROMPT']}"},
+        {"role":"user","content":f"Repository: {github.repository}\nBase branch: {base_branch}\nWorking branch: {github.branch}\nTask:\n{prompt}"},
     ]
     with httpx.Client(timeout=90) as client:
         for _ in range(MAX_TOOL_ROUNDS):

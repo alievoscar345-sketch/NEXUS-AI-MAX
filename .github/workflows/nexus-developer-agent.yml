@@ -1,6 +1,11 @@
 name: NEXUS Developer Agent
 
 on:
+  push:
+    branches:
+      - nexus-developer-agent/bootstrap
+    paths:
+      - developer_agent/TASK.md
   workflow_dispatch:
     inputs:
       prompt:
@@ -42,7 +47,7 @@ jobs:
 
   developer-agent:
     needs: validate
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -59,6 +64,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           NEXUS_DEV_PROMPT: ${{ inputs.prompt }}
-          NEXUS_DEV_MODEL: ${{ inputs.model }}
+          NEXUS_DEV_PROMPT_FILE: developer_agent/TASK.md
+          NEXUS_DEV_MODEL: ${{ inputs.model || 'claude-fable-5-2' }}
           NEXUS_DEV_BASE_BRANCH: gemini-hydrogen-development
         run: python agent.py

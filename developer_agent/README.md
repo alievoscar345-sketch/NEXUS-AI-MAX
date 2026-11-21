@@ -17,10 +17,13 @@ A mobile-triggered GitHub Actions coding agent. It uses AnyModel's OpenAI-compat
 
 1. In GitHub, open the repository **Settings → Secrets and variables → Actions → New repository secret**.
 2. Create secret named `ANYMODEL_API_KEY`; paste the AnyModel key directly into GitHub's secret field. Never paste it into chat, issues, commits, or workflow inputs.
-3. Open **Actions → NEXUS Developer Agent → Run workflow**.
-4. Enter the task in the prompt field and select the model ID. Default: `claude-fable-5-2`.
-5. Start the workflow. When it finishes, open the draft PR URL in the job summary/log.
-6. Review the PR and CI checks. Do not enable auto-merge.
+3. Open the repository in the GitHub mobile app or browser and switch to branch `nexus-developer-agent/bootstrap`.
+4. Edit `developer_agent/TASK.md`, replace the example with your task, and commit the change to that same branch.
+5. The push automatically starts the agent. Open Actions → NEXUS Developer Agent to follow the run.
+6. When it finishes, open the draft PR created against `gemini-hydrogen-development`.
+7. Review the PR and CI checks. Do not enable auto-merge.
+
+The manual-dispatch trigger is retained. GitHub's web UI requires workflow_dispatch to exist on the default branch; the task-file push trigger avoids changing the default branch.
 
 ## Models
 
