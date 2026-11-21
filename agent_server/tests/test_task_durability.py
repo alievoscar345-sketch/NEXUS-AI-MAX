@@ -566,6 +566,75 @@ class DurableTaskTests(unittest.TestCase):
         self.assertEqual(task["cancel_requested"], 1)
         self.assertEqual(approval["status"], "cancelled")
 
+    def test_cancel_wins_before_approval_decision(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id) VALUES(?,?,?,?,?,?)",
+                ("task-cancel-before-approval", "cancel before decision", "waiting_for_approval",
+                 now, now, "tenant-cancel-first"),
+            )
+            conn.execute(
+                "INSERT INTO approvals(id,task_id,description,status,created_at,idempotency_key) "
+                "VALUES(?,?,?,?,?,?)",
+                ("approval-cancel-before", "task-cancel-before-approval", "Pending action",
+                 "pending", now, "approval-cancel-before-key"),
+            )
+
+        main.cancel_task("task-cancel-before-approval", owner_id="tenant-cancel-first")
+        with self.assertRaises(main.HTTPException) as raised:
+            main.decide_approval(
+                "approval-cancel-before", main.Approval(approved=True),
+                owner_id="tenant-cancel-first",
+            )
+        self.assertEqual(raised.exception.status_code, 409)
+        with main.db() as conn:
+            task = conn.execute(
+                "SELECT status,cancel_requested FROM tasks WHERE id=?",
+                ("task-cancel-before-approval",),
+            ).fetchone()
+            approval = conn.execute(
+                "SELECT status FROM approvals WHERE id=?", ("approval-cancel-before",)
+            ).fetchone()
+        self.assertEqual(task["status"], "cancelled")
+        self.assertEqual(task["cancel_requested"], 1)
+        self.assertEqual(approval["status"], "cancelled")
+
+    def test_approval_decision_wins_before_later_task_cancellation(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id) VALUES(?,?,?,?,?,?)",
+                ("task-approval-before-cancel", "decision before cancel", "waiting_for_approval",
+                 now, now, "tenant-approval-first"),
+            )
+            conn.execute(
+                "INSERT INTO approvals(id,task_id,description,status,created_at,idempotency_key) "
+                "VALUES(?,?,?,?,?,?)",
+                ("approval-before-cancel", "task-approval-before-cancel", "Pending action",
+                 "pending", now, "approval-before-cancel-key"),
+            )
+
+        decision = main.decide_approval(
+            "approval-before-cancel", main.Approval(approved=True),
+            owner_id="tenant-approval-first",
+        )
+        self.assertEqual(decision["status"], "approved")
+        main.cancel_task("task-approval-before-cancel", owner_id="tenant-approval-first")
+        main._mark_task_cancelled("task-approval-before-cancel")
+
+        with main.db() as conn:
+            task = conn.execute(
+                "SELECT status,cancel_requested FROM tasks WHERE id=?",
+                ("task-approval-before-cancel",),
+            ).fetchone()
+            approval = conn.execute(
+                "SELECT status FROM approvals WHERE id=?", ("approval-before-cancel",)
+            ).fetchone()
+        self.assertEqual(task["status"], "cancelled")
+        self.assertEqual(task["cancel_requested"], 1)
+        self.assertEqual(approval["status"], "approved")
+
     def test_concurrent_approval_decisions_have_single_winner(self):
         now = time.time()
         with main.db() as conn:
