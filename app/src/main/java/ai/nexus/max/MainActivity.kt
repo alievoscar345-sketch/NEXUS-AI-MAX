@@ -615,7 +615,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun createAgentTask(prompt: String) {
-        if (agentBusy) return
+        if (agentBusy || agentRefreshing) return
         agentBusy = true
         viewModelScope.launch {
             try {
@@ -633,7 +633,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun cancelAgentTask(taskId: String) {
-        if (agentBusy) return
+        if (agentBusy || agentRefreshing) return
         agentBusy = true
         viewModelScope.launch {
             try {
@@ -663,7 +663,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun decideAgentApproval(approvalId: String, approved: Boolean, note: String = "") {
-        if (agentBusy) return
+        if (agentBusy || agentRefreshing) return
         agentBusy = true
         viewModelScope.launch {
             try {
@@ -3106,7 +3106,7 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = { vm.createAgentTask(prompt); prompt = "" },
-                        enabled = prompt.trim().length >= 3 && !vm.agentBusy && vm.agentServerConfigured && vm.agentServerUrl.isNotBlank()
+                        enabled = prompt.trim().length >= 3 && !vm.agentBusy && !vm.agentRefreshing && vm.agentServerConfigured && vm.agentServerUrl.isNotBlank()
                     ) { Text("Запустить") }
                     OutlinedButton(onClick = { vm.refreshAgentConsole(selectedTask) }, enabled = !vm.agentBusy && !vm.agentRefreshing) {
                         Text("Обновить")
