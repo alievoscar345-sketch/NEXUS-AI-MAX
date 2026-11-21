@@ -5,7 +5,7 @@ Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent 
 ## Implemented
 
 - Authenticated API for creating, listing, inspecting, and cancelling tasks.
-- Persistent SQLite task queue, ordered task steps, event log, retry scheduling, and lease-fenced worker writes.
+- Persistent SQLite task queue, ordered task steps, event log, retry scheduling, safe pause/resume, and lease-fenced worker writes.
 - Task planning and evaluation through a provider-agnostic OpenAI-compatible Model Gateway.
 - Multi-provider routing using task category, configured benchmark metadata, cost/latency metadata, and provider priority.
 - Limited provider fallback for network failures, timeouts, and transient HTTP errors. No fallback after streamed output has started.
