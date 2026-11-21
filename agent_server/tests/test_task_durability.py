@@ -3,7 +3,6 @@ import tempfile
 import time
 import sqlite3
 import threading
-import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import unittest
