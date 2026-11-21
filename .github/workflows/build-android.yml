@@ -42,6 +42,9 @@ jobs:
       - name: Install Android packages
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
 
+      - name: Run Android unit tests
+        run: gradle --no-daemon :app:testDebugUnitTest
+
       - name: Build debug APK for safe migration
         run: gradle --no-daemon :app:assembleDebug
 
@@ -68,6 +71,17 @@ jobs:
             echo "::warning::Release signing secrets are not configured. Release APK was not built."
             echo "APK_VARIANT=debug" >> "$GITHUB_ENV"
           fi
+
+      - name: Verify release APK signature
+        if: env.APK_VARIANT == 'release'
+        shell: bash
+        run: |
+          APK_PATH="$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -print -quit)"
+          if [[ -z "$APK_PATH" ]]; then
+            echo "::error::Release APK was not produced."
+            exit 1
+          fi
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK_PATH"
 
       - name: Upload release APK
         if: env.APK_VARIANT == 'release'
