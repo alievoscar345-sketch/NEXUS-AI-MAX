@@ -34,6 +34,8 @@ data class NexusMemory(val id: String, val title: String, val content: String, v
 data class MemorySuggestion(val title: String, val content: String, val category: String)
 data class NexusSkill(val id: String, val name: String, val description: String, val instructions: String, val category: String, val enabled: Boolean)
 data class NexusProject(val id: String, val name: String, val description: String, val context: String, val status: String, val taskCount: Int)
+data class NexusAutomationRun(val id: String, val taskId: String, val scheduledFor: Double, val taskStatus: String, val taskSummary: String, val taskError: String)
+
 data class NexusAutomation(
     val id: String, val name: String, val prompt: String, val scheduleType: String,
     val localTime: String, val timezone: String, val weekdays: List<Int>,
@@ -299,6 +301,17 @@ class AgentTaskClient(
                 item.optString("last_task_status").takeIf { it.isNotBlank() && it != "null" },
                 item.optString("last_task_summary").takeIf { it.isNotBlank() && it != "null" }
             )
+        }
+    }
+
+    fun listAutomationRuns(id: String, limit: Int = 30): List<NexusAutomationRun> {
+        val items = request("GET", listOf("v1", "automations", id, "runs"),
+            query = mapOf("limit" to limit.coerceIn(1, 100).toString())).optJSONArray("runs") ?: JSONArray()
+        return (0 until items.length()).mapNotNull { index ->
+            val item = items.optJSONObject(index) ?: return@mapNotNull null
+            NexusAutomationRun(item.optString("id"), item.optString("task_id"),
+                item.optDouble("scheduled_for"), item.optString("task_status"),
+                item.optString("task_summary"), item.optString("task_error"))
         }
     }
 
