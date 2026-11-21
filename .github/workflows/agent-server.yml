@@ -6,10 +6,6 @@ on:
     paths:
       - 'agent_server/**'
       - '.github/workflows/agent-server.yml'
-  pull_request:
-    paths:
-      - 'agent_server/**'
-      - '.github/workflows/agent-server.yml'
   workflow_dispatch:
 
 jobs:
