@@ -2183,6 +2183,12 @@ async def list_available_models(owner_id: str = Depends(auth)):
 
 @app.get("/v1/providers", dependencies=[Depends(auth)])
 def list_providers(owner_id: str = Depends(auth)):
+    with db() as c:
+        rows = c.execute("""SELECT provider_id,base_url,model,supports_vision,created_at,updated_at
+            FROM provider_credentials WHERE owner_id=? ORDER BY provider_id""", (owner_id,)).fetchall()
+    return {"providers": [{**dict(row), "supports_vision": bool(row["supports_vision"])} for row in rows]}
+
+
 @app.post("/v1/github/connect", dependencies=[Depends(auth)])
 async def connect_github(body: GitHubConnectInput, owner_id: str = Depends(auth)):
     repo_name = _github_repo_name(body.repo_full_name)
