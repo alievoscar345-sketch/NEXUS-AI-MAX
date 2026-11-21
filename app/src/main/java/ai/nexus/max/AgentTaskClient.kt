@@ -342,8 +342,8 @@ class AgentTaskClient(
             (0 until days.length()).map { days.optInt(it) },
             if (isNull("interval_minutes")) null else optInt("interval_minutes"),
             optBoolean("enabled"), if (isNull("next_run_at")) null else optDouble("next_run_at"),
-            if (isNull("last_run_at")) null else optDouble("last_run_at"),
             optString("project_id").takeIf { it.isNotBlank() && it != "null" },
+            if (isNull("last_run_at")) null else optDouble("last_run_at"),
             optString("last_task_status").takeIf { it.isNotBlank() && it != "null" },
             optString("last_task_summary").takeIf { it.isNotBlank() && it != "null" }
         )
