@@ -6,6 +6,7 @@ Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent 
 
 - Authenticated API for creating, listing, inspecting, and cancelling tasks.
 - Persistent SQLite task queue, ordered task steps, event log, retry scheduling, safe pause/resume, and lease-fenced worker writes.
+- Long tasks checkpoint at durable step boundaries when an execution window expires, release their lease, and automatically re-enter the queue to continue from the next unfinished step. This supports work spanning multiple execution windows and backend restarts while the service is deployed and running.
 - Task planning and evaluation through a provider-agnostic OpenAI-compatible Model Gateway.
 - Multi-provider routing using task category, configured benchmark metadata, cost/latency metadata, and provider priority.
 - Limited provider fallback for network failures, timeouts, and transient HTTP errors. No fallback after streamed output has started.
@@ -98,6 +99,12 @@ The backend now stores owner-scoped automations and dispatches due schedules int
 - `DELETE /v1/automations/{id}` — delete the schedule and its run index; already-created tasks remain in task history.
 
 A schedule creates ordinary NEXUS agent tasks. It does not grant new tool permissions: existing restrictions and approval gates still apply. This is a single-instance prototype scheduler, not a highly available distributed scheduler.
+
+### Long-running background work
+
+The Android app is not the worker. Once a task is accepted by the deployed backend, its plan, ordered steps, results, and events are persisted in SQLite. The backend worker runs independently of the phone. When a task reaches the configured per-execution time budget, it checkpoints at a step boundary, releases its lease, and schedules the same task for automatic continuation. On service restart, expired leases are recovered and unfinished steps return to the durable queue.
+
+This is bounded, resumable background execution—not an unlimited promise that any arbitrary project will finish. The backend must remain deployed with persistent storage, valid model-provider credentials, and enough provider quota. The current planner supports a bounded set of declared actions; arbitrary shell/code execution, full browser automation, multi-day coding loops with repository integration, and push completion notifications are not implemented yet. A requested minimum duration should be interpreted as an availability/work window, not as a reason to waste compute after all acceptance criteria are met.
 
 ## Task API
 
