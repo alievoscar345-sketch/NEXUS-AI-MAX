@@ -6,6 +6,7 @@ Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent 
 
 - Authenticated API for creating, listing, inspecting, and cancelling tasks.
 - Persistent SQLite task queue, ordered task steps, event log, retry scheduling, safe pause/resume, and lease-fenced worker writes.
+- A baseline checkpoint is created after project files are materialized and before planning starts, including for tasks created before checkpoint support.
 - Immutable task checkpoints archive the complete task workspace and every published task artifact (including release APKs), and persist the matching plan, results, ordered step state, artifact manifest, and immutable project-file revision manifest after initial planning, dynamic plan extension, and each completed/failed step boundary.
 - Checkpoint archives are SHA-256 verified before restore, extracted into staging directories with path/symlink checks, then used to restore workspace files and published artifact bytes. Recovery also restores project files as new immutable revisions matching the checkpoint, including tombstones for files created after it, and restores the checkpointed plan/step database state before re-queueing interrupted work.
 - Failed or interrupted step mutations are rolled back to the last confirmed workspace snapshot; the failed step result remains recorded for planner-driven repair. A corrupt or missing latest checkpoint stops the task rather than continuing against inconsistent files.
