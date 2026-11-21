@@ -1,4 +1,5 @@
 name: Build NEXUS AI APK
+run-name: NEXUS-${{ inputs.nexus_task_id || github.run_id }}
 
 on:
   workflow_dispatch:
@@ -8,6 +9,10 @@ on:
         required: false
         default: false
         type: boolean
+      nexus_task_id:
+        description: "NEXUS task ID for idempotent build tracking"
+        required: false
+        type: string
   push:
     branches: [nexus-1.0-development]
     tags: ['v*']
