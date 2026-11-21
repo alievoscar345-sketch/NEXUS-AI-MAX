@@ -70,6 +70,8 @@ class AgentTaskNotificationWorker(
             finished.filterNot { it.id in known }.forEach { task ->
                 if (showNotification(task)) known.add(task.id)
             }
+            val recentTaskIds = tasks.map { it.id }.toSet()
+            known.retainAll(recentTaskIds)
             prefs.edit().putStringSet("agent_notified_task_ids", known).apply()
             Result.success()
         } catch (_: IOException) {
