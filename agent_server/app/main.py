@@ -1325,7 +1325,7 @@ def _validate_automation(body: AutomationInput, after_ts: float) -> float:
         raise HTTPException(422, "One-time automation must have a future run_at timestamp")
     if body.schedule_type == "interval" and body.interval_minutes is None:
         raise HTTPException(422, "Interval automation requires interval_minutes")
-    if body.schedule_type in {"daily", "weekly"} and not re.fullmatch(r"(?:[01]\\d|2[0-3]):[0-5]\\d", body.local_time):
+    if body.schedule_type in {"daily", "weekly"} and not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", body.local_time):
         raise HTTPException(422, "Daily and weekly automations require local_time in HH:MM format")
     if body.schedule_type == "weekly" and (not body.weekdays or any(day < 1 or day > 7 for day in body.weekdays)):
         raise HTTPException(422, "Weekly automation requires weekdays from 1 (Monday) to 7 (Sunday)")
