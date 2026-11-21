@@ -1313,8 +1313,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         error = null
     }
 
-    private fun cleanupUnusedAttachmentFiles(candidates: List<ChatAttachment>) {
-        // A streaming request may still be reading an image file from the chat being removed.
+    private fun cleanupOrphanedAttachmentFiles() {
+        // Never remove a file while an active request may still be reading it.
         if (busy) return
         val retainedPaths = buildSet {
             chats.forEach { chat ->
@@ -1324,24 +1324,20 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             }
             pendingAttachments.mapNotNull { it.localPath.takeIf(String::isNotBlank) }.forEach(::add)
         }
-        val unusedPaths = candidates.mapNotNull { it.localPath.takeIf(String::isNotBlank) }
-            .distinct()
-            .filterNot { it in retainedPaths }
-        if (unusedPaths.isNotEmpty()) {
-            viewModelScope.launch(Dispatchers.IO) {
-                unusedPaths.forEach { path -> runCatching { File(path).delete() } }
+        val directory = File(getApplication<Application>().filesDir, "nexus_attachments")
+        viewModelScope.launch(Dispatchers.IO) {
+            directory.listFiles()?.forEach { file ->
+                if (file.absolutePath !in retainedPaths) runCatching { file.delete() }
             }
         }
     }
 
     fun deleteChat(id: String) {
         if (id == REMINDERS_CHAT_ID) return
-        val removedAttachments = chats.firstOrNull { it.id == id }
-            ?.lines.orEmpty().flatMap { it.attachments }
         chats = chats.filterNot { it.id == id }
         if (activeChatId == id) activeChatId = chats.firstOrNull { !it.isSystem }?.id
         if (chats.none { !it.isSystem }) createChat() else saveChats()
-        cleanupUnusedAttachmentFiles(removedAttachments)
+        cleanupOrphanedAttachmentFiles()
         error = null
     }
 
@@ -1468,7 +1464,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     fun removePendingAttachment(index: Int) {
         val removed = pendingAttachments.getOrNull(index) ?: return
         pendingAttachments = pendingAttachments.filterIndexed { i, _ -> i != index }
-        cleanupUnusedAttachmentFiles(listOf(removed))
+        cleanupOrphanedAttachmentFiles()
     }
 
     fun showError(message: String) {
@@ -1706,6 +1702,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             } finally {
                 activeCall = null
                 busy = false
+                cleanupOrphanedAttachmentFiles()
             }
         }
         return true
