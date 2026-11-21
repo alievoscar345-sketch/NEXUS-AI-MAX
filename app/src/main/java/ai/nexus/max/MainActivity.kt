@@ -1501,16 +1501,6 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             error = "Эта модель или провайдер не подтвердили поддержку режима reasoning. Функция не была отправлена."
             return
         }
-        val historyHasImages = history.any { line ->
-            line.role == "user" && line.attachments.any { it.mimeType.startsWith("image/") }
-        }
-        if (!useCloudGateway && cfg.provider == "OpenRouter" && historyHasImages) {
-            val selectedModel = openRouterModels.firstOrNull { it.id == activeModel }
-            if (selectedModel == null || "image" !in selectedModel.inputModalities) {
-                error = "Выбранная модель OpenRouter не подтвердила входные изображения. Выбери модель с пометкой «vision» в каталоге или подключи NEXUS Agent Server."
-                return
-            }
-        }
         if (activeChatId == null) createChat()
         val chatId = activeChatId ?: return
         val oldChat = chats.firstOrNull { it.id == chatId } ?: return
@@ -1529,6 +1519,16 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             pendingAttachments = emptyList()
             history = oldChat.lines + userLine
             newTitle = if (oldChat.lines.isEmpty()) text.trim().replace("\n", " ").take(36).ifBlank { "Новый диалог" } else oldChat.title
+        }
+        val historyHasImages = history.any { line ->
+            line.role == "user" && line.attachments.any { it.mimeType.startsWith("image/") }
+        }
+        if (!useCloudGateway && cfg.provider == "OpenRouter" && historyHasImages) {
+            val selectedModel = openRouterModels.firstOrNull { it.id == activeModel }
+            if (selectedModel == null || "image" !in selectedModel.inputModalities) {
+                error = "Выбранная модель OpenRouter не подтвердила входные изображения. Выбери модель с пометкой «vision» в каталоге или подключи NEXUS Agent Server."
+                return
+            }
         }
         val placeholder = ChatLine("assistant", "")
         updateChat(chatId, oldChat.copy(title = newTitle, updatedAt = System.currentTimeMillis(), lines = history + placeholder))
