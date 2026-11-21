@@ -1,5 +1,7 @@
 import asyncio
 import json
+import ipaddress
+import socket
 import tempfile
 import time
 import sqlite3
@@ -772,6 +774,30 @@ class DurableTaskTests(unittest.TestCase):
         for url in blocked:
             with self.subTest(url=url), self.assertRaises(ValueError):
                 main.safe_url(url)
+
+    def test_pinned_resolver_returns_only_prevalidated_addresses_without_dns(self):
+        addresses = [ipaddress.ip_address("93.184.216.34"), ipaddress.ip_address("2606:2800:220:1:248:1893:25c8:1946")]
+        resolver = main._PinnedPublicResolver(addresses)
+
+        async def run():
+            with patch.object(main.socket, "getaddrinfo", side_effect=AssertionError("DNS must not be repeated")):
+                results = await resolver.resolve("example.test", 443, socket.AF_UNSPEC)
+            await resolver.close()
+            return results
+
+        results = asyncio.run(run())
+        self.assertEqual({item["host"] for item in results},
+                         {"93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"})
+        self.assertTrue(all(item["flags"] == socket.AI_NUMERICHOST for item in results))
+
+    def test_pinned_resolver_filters_incompatible_address_family(self):
+        resolver = main._PinnedPublicResolver([ipaddress.ip_address("93.184.216.34")])
+
+        async def run():
+            return await resolver.resolve("example.test", 443, socket.AF_INET6)
+
+        with self.assertRaisesRegex(OSError, "compatible"):
+            asyncio.run(run())
 
     def test_safe_url_rejects_mixed_public_and_private_dns_answers(self):
         records = [

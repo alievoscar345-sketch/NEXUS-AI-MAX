@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+import aiohttp
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, SecretStr
 
@@ -273,6 +274,48 @@ async def llm_json(system: str, user: str, purpose: str = "general",
     return parsed
 
 
+def _resolve_public_addresses(host: str, port: int = 443) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    try:
+        try:
+            addresses = [ipaddress.ip_address(host)]
+        except ValueError:
+            records = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+            addresses = list({ipaddress.ip_address(item[4][0]) for item in records})
+        if not addresses or any(not address.is_global for address in addresses):
+            raise ValueError("Private IP destinations are blocked")
+        return addresses
+    except socket.gaierror as exc:
+        raise ValueError("Unable to resolve destination host") from exc
+
+
+class _PinnedPublicResolver(aiohttp.abc.AbstractResolver):
+    """Return only the IP addresses validated for this request; never re-resolve DNS."""
+
+    def __init__(self, addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address]):
+        self.addresses = addresses
+
+    async def resolve(self, host: str, port: int = 0, family: int = socket.AF_INET):
+        results = []
+        for address in self.addresses:
+            address_family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
+            if family not in (socket.AF_UNSPEC, address_family):
+                continue
+            results.append({
+                "hostname": host,
+                "host": str(address),
+                "port": port,
+                "family": address_family,
+                "proto": socket.IPPROTO_TCP,
+                "flags": socket.AI_NUMERICHOST,
+            })
+        if not results:
+            raise OSError("No validated address is compatible with the requested address family")
+        return results
+
+    async def close(self):
+        return None
+
+
 def safe_url(value: str) -> str:
     try:
         p = urlparse(value)
@@ -285,17 +328,33 @@ def safe_url(value: str) -> str:
     host = p.hostname.lower().rstrip(".")
     if not host or host in {"localhost", "metadata.google.internal"} or host.endswith((".local", ".internal")):
         raise ValueError("Private network destinations are blocked")
-    try:
-        try:
-            addresses = [ipaddress.ip_address(host)]
-        except ValueError:
-            records = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-            addresses = [ipaddress.ip_address(item[4][0]) for item in records]
-        if not addresses or any(not address.is_global for address in addresses):
-            raise ValueError("Private IP destinations are blocked")
-    except socket.gaierror as exc:
-        raise ValueError("Unable to resolve destination host") from exc
+    _resolve_public_addresses(host, 443)
     return value
+
+
+async def _fetch_public_text(url: str) -> str:
+    parsed = urlparse(url)
+    host = parsed.hostname.lower().rstrip(".")
+    # Resolve again immediately before connecting, then pin these exact validated IPs
+    # in the connector. TLS still verifies the original URL hostname/SNI.
+    addresses = _resolve_public_addresses(host, 443)
+    resolver = _PinnedPublicResolver(addresses)
+    connector = aiohttp.TCPConnector(resolver=resolver, use_dns_cache=False, ssl=True)
+    timeout = aiohttp.ClientTimeout(total=25, connect=10, sock_read=15)
+    async with aiohttp.ClientSession(
+        timeout=timeout, connector=connector,
+        headers={"User-Agent": "NEXUS-Agent/0.1"},
+    ) as session:
+        async with session.get(url, allow_redirects=False) as response:
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "").lower()
+            if "text" not in content_type and "json" not in content_type:
+                raise ValueError("Only text/JSON pages can be fetched")
+            body = await response.content.read(20001)
+            if len(body) > 20000:
+                body = body[:20000]
+            encoding = response.charset or "utf-8"
+            return body.decode(encoding, errors="replace")
 
 
 def _step_key(tid: str, index: int, action: str, args: dict[str, Any]) -> str:
@@ -398,14 +457,8 @@ async def run_step(step: dict[str, Any], tid: str, idempotency_key: str):
         return {"title": title, "status": "completed", "data": response.json().get("results", [])}
     if action == "fetch_url":
         url = safe_url(str(args.get("url", "")))
-        async with httpx.AsyncClient(timeout=25, follow_redirects=False,
-                                     headers={"User-Agent": "NEXUS-Agent/0.1"}) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            content_type = response.headers.get("content-type", "")
-            if "text" not in content_type and "json" not in content_type:
-                raise ValueError("Only text/JSON pages can be fetched")
-        return {"title": title, "status": "completed", "url": url, "content": response.text[:20000]}
+        content = await _fetch_public_text(url)
+        return {"title": title, "status": "completed", "url": url, "content": content}
     if action == "save_artifact":
         name = Path(str(args.get("filename", "result.md"))).name[:100]
         if not name or name in {".", ".."}:
