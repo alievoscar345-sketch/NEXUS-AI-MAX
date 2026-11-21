@@ -1134,7 +1134,7 @@ def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True) -> dic
             for info in bundle.infolist():
                 name = info.filename
                 path = PurePosixPath(name)
-                if (not name or path.is_absolute() or "\\" in name
+                if (not name or not path.parts or path.is_absolute() or "\\" in name
                         or any(part in {"", ".", ".."} for part in path.parts)):
                     raise ValueError("Checkpoint contains an unsafe workspace path")
                 mode = info.external_attr >> 16
@@ -1171,6 +1171,10 @@ def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True) -> dic
             raise ValueError("Checkpoint artifact set is incomplete")
         if root.is_symlink():
             raise ValueError("Task workspace root cannot be a symbolic link")
+        artifact_prefix = tid + "-"
+        for artifact_name in expected_artifacts:
+            if (WORKSPACE / (artifact_prefix + artifact_name)).is_symlink():
+                raise ValueError("Existing task artifact destination is a symbolic link")
         if root.exists():
             os.replace(root, backup)
         try:
@@ -1181,7 +1185,6 @@ def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True) -> dic
             raise
         if backup.exists():
             shutil.rmtree(backup)
-        artifact_prefix = tid + "-"
         for candidate in WORKSPACE.iterdir():
             if not candidate.name.startswith(artifact_prefix):
                 continue
@@ -2708,7 +2711,7 @@ def download_project_binary_file(project_id: str, path: str, owner_id: str = Dep
     with db() as c:
         row = c.execute("""SELECT v.* FROM project_file_versions v
             JOIN projects p ON p.id=v.project_id
-            WHERE v.project_id=? AND v.owner_id=? AND p.owner_id=? AND v.path=?
+            WHERE v.project_id=? AND v.owner_id=? AND p.owner_id=? AND v.path=? AND v.is_deleted=0
             ORDER BY v.revision DESC LIMIT 1""",
             (project_id, owner_id, owner_id, safe_path)).fetchone()
     if not row:
