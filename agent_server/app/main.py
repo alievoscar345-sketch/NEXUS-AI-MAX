@@ -868,6 +868,8 @@ async def run_step(step: dict[str, Any], tid: str, idempotency_key: str):
             if "GitHub is not connected" in str(exc):
                 return {"title": title, "status": "blocked", "detail": str(exc)}
             raise
+        if action == "github_build_android" and result.get("build_status") not in {"success"}:
+            return {"title": title, "status": "build_failed", **result}
         return {"title": title, "status": "completed", **result}
     if action == "web_search":
         if not TAVILY_KEY:
@@ -1333,7 +1335,13 @@ async def _process_task(tid: str):
                 step_data = {"title": claimed["title"], "action": claimed["action"],
                              "input": json.loads(claimed["input_json"])}
                 result = await run_step(step_data, tid, claimed["idempotency_key"])
-                status = "waiting_for_approval" if result.get("status") == "awaiting_approval" else "completed"
+                result_status = str(result.get("status", ""))
+                if result_status == "awaiting_approval":
+                    status = "waiting_for_approval"
+                elif result_status in {"execution_failed", "build_failed", "blocked", "failed"}:
+                    status = "failed"
+                else:
+                    status = "completed"
                 saved = await run_db(_save_step_result, tid, claimed["id"], status,
                                      json.dumps(result, ensure_ascii=False))
                 if not saved:
