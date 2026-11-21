@@ -316,6 +316,52 @@ class DurableTaskTests(unittest.TestCase):
         self.assertEqual(row["status"], "running")
         self.assertEqual(row["result_json"], "")
 
+    def test_previous_claim_from_same_process_cannot_write_step_result_or_failure(self):
+        now = time.time()
+        old_owner = main.WORKER_ID + ":previous-claim"
+        current_owner = main.WORKER_ID + ":current-claim"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("task-reclaimed-write", "reclaimed task", "running", now, now,
+                 current_owner, now + 600),
+            )
+            conn.execute(
+                "INSERT INTO task_steps(id,task_id,step_index,title,action,input_json,idempotency_key,status,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                ("step-reclaimed-write", "task-reclaimed-write", 0, "Read", "fetch_url", "{}",
+                 "reclaimed-write-key", "running", now, now),
+            )
+
+        token = main._LEASE_OWNER.set(old_owner)
+        try:
+            result_saved = main._save_step_result(
+                "task-reclaimed-write", "step-reclaimed-write", "completed",
+                json.dumps({"late": True}),
+            )
+            failure_saved = main._record_step_failure(
+                "task-reclaimed-write", "step-reclaimed-write", False, None, "late failure",
+            )
+        finally:
+            main._LEASE_OWNER.reset(token)
+
+        self.assertFalse(result_saved)
+        self.assertFalse(failure_saved)
+        with main.db() as conn:
+            task = conn.execute(
+                "SELECT status,lease_owner FROM tasks WHERE id=?", ("task-reclaimed-write",)
+            ).fetchone()
+            step = conn.execute(
+                "SELECT status,result_json,error FROM task_steps WHERE id=?",
+                ("step-reclaimed-write",),
+            ).fetchone()
+        self.assertEqual(task["status"], "running")
+        self.assertEqual(task["lease_owner"], current_owner)
+        self.assertEqual(step["status"], "running")
+        self.assertEqual(step["result_json"], "")
+        self.assertEqual(step["error"], "")
+
     def test_step_claim_requires_live_task_lease_and_no_cancellation(self):
         now = time.time()
         with main.db() as conn:
