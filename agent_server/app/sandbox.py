@@ -40,7 +40,7 @@ def validate_command(command: Any) -> list[str]:
     if not isinstance(command, list) or not command or len(command) > MAX_ARGUMENTS:
         raise SandboxValidationError("command must be a non-empty argument array (maximum 100 items)")
     if any(not isinstance(part, str) or not part or len(part) > MAX_ARGUMENT_LENGTH
-           or "\\x00" in part for part in command):
+           or "\x00" in part for part in command):
         raise SandboxValidationError("each command argument must be a non-empty string of at most 2000 characters")
     if command[0] not in ALLOWED_EXECUTABLES:
         raise SandboxValidationError("executable is not in the sandbox allowlist")
