@@ -115,6 +115,10 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'pending',created_at REAL NOT NULL,
             FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS worker_heartbeats(
+            name TEXT PRIMARY KEY,instance_id TEXT NOT NULL,state TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        );
         """)
         migrations = {
             "lease_owner": "TEXT NOT NULL DEFAULT ''",
@@ -1508,29 +1512,72 @@ def _dispatch_due_automations() -> int:
     return dispatched
 
 
-async def worker():
+def _write_worker_heartbeat(state: str) -> None:
+    now = time.time()
+    with db() as c:
+        c.execute("""INSERT INTO worker_heartbeats(name,instance_id,state,updated_at)
+            VALUES('default',?,?,?)
+            ON CONFLICT(name) DO UPDATE SET instance_id=excluded.instance_id,
+                state=excluded.state,updated_at=excluded.updated_at""",
+            (WORKER_ID, state, now))
+
+
+def _read_worker_heartbeat():
+    with db() as c:
+        return c.execute(
+            "SELECT instance_id,state,updated_at FROM worker_heartbeats WHERE name='default'"
+        ).fetchone()
+
+
+async def _worker_heartbeat_loop() -> None:
     logger = logging.getLogger("nexus.worker")
     while True:
         try:
-            await run_db(_recover_expired_task_leases)
-            await run_db(_dispatch_due_automations)
-            claimed = await run_db(_claim_task_with_lease)
-            if claimed:
-                tid, owner = claimed
-                context_token = _LEASE_OWNER.set(owner)
-                try:
-                    await process(tid)
-                finally:
-                    _LEASE_OWNER.reset(context_token)
-            else:
-                await asyncio.sleep(2)
+            await run_db(_write_worker_heartbeat, "running")
         except asyncio.CancelledError:
             raise
         except Exception:
-            # Keep the durable worker alive through transient DB/provider/runtime faults.
-            # Any task left with an expired lease is recovered on the next worker startup.
-            logger.exception("Unexpected durable worker loop failure")
-            await asyncio.sleep(5)
+            logger.exception("Unable to persist worker liveness heartbeat")
+        await asyncio.sleep(20)
+
+
+async def worker():
+    logger = logging.getLogger("nexus.worker")
+    heartbeat_task = asyncio.create_task(_worker_heartbeat_loop())
+    await run_db(_write_worker_heartbeat, "running")
+    logger.info("Durable worker heartbeat reporting enabled")
+    try:
+        while True:
+            try:
+                await run_db(_recover_expired_task_leases)
+                await run_db(_dispatch_due_automations)
+                claimed = await run_db(_claim_task_with_lease)
+                if claimed:
+                    tid, owner = claimed
+                    context_token = _LEASE_OWNER.set(owner)
+                    try:
+                        await process(tid)
+                    finally:
+                        _LEASE_OWNER.reset(context_token)
+                else:
+                    await asyncio.sleep(2)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Keep the durable worker alive through transient DB/provider/runtime faults.
+                # Any task left with an expired lease is recovered on the next poll.
+                logger.exception("Unexpected durable worker loop failure")
+                await asyncio.sleep(5)
+    finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await run_db(_write_worker_heartbeat, "stopped")
+        except Exception:
+            logger.exception("Unable to persist worker shutdown state")
 
 
 @asynccontextmanager
@@ -1555,6 +1602,22 @@ app = FastAPI(title="NEXUS Agent Core", version="0.2.0", lifespan=lifespan)
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "nexus-agent-core", "version": "0.2.0"}
+
+@app.get("/health/worker")
+async def worker_health():
+    heartbeat = await run_db(_read_worker_heartbeat)
+    now = time.time()
+    if heartbeat is None:
+        raise HTTPException(503, "Background worker has not reported a heartbeat")
+    age = max(0.0, now - float(heartbeat["updated_at"]))
+    if heartbeat["state"] != "running" or age > 90:
+        raise HTTPException(503, "Background worker heartbeat is stale or stopped")
+    return {
+        "status": "ok",
+        "worker": "running",
+        "last_seen_at": heartbeat["updated_at"],
+        "age_seconds": round(age, 1),
+    }
 
 
 def validate_chat_messages(messages: list[dict[str, Any]]) -> bool:
