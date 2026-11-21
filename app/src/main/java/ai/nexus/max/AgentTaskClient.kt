@@ -61,14 +61,17 @@ class AgentTaskClient(
         require(token.isNotBlank()) { "Agent access token is missing" }
     }
 
-    fun createTask(prompt: String, maxSteps: Int = 24, idempotencyKey: String = UUID.randomUUID().toString(), projectId: String? = null): String {
+    fun createTask(prompt: String, maxSteps: Int = 16, idempotencyKey: String = UUID.randomUUID().toString(),
+                    projectId: String? = null, contextText: String = ""): String {
         require(prompt.trim().length >= 3) { "Task prompt is too short" }
+        require(contextText.length <= 24000) { "Task file context exceeds 24 KB" }
         val body = JSONObject()
             .put("prompt", prompt.trim())
             .put("autonomy", "level3")
             .put("max_steps", maxSteps.coerceIn(1, 30))
             .put("idempotency_key", idempotencyKey)
         projectId?.let { body.put("project_id", it) }
+        if (contextText.isNotBlank()) body.put("context_text", contextText)
         return request("POST", listOf("v1", "tasks"), body)["id"]?.toString()
             ?: throw IOException("Agent API did not return a task ID")
     }
