@@ -1130,6 +1130,68 @@ class DurableTaskTests(unittest.TestCase):
         self.assertTrue(observed)
         self.assertNotEqual(observed[0], loop_thread)
 
+    def test_approval_decision_requeues_waiting_task_for_worker(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id) VALUES(?,?,?,?,?,?)",
+                ("task-approval-resume", "continue after approval", "waiting_for_approval",
+                 now, now, "tenant-approval"),
+            )
+            conn.execute(
+                "INSERT INTO approvals(id,task_id,description,status,created_at,idempotency_key) "
+                "VALUES(?,?,?,?,?,?)",
+                ("approval-resume", "task-approval-resume", "Review action", "pending",
+                 now, "approval-resume-key"),
+            )
+
+        result = main._decide_approval_record(
+            "approval-resume", "tenant-approval", True, "approved by owner"
+        )
+        self.assertEqual(result["status"], "approved")
+        self.assertIn("re-queued", result["detail"])
+        with main.db() as conn:
+            task = conn.execute(
+                "SELECT status,next_attempt_at,lease_owner FROM tasks WHERE id=?",
+                ("task-approval-resume",),
+            ).fetchone()
+            approval = conn.execute(
+                "SELECT status FROM approvals WHERE id=?", ("approval-resume",)
+            ).fetchone()
+        self.assertEqual(task["status"], "queued")
+        self.assertIsNone(task["next_attempt_at"])
+        self.assertEqual(task["lease_owner"], "")
+        self.assertEqual(approval["status"], "approved")
+        claimed = main._claim_task_with_lease()
+        self.assertEqual(claimed[0], "task-approval-resume")
+
+    def test_rejected_approval_also_requeues_task_with_decision_recorded(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id) VALUES(?,?,?,?,?,?)",
+                ("task-approval-reject", "continue after rejection", "waiting_for_approval",
+                 now, now, "tenant-approval"),
+            )
+            conn.execute(
+                "INSERT INTO approvals(id,task_id,description,status,created_at,idempotency_key) "
+                "VALUES(?,?,?,?,?,?)",
+                ("approval-reject", "task-approval-reject", "Review action", "pending",
+                 now, "approval-reject-key"),
+            )
+
+        result = main._decide_approval_record(
+            "approval-reject", "tenant-approval", False, "rejected by owner"
+        )
+        self.assertEqual(result["status"], "rejected")
+        with main.db() as conn:
+            task = conn.execute("SELECT status FROM tasks WHERE id=?",
+                                ("task-approval-reject",)).fetchone()
+            approval = conn.execute("SELECT status FROM approvals WHERE id=?",
+                                     ("approval-reject",)).fetchone()
+        self.assertEqual(task["status"], "queued")
+        self.assertEqual(approval["status"], "rejected")
+
     def test_db_context_commits_and_closes_connection(self):
         now = time.time()
         with main.db() as conn:

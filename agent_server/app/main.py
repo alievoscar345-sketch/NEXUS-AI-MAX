@@ -1262,12 +1262,15 @@ def _decide_approval_record(approval_id: str, owner_id: str, approved: bool, not
             WHERE task_id=? AND status='waiting_for_approval'""",
             (json.dumps({"status": status, "detail": "Approval recorded; no external connector is configured."}),
              now, row["task_id"]))
-        c.execute("UPDATE tasks SET status='paused',lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
-                  (now, row["task_id"]))
+        # Resume the durable worker after the approval decision. The approved/rejected
+        # decision is persisted in the step result before the task becomes claimable.
+        c.execute("""UPDATE tasks SET status='queued',next_attempt_at=NULL,lease_owner='',
+            lease_expires_at=NULL,updated_at=? WHERE id=? AND status='waiting_for_approval'
+            AND cancel_requested=0""", (now, row["task_id"]))
         c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
                   (row["task_id"], now, "approval_decision", status + ": " + note))
     return {"approval_id": approval_id, "status": status,
-            "detail": "Decision recorded. No third-party action is executed by this generic backend."}
+            "detail": "Decision recorded and task re-queued. No third-party action is executed by this generic backend."}
 
 
 @app.post("/v1/approvals/{approval_id}", dependencies=[Depends(auth)])
