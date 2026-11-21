@@ -439,7 +439,8 @@ data class OpenRouterModel(
     val promptPrice: String,
     val completionPrice: String,
     val isFree: Boolean,
-    val supportedParameters: Set<String> = emptySet()
+    val supportedParameters: Set<String> = emptySet(),
+    val inputModalities: Set<String> = emptySet()
 )
 
 class NexusViewModel(application: Application) : AndroidViewModel(application) {
@@ -1264,7 +1265,20 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                                     }
                                 }
                             }
-                            OpenRouterModel(id, item.optString("name", id), item.optString("description", ""), item.optInt("context_length", 0), prompt, completion, prompt.toDoubleOrNull() == 0.0 && completion.toDoubleOrNull() == 0.0, supportedParameters)
+                            val inputModalitiesJson = item.optJSONObject("architecture")?.optJSONArray("input_modalities")
+                            val inputModalities = buildSet {
+                                if (inputModalitiesJson != null) {
+                                    for (modalityIndex in 0 until inputModalitiesJson.length()) {
+                                        inputModalitiesJson.optString(modalityIndex).takeIf { it.isNotBlank() }?.let { add(it) }
+                                    }
+                                }
+                            }
+                            OpenRouterModel(
+                                id, item.optString("name", id), item.optString("description", ""),
+                                item.optInt("context_length", 0), prompt, completion,
+                                prompt.toDoubleOrNull() == 0.0 && completion.toDoubleOrNull() == 0.0,
+                                supportedParameters, inputModalities
+                            )
                         }.sortedWith(compareByDescending<OpenRouterModel> { it.isFree }.thenBy { it.name.lowercase() })
                     }
                 }
@@ -1486,6 +1500,16 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         if (useReasoning && (cfg.provider != "OpenRouter" || "reasoning" !in selectedOpenRouterCapabilities)) {
             error = "Эта модель или провайдер не подтвердили поддержку режима reasoning. Функция не была отправлена."
             return
+        }
+        val historyHasImages = history.any { line ->
+            line.role == "user" && line.attachments.any { it.mimeType.startsWith("image/") }
+        }
+        if (!useCloudGateway && cfg.provider == "OpenRouter" && historyHasImages) {
+            val selectedModel = openRouterModels.firstOrNull { it.id == activeModel }
+            if (selectedModel == null || "image" !in selectedModel.inputModalities) {
+                error = "Выбранная модель OpenRouter не подтвердила входные изображения. Выбери модель с пометкой «vision» в каталоге или подключи NEXUS Agent Server."
+                return
+            }
         }
         if (activeChatId == null) createChat()
         val chatId = activeChatId ?: return
@@ -3337,7 +3361,13 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                             Column(Modifier.weight(1f)) {
                                                 Text(item.name, color = MainText, fontSize = 12.sp, maxLines = 2)
                                                 Text(item.id, color = Muted, fontSize = 9.sp, maxLines = 2)
-                                                Text(if (item.isFree) "БЕСПЛАТНАЯ · контекст ${item.contextLength}" else "Платная · контекст ${item.contextLength}", color = if (item.isFree) Color(0xFF8FC6A0) else Muted, fontSize = 9.sp)
+                                                Text(
+                                                    (if ("image" in item.inputModalities) "VISION · " else "ТЕКСТ · ") +
+                                                        (if (item.isFree) "БЕСПЛАТНАЯ" else "Платная") +
+                                                        " · контекст ${item.contextLength}",
+                                                    color = if ("image" in item.inputModalities) Color(0xFF8FC6A0) else Muted,
+                                                    fontSize = 9.sp
+                                                )
                                             }
                                         }
                                         Divider(color = DividerTone)
