@@ -47,6 +47,23 @@ def validate_command(command: Any) -> list[str]:
     return command
 
 
+def _docker_workspace_source(workspace: Path) -> Path:
+    configured_host_root = os.getenv("NEXUS_SANDBOX_HOST_WORKSPACE_ROOT", "").strip()
+    workspace_root = Path(os.getenv("NEXUS_AGENT_WORKSPACE", "./data/workspace")).resolve()
+    resolved_workspace = workspace.resolve()
+    try:
+        relative = resolved_workspace.relative_to(workspace_root)
+    except ValueError as exc:
+        raise SandboxUnavailable("Task workspace is outside the configured workspace root") from exc
+    if not configured_host_root:
+        return resolved_workspace
+    host_root = Path(configured_host_root).resolve()
+    source = host_root / relative
+    if "," in str(source):
+        raise SandboxUnavailable("Host workspace path contains a character unsupported by Docker mount syntax")
+    return source
+
+
 def build_docker_argv(image: str, workspace: Path, cidfile: str,
                       command: list[str], uid: int, gid: int) -> list[str]:
     if not _DIGEST_IMAGE.fullmatch(image):
@@ -55,9 +72,9 @@ def build_docker_argv(image: str, workspace: Path, cidfile: str,
         )
     if uid <= 0 or gid < 0:
         raise SandboxUnavailable("The backend must run as a non-root user to enable code execution")
-    root = workspace.resolve()
-    if not root.is_dir():
-        raise SandboxUnavailable("Task workspace is not available")
+    root = _docker_workspace_source(workspace)
+    if not root.is_absolute():
+        raise SandboxUnavailable("Docker workspace source must be an absolute host path")
     if "," in str(root):
         raise SandboxUnavailable("Workspace path contains a character unsupported by Docker mount syntax")
     return [
