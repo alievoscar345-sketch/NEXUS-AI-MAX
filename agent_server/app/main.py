@@ -816,23 +816,31 @@ def list_approvals(owner_id: str = Depends(auth)):
     return {"approvals": [dict(r) for r in rows]}
 
 
-@app.post("/v1/approvals/{approval_id}", dependencies=[Depends(auth)])
-def decide_approval(approval_id: str, body: Approval, owner_id: str = Depends(auth)):
+def _decide_approval_record(approval_id: str, owner_id: str, approved: bool, note: str) -> dict[str, str]:
     with db() as c:
+        # Lock before reading pending status so concurrent decisions have a single winner.
+        c.execute("BEGIN IMMEDIATE")
         row = c.execute("""SELECT a.* FROM approvals a JOIN tasks t ON t.id=a.task_id
             WHERE a.id=? AND t.owner_id=?""", (approval_id, owner_id)).fetchone()
         if not row:
             raise HTTPException(404, "Approval not found")
         if row["status"] != "pending":
             raise HTTPException(409, "Approval already decided")
-        status = "approved" if body.approved else "rejected"
+        status = "approved" if approved else "rejected"
+        now = time.time()
         c.execute("UPDATE approvals SET status=? WHERE id=?", (status, approval_id))
         c.execute("""UPDATE task_steps SET status='completed',result_json=?,updated_at=?
             WHERE task_id=? AND status='waiting_for_approval'""",
             (json.dumps({"status": status, "detail": "Approval recorded; no external connector is configured."}),
-             time.time(), row["task_id"]))
+             now, row["task_id"]))
         c.execute("UPDATE tasks SET status='paused',lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
-                  (time.time(), row["task_id"]))
-    event(row["task_id"], "approval_decision", status + ": " + body.note)
+                  (now, row["task_id"]))
+        c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                  (row["task_id"], now, "approval_decision", status + ": " + note))
     return {"approval_id": approval_id, "status": status,
             "detail": "Decision recorded. No third-party action is executed by this generic backend."}
+
+
+@app.post("/v1/approvals/{approval_id}", dependencies=[Depends(auth)])
+def decide_approval(approval_id: str, body: Approval, owner_id: str = Depends(auth)):
+    return _decide_approval_record(approval_id, owner_id, body.approved, body.note)

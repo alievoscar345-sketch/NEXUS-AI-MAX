@@ -112,6 +112,44 @@ class DurableTaskTests(unittest.TestCase):
             count = conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"]
         self.assertEqual(count, 1)
 
+    def test_concurrent_approval_decisions_have_single_winner(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id) VALUES(?,?,?,?,?,?)",
+                ("task-approval-race", "approve one decision", "waiting_for_approval", now, now, "tenant-race"),
+            )
+            conn.execute(
+                "INSERT INTO approvals(id,task_id,description,status,created_at,idempotency_key) "
+                "VALUES(?,?,?,?,?,?)",
+                ("approval-race", "task-approval-race", "Approve action", "pending", now, "approval-race-key"),
+            )
+
+        def decide(approved):
+            try:
+                return main.decide_approval(
+                    "approval-race", main.Approval(approved=approved), owner_id="tenant-race"
+                )
+            except main.HTTPException as exc:
+                return exc.status_code
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(decide, [True, False]))
+
+        successes = [item for item in results if isinstance(item, dict)]
+        conflicts = [item for item in results if item == 409]
+        self.assertEqual(len(successes), 1)
+        self.assertEqual(len(conflicts), 1)
+        with main.db() as conn:
+            approval = conn.execute("SELECT status FROM approvals WHERE id=?",
+                                     ("approval-race",)).fetchone()
+            event_count = conn.execute(
+                "SELECT COUNT(*) AS n FROM events WHERE task_id=? AND kind='approval_decision'",
+                ("task-approval-race",),
+            ).fetchone()["n"]
+        self.assertIn(approval["status"], {"approved", "rejected"})
+        self.assertEqual(event_count, 1)
+
     def test_concurrent_create_task_is_idempotent_and_event_is_atomic(self):
         body = main.NewTask(
             prompt="Run a concurrent idempotency check",
