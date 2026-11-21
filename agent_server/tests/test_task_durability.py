@@ -105,8 +105,9 @@ class DurableTaskTests(unittest.TestCase):
             main._workspace_write("workspace-api", "docs/summary.md", "NEXUS output")
             listing = main.list_task_workspace("workspace-api", owner_id="owner-a")
             read = main.read_task_workspace_file("workspace-api", "docs/summary.md", owner_id="owner-a")
-            with self.assertRaisesRegex(main.HTTPException, "Task not found"):
+            with self.assertRaises(main.HTTPException) as denied:
                 main.list_task_workspace("workspace-api", owner_id="owner-b")
+            self.assertEqual(denied.exception.status_code, 404)
         self.assertEqual(listing["entries"][0]["name"], "docs")
         self.assertEqual(read["content"], "NEXUS output")
 
@@ -119,8 +120,9 @@ class DurableTaskTests(unittest.TestCase):
             )
         body = main.WorkspaceFileInput(path="report.md", content="edited")
         with patch.object(main, "WORKSPACE", Path(self.temp.name) / "workspace"):
-            with self.assertRaisesRegex(main.HTTPException, "after the task has finished"):
+            with self.assertRaises(main.HTTPException) as conflict:
                 main.write_task_workspace_file("workspace-edit", body, owner_id="owner-a")
+            self.assertEqual(conflict.exception.status_code, 409)
             with main.db() as conn:
                 conn.execute("UPDATE tasks SET status='completed' WHERE id='workspace-edit'")
             result = main.write_task_workspace_file("workspace-edit", body, owner_id="owner-a")
