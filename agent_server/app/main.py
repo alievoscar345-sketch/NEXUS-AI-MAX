@@ -854,6 +854,13 @@ def _task_has_checkpoint(tid: str) -> bool:
         ).fetchone() is not None
 
 
+def _safe_task_artifact_name(name: Any) -> bool:
+    return (isinstance(name, str) and 0 < len(name) <= 100
+            and name not in {".", ".."} and Path(name).name == name
+            and "/" not in name and "\\" not in name and "\x00" not in name
+            and not any(ord(char) < 32 for char in name))
+
+
 def _checkpoint_archive_path(tid: str, sequence: int) -> Path:
     safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", tid)
     task_dir = CHECKPOINT_ROOT / safe_id
@@ -908,8 +915,8 @@ def _create_task_checkpoint(tid: str, reason: str = "step_completed",
             if not candidate.name.startswith(artifact_prefix) or candidate.is_symlink():
                 continue
             artifact_name = candidate.name[len(artifact_prefix):]
-            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", artifact_name):
-                continue
+            if not _safe_task_artifact_name(artifact_name):
+                raise ValueError("Task contains a published artifact with an unsafe filename")
             resolved = candidate.resolve(strict=True)
             if resolved.parent != WORKSPACE.resolve() or not resolved.is_file():
                 continue
@@ -1125,8 +1132,7 @@ def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True) -> dic
         raise ValueError("Checkpoint artifact manifest is invalid")
     expected_artifacts = {}
     for item in artifact_manifest or []:
-        if not isinstance(item, dict) or not re.fullmatch(
-                r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", str(item.get("name", ""))):
+        if not isinstance(item, dict) or not _safe_task_artifact_name(item.get("name")):
             raise ValueError("Checkpoint contains an invalid artifact entry")
         if item["name"] in expected_artifacts:
             raise ValueError("Checkpoint contains duplicate artifact entries")
