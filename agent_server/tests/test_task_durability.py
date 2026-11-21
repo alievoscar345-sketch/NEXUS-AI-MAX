@@ -2087,9 +2087,6 @@ class DurableTaskTests(unittest.TestCase):
         self.assertIsNone(row)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class WorkerLeaseContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_claims_keep_independent_lease_owners(self):
@@ -2110,3 +2107,6 @@ class WorkerLeaseContextTests(unittest.IsolatedAsyncioTestCase):
             [("task-a", "worker-a:lease-a"), ("task-b", "worker-b:lease-b")],
         )
         self.assertEqual(main._current_lease_owner(), main.WORKER_ID)
+
+if __name__ == "__main__":
+    unittest.main()
