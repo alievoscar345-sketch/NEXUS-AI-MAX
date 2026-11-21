@@ -28,6 +28,7 @@ data class AgentTaskEvent(val id: Long, val createdAt: Double, val kind: String,
 data class AgentTaskStep(val index: Int, val title: String, val action: String, val status: String, val error: String)
 
 data class AgentApproval(val id: String, val taskId: String, val description: String, val status: String)
+data class AgentWorkspaceEntry(val name: String, val type: String, val bytes: Long?)
 
 class AgentTaskClient(
     baseUrl: String,
@@ -161,6 +162,21 @@ class AgentTaskClient(
     fun cancelTask(taskId: String): String =
         request("POST", listOf("v1", "tasks", taskId, "cancel"), JSONObject())["status"]?.toString().orEmpty()
 
+    fun listWorkspace(taskId: String, path: String = "."): List<AgentWorkspaceEntry> {
+        val obj = request("GET", listOf("v1", "tasks", taskId, "workspace"), query = mapOf("path" to path))
+        val entries = obj.optJSONArray("entries") ?: JSONArray()
+        return (0 until entries.length()).mapNotNull { index ->
+            val item = entries.optJSONObject(index) ?: return@mapNotNull null
+            AgentWorkspaceEntry(item.optString("name"), item.optString("type"),
+                if (item.isNull("bytes")) null else item.optLong("bytes"))
+        }
+    }
+
+    fun readWorkspaceFile(taskId: String, path: String): String =
+        request("GET", listOf("v1", "tasks", taskId, "workspace", "file"), query = mapOf("path" to path)).optString("content")
+
+    fun writeWorkspaceFile(taskId: String, path: String, content: String): Long =
+        request("PUT", listOf("v1", "tasks", taskId, "workspace", "file"), JSONObject().put("path", path).put("content", content)).optLong("bytes")
     fun listApprovals(): List<AgentApproval> {
         val approvals = request("GET", listOf("v1", "approvals")).optJSONArray("approvals") ?: JSONArray()
         return (0 until approvals.length()).mapNotNull { index ->
@@ -189,6 +205,7 @@ class AgentTaskClient(
         when (method) {
             "GET" -> requestBuilder.get()
             "POST" -> requestBuilder.post((body ?: JSONObject()).toString().toRequestBody(jsonType))
+            "PUT" -> requestBuilder.put((body ?: JSONObject()).toString().toRequestBody(jsonType))
             else -> throw IllegalArgumentException("Unsupported HTTP method")
         }
         http.newCall(requestBuilder.build()).execute().use { response ->
