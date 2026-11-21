@@ -1,6 +1,6 @@
 package ai.nexus.max
 
-import org.xmlpull.v1.XmlPullParserFactory
+import org.kxml2.io.KXmlParser
 import org.xmlpull.v1.XmlPullParser
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -40,7 +40,7 @@ private fun readOfficeArchive(bytes: ByteArray, accept: (String) -> Boolean): Li
 }
 
 private fun officeParser(xml: ByteArray): XmlPullParser =
-    XmlPullParserFactory.newInstance().apply { isNamespaceAware = true }.newPullParser().apply {
+    KXmlParser().apply {
         setFeature(XmlPullParser.FEATURE_PROCESS_DOCDECL, false)
         setInput(ByteArrayInputStream(xml), "UTF-8")
     }
