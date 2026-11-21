@@ -576,7 +576,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startAgentEventStream(taskId: String) {
         if (!agentServerConfigured || agentServerUrl.isBlank()) return
-        if (agentEventStreamTaskId == taskId && agentEventStreamCall?.isCanceled == false) return
+        if (agentEventStreamTaskId == taskId && agentEventStreamCall?.isCanceled() == false) return
         stopAgentEventStream()
         val cursor = activeAgentTask?.takeIf { it.id == taskId }?.events?.maxOfOrNull { it.id } ?: 0L
         agentEventStreamTaskId = taskId
@@ -3155,9 +3155,10 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
         if (vm.agentServerConfigured && vm.agentServerUrl.isNotBlank()) {
             try {
                 while (true) {
-                    if (selectedTask != null) vm.startAgentEventStream(selectedTask)
-                    vm.refreshAgentConsole(selectedTask)
-                    delay(if (selectedTask == null) 10000 else 15000)
+                    val taskId = selectedTask
+                    if (taskId != null) vm.startAgentEventStream(taskId)
+                    vm.refreshAgentConsole(taskId)
+                    delay(if (taskId == null) 10000 else 15000)
                 }
             } finally {
                 vm.stopAgentEventStream()
