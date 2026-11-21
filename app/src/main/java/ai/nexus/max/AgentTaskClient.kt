@@ -33,6 +33,7 @@ data class AgentArtifact(val name: String, val bytes: Long)
 data class NexusMemory(val id: String, val title: String, val content: String, val category: String, val pinned: Boolean, val updatedAt: Double)
 data class MemorySuggestion(val title: String, val content: String, val category: String)
 data class NexusSkill(val id: String, val name: String, val description: String, val instructions: String, val category: String, val enabled: Boolean)
+data class NexusProject(val id: String, val name: String, val description: String, val context: String, val status: String, val taskCount: Int)
 data class NexusAutomation(
     val id: String, val name: String, val prompt: String, val scheduleType: String,
     val localTime: String, val timezone: String, val weekdays: List<Int>,
@@ -57,13 +58,14 @@ class AgentTaskClient(
         require(token.isNotBlank()) { "Agent access token is missing" }
     }
 
-    fun createTask(prompt: String, maxSteps: Int = 8, idempotencyKey: String = UUID.randomUUID().toString()): String {
+    fun createTask(prompt: String, maxSteps: Int = 8, idempotencyKey: String = UUID.randomUUID().toString(), projectId: String? = null): String {
         require(prompt.trim().length >= 3) { "Task prompt is too short" }
         val body = JSONObject()
             .put("prompt", prompt.trim())
             .put("autonomy", "level3")
             .put("max_steps", maxSteps.coerceIn(1, 30))
             .put("idempotency_key", idempotencyKey)
+        projectId?.let { body.put("project_id", it) }
         return request("POST", listOf("v1", "tasks"), body)["id"]?.toString()
             ?: throw IOException("Agent API did not return a task ID")
     }
@@ -199,6 +201,37 @@ class AgentTaskClient(
     fun readArtifact(taskId: String, name: String): String =
         request("GET", listOf("v1", "tasks", taskId, "artifacts", "file"),
             query = mapOf("name" to name)).optString("content")
+
+    fun listProjects(): List<NexusProject> {
+        val items = request("GET", listOf("v1", "projects")).optJSONArray("projects") ?: JSONArray()
+        return (0 until items.length()).mapNotNull { index ->
+            val item = items.optJSONObject(index) ?: return@mapNotNull null
+            NexusProject(item.optString("id"), item.optString("name"), item.optString("description"),
+                item.optString("context"), item.optString("status"), item.optInt("task_count"))
+        }
+    }
+
+    fun createProject(name: String, description: String, context: String): NexusProject {
+        val body = JSONObject().put("name", name.trim()).put("description", description.trim()).put("context", context.trim())
+        val item = request("POST", listOf("v1", "projects"), body).optJSONObject("project")
+            ?: throw IOException("Projects API did not return a record")
+        return item.toNexusProject()
+    }
+
+    fun updateProject(project: NexusProject): NexusProject {
+        val body = JSONObject().put("name", project.name).put("description", project.description)
+            .put("context", project.context).put("status", project.status)
+        val item = request("PATCH", listOf("v1", "projects", project.id), body).optJSONObject("project")
+            ?: throw IOException("Projects API did not return an updated record")
+        return item.toNexusProject()
+    }
+
+    fun deleteProject(id: String) { request("DELETE", listOf("v1", "projects", id)) }
+
+    private fun JSONObject.toNexusProject() = NexusProject(
+        optString("id"), optString("name"), optString("description"), optString("context"),
+        optString("status"), optInt("task_count")
+    )
 
     fun listSkills(): List<NexusSkill> {
         val items = request("GET", listOf("v1", "skills")).optJSONArray("skills") ?: JSONArray()
