@@ -180,6 +180,27 @@ class DurableTaskTests(unittest.TestCase):
             )
         self.assertIsNone(main._read_task_event_batch("task-sse-private", "owner-b", 0))
 
+    def test_get_task_without_cursor_returns_most_recent_event_page(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id) VALUES(?,?,?,?,?,?)",
+                ("task-event-page", "bounded event history", "completed", now, now, "personal"),
+            )
+            for index in range(205):
+                conn.execute(
+                    "INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                    ("task-event-page", now + index, "progress", f"event-{index}"),
+                )
+        recent = main.get_task("task-event-page", owner_id="personal")["events"]
+        self.assertEqual(len(recent), 200)
+        self.assertEqual(recent[0]["message"], "event-5")
+        self.assertEqual(recent[-1]["message"], "event-204")
+        next_page = main.get_task("task-event-page", after_event_id=200, owner_id="personal")["events"]
+        self.assertEqual([item["message"] for item in next_page], [
+            "event-200", "event-201", "event-202", "event-203", "event-204"
+        ])
+
     def test_get_task_rejects_negative_event_cursor(self):
         now = time.time()
         with main.db() as conn:

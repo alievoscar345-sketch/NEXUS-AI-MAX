@@ -1260,9 +1260,15 @@ def get_task(tid: str, after_event_id: int | None = None, owner_id: str = Depend
         row = c.execute("SELECT * FROM tasks WHERE id=? AND owner_id=?", (tid, owner_id)).fetchone()
         if not row:
             raise HTTPException(404, "Task not found")
-        events = c.execute("""SELECT id,created_at,kind,message FROM events
-            WHERE task_id=? AND (? IS NULL OR id>?) ORDER BY id LIMIT 200""",
-            (tid, after_event_id, after_event_id)).fetchall()
+        if after_event_id is None:
+            events = c.execute("""SELECT id,created_at,kind,message FROM (
+                SELECT id,created_at,kind,message FROM events
+                WHERE task_id=? ORDER BY id DESC LIMIT 200
+            ) ORDER BY id""", (tid,)).fetchall()
+        else:
+            events = c.execute("""SELECT id,created_at,kind,message FROM events
+                WHERE task_id=? AND id>? ORDER BY id LIMIT 200""",
+                (tid, after_event_id)).fetchall()
         steps = c.execute("""SELECT step_index,title,action,status,attempt_count,max_attempts,
             error,next_attempt_at,result_json FROM task_steps WHERE task_id=? ORDER BY step_index""",
             (tid,)).fetchall()
