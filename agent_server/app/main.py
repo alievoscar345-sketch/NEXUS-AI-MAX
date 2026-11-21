@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 import httpx
 import aiohttp
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, SecretStr
 
 from .model_gateway import ModelConfig, ModelGateway, ModelGatewayError, load_models
@@ -219,6 +220,7 @@ class ProviderCredentialInput(BaseModel):
 
 class ChatCompletionInput(BaseModel):
     messages: list[dict[str, Any]] = Field(min_length=1, max_length=40)
+    stream: bool = False
 
 
 ALLOWED_PROVIDER_HOSTS = {
@@ -915,8 +917,36 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
     models = await run_db(provider_models_for_owner, owner_id)
     if not models:
         raise HTTPException(503, "No model provider is configured for this account")
+    gateway = ModelGateway(models=models)
+    if body.stream:
+        stream_iterator = gateway.stream_messages(body.messages, purpose="general")
+        try:
+            first_chunk = await anext(stream_iterator)
+        except ModelGatewayError as exc:
+            status = 503 if "No configured model supports" in str(exc) else 502
+            raise HTTPException(status, str(exc)) from exc
+
+        async def event_stream():
+            try:
+                yield "data: " + json.dumps(first_chunk, ensure_ascii=False, separators=(",", ":")) + "\\n\\n"
+                async for chunk in stream_iterator:
+                    yield "data: " + json.dumps(chunk, ensure_ascii=False, separators=(",", ":")) + "\\n\\n"
+            except ModelGatewayError:
+                error = {"error": {"message": "The model stream was interrupted.",
+                                   "type": "provider_stream_error"}}
+                yield "data: " + json.dumps(error, separators=(",", ":")) + "\\n\\n"
+            finally:
+                await stream_iterator.aclose()
+            yield "data: [DONE]\\n\\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                     "Connection": "keep-alive"},
+        )
     try:
-        result = await ModelGateway(models=models).complete_messages(body.messages, purpose="general")
+        result = await gateway.complete_messages(body.messages, purpose="general")
     except ModelGatewayError as exc:
         status = 503 if "No configured model supports" in str(exc) else 502
         raise HTTPException(status, str(exc)) from exc
