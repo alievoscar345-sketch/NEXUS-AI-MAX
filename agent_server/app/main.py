@@ -379,10 +379,13 @@ def _get_task_row(tid: str):
         return c.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
 
 
-def _set_task_planning(tid: str):
+def _set_task_planning(tid: str) -> bool:
+    now = time.time()
     with db() as c:
-        c.execute("UPDATE tasks SET status='planning',updated_at=? WHERE id=? AND status!='cancelled'",
-                  (time.time(), tid))
+        changed = c.execute("""UPDATE tasks SET status='planning',updated_at=? WHERE id=?
+            AND status='running' AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
+            (now, tid, WORKER_ID, now)).rowcount
+    return bool(changed)
 
 
 def _mark_task_cancelled(tid: str):
@@ -410,23 +413,33 @@ def _step_summary(tid: str):
 
 
 def _set_task_waiting_for_approval(tid: str) -> bool:
+    now = time.time()
     with db() as c:
-        changed = c.execute("UPDATE tasks SET status='waiting_for_approval',lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND cancel_requested=0 AND status!='cancelled'",
-                            (time.time(), tid)).rowcount
+        changed = c.execute("""UPDATE tasks SET status='waiting_for_approval',lease_owner='',
+            lease_expires_at=NULL,updated_at=? WHERE id=? AND status='running'
+            AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
+            (now, tid, WORKER_ID, now)).rowcount
     return bool(changed)
 
 
 def _set_task_retry_wait(tid: str, next_at: float) -> bool:
+    now = time.time()
     with db() as c:
-        changed = c.execute("UPDATE tasks SET status='retry_wait',next_attempt_at=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND cancel_requested=0 AND status!='cancelled'",
-                            (next_at, time.time(), tid)).rowcount
+        changed = c.execute("""UPDATE tasks SET status='retry_wait',next_attempt_at=?,lease_owner='',
+            lease_expires_at=NULL,updated_at=? WHERE id=? AND status='running'
+            AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
+            (next_at, now, tid, WORKER_ID, now)).rowcount
     return bool(changed)
 
 
 def _complete_task(tid: str, summary: str, results_json: str) -> bool:
+    now = time.time()
     with db() as c:
-        changed = c.execute("UPDATE tasks SET status='completed',summary=?,results_json=?,error='',next_attempt_at=NULL,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND cancel_requested=0 AND status!='cancelled'",
-                            (summary[:12000], results_json, time.time(), tid)).rowcount
+        changed = c.execute("""UPDATE tasks SET status='completed',summary=?,results_json=?,
+            error='',next_attempt_at=NULL,lease_owner='',lease_expires_at=NULL,updated_at=?
+            WHERE id=? AND status='running' AND cancel_requested=0
+            AND lease_owner=? AND lease_expires_at>?""",
+            (summary[:12000], results_json, now, tid, WORKER_ID, now)).rowcount
     return bool(changed)
 
 
@@ -525,7 +538,9 @@ async def process(tid: str):
     started = time.monotonic()
     try:
         if not row["plan_json"] or row["plan_json"] == "[]":
-            await run_db(_set_task_planning, tid)
+            planning = await run_db(_set_task_planning, tid)
+            if not planning:
+                return
             await run_db(event, tid, "status", "Planning task")
             plan = await llm_json(
                 'You are NEXUS Agent Planner. Return strict JSON only: {"summary":"...","steps":[{"title":"...","action":"web_search|fetch_url|save_artifact|draft_external_action","input":{}}]}. Use only listed actions. For publishing, messaging, purchases or account changes use draft_external_action. Never claim external actions succeeded.',
