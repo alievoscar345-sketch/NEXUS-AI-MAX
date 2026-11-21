@@ -577,6 +577,12 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var providerVaultMessage by mutableStateOf<String?>(null)
         private set
+    var githubIntegration by mutableStateOf<NexusGitHubIntegration?>(null)
+        private set
+    var githubBusy by mutableStateOf(false)
+        private set
+    var githubMessage by mutableStateOf<String?>(null)
+        private set
 
     val activeChat: ChatSession?
         get() = chats.firstOrNull { it.id == activeChatId }
@@ -701,6 +707,64 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun agentTaskClient(): AgentTaskClient =
         AgentTaskClient(agentServerUrl, agentAuthorization(), client)
+
+    fun refreshGitHubIntegration() {
+        if (githubBusy || !agentServerConfigured || agentServerUrl.isBlank()) return
+        githubBusy = true
+        viewModelScope.launch {
+            try {
+                val status = withContext(Dispatchers.IO) { agentTaskClient().githubStatus() }
+                githubIntegration = status.takeIf { it.connected }
+                githubMessage = if (status.connected) "GitHub подключён." else "GitHub не подключён."
+            } catch (e: Exception) {
+                githubMessage = e.message ?: "Не удалось проверить GitHub."
+            } finally {
+                githubBusy = false
+            }
+        }
+    }
+
+    fun connectGitHub(repoFullName: String, token: String) {
+        if (githubBusy) return
+        if (!agentServerConfigured || agentServerUrl.isBlank()) {
+            githubMessage = "Сначала подключи NEXUS Agent Server."
+            return
+        }
+        if (repoFullName.isBlank() || token.isBlank()) {
+            githubMessage = "Укажи репозиторий и GitHub token."
+            return
+        }
+        githubBusy = true
+        viewModelScope.launch {
+            try {
+                val connected = withContext(Dispatchers.IO) {
+                    agentTaskClient().connectGitHub(repoFullName, token)
+                }
+                githubIntegration = connected
+                githubMessage = "Репозиторий проверен и подключён. Токен сохранён на сервере в зашифрованном виде."
+            } catch (e: Exception) {
+                githubMessage = e.message ?: "Не удалось подключить GitHub."
+            } finally {
+                githubBusy = false
+            }
+        }
+    }
+
+    fun disconnectGitHub() {
+        if (githubBusy) return
+        githubBusy = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { agentTaskClient().disconnectGitHub() }
+                githubIntegration = null
+                githubMessage = "GitHub отключён; сохранённый токен удалён с сервера."
+            } catch (e: Exception) {
+                githubMessage = e.message ?: "Не удалось отключить GitHub."
+            } finally {
+                githubBusy = false
+            }
+        }
+    }
 
     private fun loadRelevantMemoryContext(history: List<ChatLine>): String? {
         if (!agentServerConfigured || agentServerUrl.isBlank()) return null
@@ -1461,6 +1525,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 remoteProviders = loaded
                 providerVaultMessage = "Подключений на сервере: " + loaded.size
                 loadRemoteModels()
+                refreshGitHubIntegration()
             } catch (e: Exception) {
                 providerVaultMessage = e.message ?: "Не удалось загрузить подключения."
             } finally {
@@ -2535,6 +2600,8 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var openRouterKey by remember { mutableStateOf("") }
     var agentServerUrl by remember { mutableStateOf(vm.agentServerUrl) }
     var agentServerToken by remember { mutableStateOf("") }
+    var githubRepoDraft by remember { mutableStateOf("") }
+    var githubTokenDraft by remember { mutableStateOf("") }
     var vaultProviderId by remember { mutableStateOf("anymodel") }
     var vaultBaseUrl by remember { mutableStateOf("https://anymodel.org/v1") }
     var vaultModelId by remember { mutableStateOf("claude-fable-5-2") }
@@ -3624,6 +3691,60 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         "Фоновые уведомления о завершении и ошибках задач включены. Android проверяет сервер примерно раз в 15 минут; приложение может прислать уведомление, даже когда закрыто.",
                         color = Muted, fontSize = 9.sp, lineHeight = 12.sp
                     )
+                    Divider(color = DividerTone, modifier = Modifier.padding(vertical = 4.dp))
+                    Text("GITHUB · ДОСТУП К РЕПОЗИТОРИЮ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Создай Fine-grained personal access token в GitHub и разреши только выбранный репозиторий: Metadata · Read-only, Contents · Read and write. Токен отправляется только на твой HTTPS NEXUS Server и хранится там зашифрованным. Не отправляй его в чат.",
+                        color = Muted, fontSize = 9.sp, lineHeight = 13.sp
+                    )
+                    OutlinedTextField(
+                        value = githubRepoDraft,
+                        onValueChange = { githubRepoDraft = it.take(200) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("GitHub repository · owner/name") },
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = githubTokenDraft,
+                        onValueChange = { githubTokenDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Fine-grained GitHub token") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation()
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Button(
+                            onClick = {
+                                vm.connectGitHub(githubRepoDraft, githubTokenDraft)
+                                githubTokenDraft = ""
+                            },
+                            enabled = !vm.githubBusy && vm.agentServerConfigured &&
+                                githubRepoDraft.contains("/") && githubTokenDraft.isNotBlank(),
+                            colors = ButtonDefaults.buttonColors(containerColor = ambientAccent)
+                        ) { Text("Подключить GitHub", fontSize = 10.sp) }
+                        OutlinedButton(
+                            onClick = { vm.refreshGitHubIntegration() },
+                            enabled = !vm.githubBusy && vm.agentServerConfigured
+                        ) { Text("Проверить", color = MainText, fontSize = 10.sp) }
+                        if (vm.githubIntegration != null) {
+                            OutlinedButton(
+                                onClick = { vm.disconnectGitHub() },
+                                enabled = !vm.githubBusy
+                            ) { Text("Отключить", color = ambientAccent, fontSize = 10.sp) }
+                        }
+                    }
+                    vm.githubIntegration?.let { integration ->
+                        Text(
+                            "Подключён: ${integration.repoFullName} · ${integration.githubLogin} · базовая ветка ${integration.defaultBranch}",
+                            color = Color(0xFF8FC6A0), fontSize = 9.sp, lineHeight = 12.sp
+                        )
+                    }
+                    vm.githubMessage?.let { Text(it, color = Muted, fontSize = 9.sp, lineHeight = 12.sp) }
+                    Text(
+                        "NEXUS создаёт отдельные ветки nexus-agent/* и коммитит только туда. Защищённые ветки main, master и nexus-1.0-development не изменяются; автоматического merge нет.",
+                        color = Muted, fontSize = 9.sp, lineHeight = 13.sp
+                    )
+                    Divider(color = DividerTone, modifier = Modifier.padding(vertical = 4.dp))
                     Text("ПОДКЛЮЧЁННЫЕ ПРОВАЙДЕРЫ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     if (vm.remoteProviders.isEmpty()) {
                         Text("Список пуст или сервер ещё не подключён.", color = Muted, fontSize = 10.sp)
