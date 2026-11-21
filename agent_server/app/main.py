@@ -43,6 +43,7 @@ DB_PATH = Path(os.getenv("NEXUS_AGENT_DB", "./data/nexus-agent.db"))
 CHECKPOINT_ROOT = (DB_PATH.parent / "checkpoints").resolve()
 MAX_TASK_CHECKPOINT_BYTES = max(1, int(os.getenv("NEXUS_AGENT_MAX_CHECKPOINT_BYTES", str(2 * 1024 * 1024 * 1024))))
 MAX_TASK_CHECKPOINT_FILES = max(1, int(os.getenv("NEXUS_AGENT_MAX_CHECKPOINT_FILES", "50000")))
+TASK_CHECKPOINT_RETENTION = max(2, int(os.getenv("NEXUS_AGENT_CHECKPOINT_RETENTION", "5")))
 WORKSPACE = Path(os.getenv("NEXUS_AGENT_WORKSPACE", "./data/workspace")).resolve()
 API_KEY = os.getenv("NEXUS_AGENT_API_KEY", "")
 TAVILY_KEY = os.getenv("TAVILY_API_KEY", "")
@@ -912,6 +913,7 @@ def _create_task_checkpoint(tid: str, reason: str = "step_completed",
 
     created_at = time.time()
     checkpoint_id = str(uuid.uuid4())
+    pruned_archives: list[str] = []
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         owned = c.execute("""SELECT 1 FROM tasks WHERE id=?
@@ -927,9 +929,22 @@ def _create_task_checkpoint(tid: str, reason: str = "step_completed",
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (checkpoint_id, tid, owner_id, sequence, step_id, reason, plan_json,
              results_json, steps_json, str(archive), digest.hexdigest(), archive_bytes, created_at))
+        old_rows = c.execute("""SELECT id,archive_path FROM task_checkpoints
+            WHERE task_id=? AND sequence<=?""",
+            (tid, sequence - TASK_CHECKPOINT_RETENTION)).fetchall()
+        for old in old_rows:
+            pruned_archives.append(old["archive_path"])
+            c.execute("DELETE FROM task_checkpoints WHERE id=?", (old["id"],))
         c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
                   (tid, created_at, "checkpoint", f"Checkpoint {sequence} saved: {reason}"))
         c.execute("UPDATE tasks SET updated_at=? WHERE id=?", (created_at, tid))
+    for old_path in pruned_archives:
+        try:
+            candidate = Path(old_path)
+            candidate.resolve().relative_to(CHECKPOINT_ROOT)
+            candidate.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            logging.getLogger("nexus.checkpoint").warning("Unable to prune old checkpoint archive")
     return {"id": checkpoint_id, "sequence": sequence, "files": file_count,
             "bytes": total_bytes, "archive_bytes": archive_bytes,
             "sha256": digest.hexdigest()}
