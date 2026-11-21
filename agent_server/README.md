@@ -106,3 +106,17 @@ Every `/v1` route requires `Authorization: Bearer` with `NEXUS_AGENT_API_KEY`.
 - Task workspace and artifact endpoints are task- and owner-scoped.
 
 The supported worker actions are deliberately constrained. Do not interpret approval records as evidence that an external action was executed.
+
+
+## Projects and reusable skills
+
+Projects are owner-scoped containers for a durable name, description, and context. A task can be created with a project ID; the planner receives that project's context before producing a task plan. Archiving prevents new tasks from being attached while preserving project history. Deleting a project leaves its tasks intact and clears their project association.
+
+- `GET /v1/projects`, `POST /v1/projects`, `PATCH /v1/projects/{id}`, and `DELETE /v1/projects/{id}` manage projects.
+- `POST /v1/tasks` accepts an optional `project_id`; it must refer to an active project owned by the authenticated account.
+
+Reusable skills are owner-scoped instruction sets with name, description, category, instructions, and enabled state. The Android client can create, edit, enable/disable, and delete skills. Relevant enabled skills are selected by lexical overlap and supplied to the ordinary chat system context and autonomous task planner. This is lightweight keyword matching, not semantic embedding search. Skills are treated as user preferences and cannot override system rules, safety controls, or tool permissions.
+
+- `GET /v1/skills`, `POST /v1/skills`, `PATCH /v1/skills/{id}`, and `DELETE /v1/skills/{id}` manage skills.
+- Maximum 100 projects and 100 skills per account; skill instructions are capped at 6 KB.
+
