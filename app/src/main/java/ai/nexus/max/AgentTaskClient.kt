@@ -61,7 +61,7 @@ class AgentTaskClient(
         require(token.isNotBlank()) { "Agent access token is missing" }
     }
 
-    fun createTask(prompt: String, maxSteps: Int = 16, idempotencyKey: String = UUID.randomUUID().toString(), projectId: String? = null): String {
+    fun createTask(prompt: String, maxSteps: Int = 24, idempotencyKey: String = UUID.randomUUID().toString(), projectId: String? = null): String {
         require(prompt.trim().length >= 3) { "Task prompt is too short" }
         val body = JSONObject()
             .put("prompt", prompt.trim())
