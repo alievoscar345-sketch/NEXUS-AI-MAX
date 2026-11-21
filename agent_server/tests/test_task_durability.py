@@ -55,8 +55,8 @@ class DurableTaskTests(unittest.TestCase):
         now = time.time()
         with main.db() as conn:
             conn.execute(
-                "INSERT INTO tasks(id,prompt,status,created_at,updated_at) VALUES(?,?,?,?,?)",
-                ("task-b", "write file", "planning", now, now),
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) VALUES(?,?,?,?,?,?,?)",
+                ("task-b", "write file", "planning", now, now, main.WORKER_ID, now + 600),
             )
         steps = [{"title": "Save", "action": "save_artifact",
                   "input": {"filename": "report.md", "content": "hello"}}]
@@ -77,13 +77,14 @@ class DurableTaskTests(unittest.TestCase):
             conn.execute(
                 "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
                 "VALUES(?,?,?,?,?,?,?)",
-                ("task-c", "continue work", "running", now, now, "dead-worker", now - 1),
+                ("task-c", "continue work", "planning", now, now, main.WORKER_ID, now + 600),
             )
         main._persist_plan("task-c", [{"title": "Read", "action": "fetch_url",
             "input": {"url": "https://example.com"}}], 3)
         with main.db() as conn:
             conn.execute("UPDATE task_steps SET status='running' WHERE task_id=?", ("task-c",))
-            conn.execute("UPDATE tasks SET status='running',lease_owner='dead-worker' WHERE id=?", ("task-c",))
+            conn.execute("UPDATE tasks SET status='running',lease_owner='dead-worker',lease_expires_at=? WHERE id=?",
+                         (now - 1, "task-c"))
         main.recover_interrupted_tasks()
         with main.db() as conn:
             task = conn.execute("SELECT status,lease_owner FROM tasks WHERE id=?", ("task-c",)).fetchone()
@@ -99,7 +100,7 @@ class DurableTaskTests(unittest.TestCase):
             conn.execute(
                 "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
                 "VALUES(?,?,?,?,?,?,?)",
-                ("task-expired-claim", "expired lease", "running", now, now, main.WORKER_ID, now - 1),
+                ("task-expired-claim", "expired lease", "planning", now, now, main.WORKER_ID, now + 600),
             )
         main._persist_plan("task-expired-claim", [
             {"title": "Read", "action": "fetch_url", "input": {"url": "https://example.com"}}
@@ -107,6 +108,8 @@ class DurableTaskTests(unittest.TestCase):
         with main.db() as conn:
             step = conn.execute("SELECT id FROM task_steps WHERE task_id=?",
                                 ("task-expired-claim",)).fetchone()
+            conn.execute("UPDATE tasks SET status='running',lease_expires_at=? WHERE id=?",
+                         (now - 1, "task-expired-claim"))
         self.assertIsNone(main._claim_step("task-expired-claim", step["id"]))
 
     def test_worker_task_transitions_reject_lost_lease(self):
@@ -127,6 +130,38 @@ class DurableTaskTests(unittest.TestCase):
         self.assertEqual(row["status"], "running")
         self.assertEqual(row["lease_owner"], "new-worker")
         self.assertEqual(row["summary"], "")
+
+    def test_persist_plan_rejects_lost_or_expired_lease(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("task-stale-plan", "stale plan", "planning", now, now, "different-worker", now + 600),
+            )
+        accepted = main._persist_plan("task-stale-plan", [
+            {"title": "Read", "action": "fetch_url", "input": {"url": "https://example.com"}}
+        ], 3)
+        self.assertFalse(accepted)
+        with main.db() as conn:
+            count = conn.execute("SELECT COUNT(*) AS n FROM task_steps WHERE task_id=?",
+                                 ("task-stale-plan",)).fetchone()["n"]
+        self.assertEqual(count, 0)
+
+    def test_worker_event_rejects_lost_lease(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("task-stale-event", "stale event", "running", now, now, "different-worker", now + 600),
+            )
+        accepted = main._worker_event("task-stale-event", "step_finished", "late event")
+        self.assertFalse(accepted)
+        with main.db() as conn:
+            count = conn.execute("SELECT COUNT(*) AS n FROM events WHERE task_id=? AND kind='step_finished'",
+                                 ("task-stale-event",)).fetchone()["n"]
+        self.assertEqual(count, 0)
 
     def test_step_failure_write_rejects_lost_lease(self):
         now = time.time()
@@ -203,14 +238,16 @@ class DurableTaskTests(unittest.TestCase):
         now = time.time()
         with main.db() as conn:
             conn.execute(
-                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,cancel_requested) "
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
                 "VALUES(?,?,?,?,?,?,?)",
-                ("task-claim-guard", "guard step claim", "running", now, now, main.WORKER_ID, 1),
+                ("task-claim-guard", "guard step claim", "planning", now, now, main.WORKER_ID, now + 600),
             )
         main._persist_plan("task-claim-guard", [
             {"title": "Read", "action": "fetch_url", "input": {"url": "https://example.com"}}
         ], 3)
         with main.db() as conn:
+            conn.execute("UPDATE tasks SET status='running',cancel_requested=1 WHERE id=?",
+                         ("task-claim-guard",))
             step = conn.execute(
                 "SELECT id,status,attempt_count FROM task_steps WHERE task_id=?",
                 ("task-claim-guard",),
@@ -482,7 +519,7 @@ class DurableTaskTests(unittest.TestCase):
         helper_names = [
             "_get_task_row", "_set_task_planning", "_persist_plan",
             "_task_cancelled", "_next_pending_step", "_step_summary",
-            "_complete_task", "event",
+            "_complete_task", "_worker_event",
         ]
         patches = []
         for name in helper_names:
