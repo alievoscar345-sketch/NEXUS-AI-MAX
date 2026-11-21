@@ -257,6 +257,10 @@ class MemoryInput(BaseModel):
     pinned: bool = False
 
 
+class MemorySuggestionRequest(BaseModel):
+    messages: list[dict[str, Any]] = Field(min_length=1, max_length=40)
+
+
 class MemoryUpdateInput(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=120)
     content: str | None = Field(default=None, min_length=1, max_length=2000)
@@ -1307,6 +1311,52 @@ def delete_memory(memory_id: str, owner_id: str = Depends(auth)):
     if not changed:
         raise HTTPException(404, "Memory not found")
     return {"id": memory_id, "status": "deleted"}
+
+
+@app.post("/v1/memories/suggest", dependencies=[Depends(auth)])
+async def suggest_memories(body: MemorySuggestionRequest, owner_id: str = Depends(auth)):
+    fragments: list[str] = []
+    for message in body.messages:
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            fragments.append(content[:4000])
+        elif isinstance(content, list):
+            fragments.extend(str(part.get("text", ""))[:2000]
+                for part in content if isinstance(part, dict) and part.get("type") == "text")
+    transcript = "\\n\\n".join(fragments)[-24000:]
+    if len(transcript.strip()) < 20:
+        raise HTTPException(422, "Not enough user-authored conversation text to extract useful memories")
+    system = (
+        'You are the NEXUS personal-memory curator. Return strict JSON only: '
+        '{"suggestions":[{"title":"...","content":"...","category":"preference|project|goal|fact|instruction"}]}. '
+        'Extract at most 8 durable, useful facts that the USER explicitly stated about themselves, their preferences, '
+        'long-term goals, ongoing projects, or stable instructions. Use only user-authored statements; never infer '
+        'facts from assistant text, guesses, or one-off questions. Exclude passwords, API keys, account identifiers, '
+        'and sensitive personal data such as health diagnoses, sexuality, religion, political views, or criminal history. '
+        'Do not store transient plans or temporary states. Merge duplicates. If nothing qualifies, return an empty list. '
+        'Each suggestion must be concise, factual, and written in the language used by the user.'
+    )
+    try:
+        result = await llm_json(system, transcript, purpose="evaluation", owner_id=owner_id)
+    except ModelGatewayError as exc:
+        raise HTTPException(502, "Memory extraction failed: " + str(exc)) from exc
+    raw = result.get("suggestions", [])
+    if not isinstance(raw, list):
+        raise HTTPException(502, "Memory curator returned an invalid suggestion list")
+    allowed = {"preference", "project", "goal", "fact", "instruction"}
+    suggestions = []
+    for item in raw[:8]:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title", "")).strip()[:120]
+        content = str(item.get("content", "")).strip()[:2000]
+        category = str(item.get("category", "fact"))
+        if title and content and category in allowed:
+            suggestions.append({"title": title, "content": content, "category": category})
+    return {"suggestions": suggestions, "saved": False,
+            "message": "Suggestions are drafts only. Review and save each item explicitly."}
 
 
 def _chat_gateway_error_message(exc: ModelGatewayError, requires_vision: bool) -> str:
