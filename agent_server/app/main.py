@@ -56,6 +56,7 @@ RETRY_BASE_SECONDS = max(1, min(int(os.getenv("NEXUS_AGENT_RETRY_BASE_SECONDS", 
 LEASE_SECONDS = 300
 WORKER_ID = str(uuid.uuid4())
 _LEASE_OWNER = contextvars.ContextVar("nexus_lease_owner", default=WORKER_ID)
+_TASK_MODEL_SELECTION = contextvars.ContextVar("nexus_task_model_selection", default="auto")
 
 
 def _current_lease_owner() -> str:
@@ -127,6 +128,7 @@ def init_db():
             "client_request_key": "TEXT NOT NULL DEFAULT ''",
             "owner_id": "TEXT NOT NULL DEFAULT 'personal'",
             "context_text": "TEXT NOT NULL DEFAULT ''",
+            "model_selection": "TEXT NOT NULL DEFAULT 'auto'",
         }
         existing = _columns(c, "tasks")
         for name, definition in migrations.items():
@@ -259,6 +261,7 @@ def serialize(row):
     return {
         "id": row["id"], "prompt": row["prompt"], "status": row["status"],
         "project_id": row["project_id"] if "project_id" in row.keys() else None,
+        "model_selection": row["model_selection"] if "model_selection" in row.keys() else "auto",
         "created_at": row["created_at"], "updated_at": row["updated_at"],
         "plan": json.loads(row["plan_json"]), "results": json.loads(row["results_json"]),
         "summary": row["summary"], "error": row["error"],
@@ -283,6 +286,7 @@ class NewTask(BaseModel):
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
     project_id: str | None = Field(default=None, max_length=64)
     context_text: str = Field(default="", max_length=24000)
+    model_selection: str = Field(default="auto", min_length=2, max_length=160, pattern=r"^(auto|[a-zA-Z0-9][a-zA-Z0-9._-]*)$")
 
 
 class Approval(BaseModel):
@@ -418,6 +422,12 @@ async def llm_json(system: str, user: str, purpose: str = "general",
     models = await run_db(provider_models_for_owner, owner_id)
     if not models:
         raise ModelGatewayError("No model provider is configured for this account")
+    selected_id = _TASK_MODEL_SELECTION.get()
+    if selected_id != "auto":
+        selected = next((model for model in models if model.id == selected_id), None)
+        if selected is None:
+            raise ModelGatewayError("The manually selected model is no longer configured")
+        models = [selected]
     parsed, result = await ModelGateway(models=models).complete_json(system, user, purpose)
     if task_id:
         await run_db(event, task_id, "model_call", json.dumps({
@@ -1235,6 +1245,9 @@ async def _lease_heartbeat(tid: str) -> None:
 
 
 async def process(tid: str):
+    task_row = await run_db(_get_task_row, tid)
+    selection = str(task_row["model_selection"] or "auto") if task_row else "auto"
+    selection_token = _TASK_MODEL_SELECTION.set(selection)
     heartbeat = asyncio.create_task(_lease_heartbeat(tid))
     try:
         await _process_task(tid)
@@ -1244,6 +1257,7 @@ async def process(tid: str):
             await heartbeat
         except asyncio.CancelledError:
             pass
+        _TASK_MODEL_SELECTION.reset(selection_token)
 
 
 async def _process_task(tid: str):
@@ -3070,6 +3084,10 @@ def _enable_provider_vision(owner_id: str, provider_id: str) -> None:
 
 
 def _create_task_record(body: NewTask, owner_id: str) -> dict[str, Any]:
+    if body.model_selection != "auto":
+        configured_ids = {model.id for model in provider_models_for_owner(owner_id)}
+        if body.model_selection not in configured_ids:
+            raise HTTPException(422, "Selected model is not configured for this account")
     tid = str(uuid.uuid4())
     now = time.time()
     with db() as c:
@@ -3086,9 +3104,10 @@ def _create_task_record(body: NewTask, owner_id: str) -> dict[str, Any]:
             if existing:
                 return {"id": existing["id"], "status": existing["status"], "deduplicated": True}
         c.execute("""INSERT INTO tasks(id,prompt,status,created_at,updated_at,max_attempts,
-            max_steps,client_request_key,owner_id,project_id,context_text) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            max_steps,client_request_key,owner_id,project_id,context_text,model_selection) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
             (tid, body.prompt, "queued", now, now, MAX_STEP_ATTEMPTS,
-             body.max_steps, body.idempotency_key or "", owner_id, body.project_id, body.context_text))
+             body.max_steps, body.idempotency_key or "", owner_id, body.project_id, body.context_text,
+             body.model_selection))
         event_time = time.time()
         c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
                   (tid, event_time, "created", "Task queued in durable cloud worker"))
