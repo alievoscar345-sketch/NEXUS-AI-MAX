@@ -1313,11 +1313,33 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         error = null
     }
 
+    private fun cleanupUnusedAttachmentFiles(candidates: List<ChatAttachment>) {
+        val retainedPaths = buildSet {
+            chats.forEach { chat ->
+                chat.lines.forEach { line ->
+                    line.attachments.mapNotNull { it.localPath.takeIf(String::isNotBlank) }.forEach(::add)
+                }
+            }
+            pendingAttachments.mapNotNull { it.localPath.takeIf(String::isNotBlank) }.forEach(::add)
+        }
+        val unusedPaths = candidates.mapNotNull { it.localPath.takeIf(String::isNotBlank) }
+            .distinct()
+            .filterNot { it in retainedPaths }
+        if (unusedPaths.isNotEmpty()) {
+            viewModelScope.launch(Dispatchers.IO) {
+                unusedPaths.forEach { path -> runCatching { File(path).delete() } }
+            }
+        }
+    }
+
     fun deleteChat(id: String) {
         if (id == REMINDERS_CHAT_ID) return
+        val removedAttachments = chats.firstOrNull { it.id == id }
+            ?.lines.orEmpty().flatMap { it.attachments }
         chats = chats.filterNot { it.id == id }
         if (activeChatId == id) activeChatId = chats.firstOrNull { !it.isSystem }?.id
         if (chats.none { !it.isSystem }) createChat() else saveChats()
+        cleanupUnusedAttachmentFiles(removedAttachments)
         error = null
     }
 
@@ -1442,7 +1464,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun removePendingAttachment(index: Int) {
+        val removed = pendingAttachments.getOrNull(index) ?: return
         pendingAttachments = pendingAttachments.filterIndexed { i, _ -> i != index }
+        cleanupUnusedAttachmentFiles(listOf(removed))
     }
 
     fun showError(message: String) {
