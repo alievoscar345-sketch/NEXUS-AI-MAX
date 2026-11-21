@@ -36,7 +36,7 @@ DB_PATH = Path(os.getenv("NEXUS_AGENT_DB", "./data/nexus-agent.db"))
 WORKSPACE = Path(os.getenv("NEXUS_AGENT_WORKSPACE", "./data/workspace")).resolve()
 API_KEY = os.getenv("NEXUS_AGENT_API_KEY", "")
 TAVILY_KEY = os.getenv("TAVILY_API_KEY", "")
-MAX_STEPS = max(1, min(int(os.getenv("NEXUS_AGENT_MAX_STEPS", "12")), 30))
+MAX_STEPS = max(1, min(int(os.getenv("NEXUS_AGENT_MAX_STEPS", "16")), 30))
 MAX_SECONDS = max(60, min(int(os.getenv("NEXUS_AGENT_MAX_TASK_SECONDS", "1800")), 7200))
 MAX_STEP_ATTEMPTS = max(1, min(int(os.getenv("NEXUS_AGENT_STEP_MAX_ATTEMPTS", "3")), 8))
 RETRY_BASE_SECONDS = max(1, min(int(os.getenv("NEXUS_AGENT_RETRY_BASE_SECONDS", "10")), 300))
@@ -257,7 +257,7 @@ def auth(authorization: str | None = Header(default=None)) -> str:
 class NewTask(BaseModel):
     prompt: str = Field(min_length=3, max_length=12000)
     autonomy: str = Field(default="level3", pattern="^level[123]$")
-    max_steps: int = Field(default=8, ge=1, le=30)
+    max_steps: int = Field(default=16, ge=1, le=30)
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
     project_id: str | None = Field(default=None, max_length=64)
 
@@ -1077,7 +1077,7 @@ async def process(tid: str):
             steps = plan.get("steps", [])
             if not isinstance(steps, list):
                 raise ValueError("Planner did not return steps")
-            persisted = await run_db(_persist_plan, tid, steps[:min(MAX_STEPS, int(row['max_steps']), 8)], MAX_STEP_ATTEMPTS)
+            persisted = await run_db(_persist_plan, tid, steps[:min(MAX_STEPS, int(row['max_steps']))], MAX_STEP_ATTEMPTS)
             if not persisted:
                 return
 
@@ -1256,7 +1256,7 @@ def _dispatch_due_automations() -> int:
                 c.execute("""INSERT INTO tasks(id,prompt,status,created_at,updated_at,max_attempts,
                     max_steps,client_request_key,owner_id,project_id) VALUES(?,?,?,?,?,?,?,?,?,?)""",
                     (task_id, row["prompt"], "queued", now, now, MAX_STEP_ATTEMPTS,
-                     min(8, MAX_STEPS), run_key, row["owner_id"], row["project_id"]))
+                     min(16, MAX_STEPS), run_key, row["owner_id"], row["project_id"]))
                 c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
                           (task_id, now, "created", "Scheduled automation dispatched"))
             c.execute("INSERT OR IGNORE INTO automation_runs(id,automation_id,owner_id,task_id,scheduled_for,created_at) VALUES(?,?,?,?,?,?)",
