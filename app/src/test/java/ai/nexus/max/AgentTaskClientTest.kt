@@ -99,6 +99,39 @@ class AgentTaskClientTest {
         assertEquals(2, org.json.JSONObject(payload.readUtf8()).getInt("revision"))
     }
 
+    @Test fun uploadProjectBinaryFileSendsRawBytesAndContentType() {
+        transport.responseBody = """{"file":{"path":"assets/photo.png","revision":3,"bytes":4,"sha256":"abcd","message":"upload","created_at":12.0}}"""
+        val payload = byteArrayOf(0, 1, -1, 42)
+        val file = client.uploadProjectBinaryFile("project-1", "assets/photo.png", payload, "image/png")
+        assertEquals(3, file.revision)
+        val request = transport.lastRequest!!
+        assertEquals("PUT", request.method)
+        assertEquals("Bearer test-token", request.header("Authorization"))
+        assertEquals("image/png", request.header("Content-Type")?.substringBefore(";"))
+        assertEquals("assets/photo.png", request.url.queryParameter("path"))
+        val body = Buffer()
+        request.body!!.writeTo(body)
+        assertArrayEquals(payload, body.readByteArray())
+    }
+
+    @Test fun downloadProjectBinaryFileReturnsExactRawBytes() {
+        transport.responseBody = "raw\\u0000binary"
+        val result = client.downloadProjectBinaryFile("project-1", "assets/data.bin")
+        assertArrayEquals(transport.responseBody.toByteArray(Charsets.UTF_8), result)
+        assertEquals("GET", transport.lastRequest!!.method)
+        assertEquals("assets/data.bin", transport.lastRequest!!.url.queryParameter("path"))
+        assertEquals("Bearer test-token", transport.lastRequest!!.header("Authorization"))
+    }
+
+    @Test fun binaryProjectUploadRejectsFilesAboveClientLimit() {
+        val error = try {
+            client.uploadProjectBinaryFile("project-1", "large.bin", ByteArray(50 * 1024 * 1024 + 1))
+            null
+        } catch (e: IllegalArgumentException) { e }
+        assertNotNull(error)
+        assertTrue(error!!.message!!.contains("50 MiB"))
+    }
+
     @Test fun getTaskParsesEventsAndSteps() {
         transport.responseBody = """{"id":"t1","status":"running","prompt":"Do work","summary":"","error":"","events":[{"id":17,"created_at":1.5,"kind":"step_started","message":"1: Plan"}],"steps":[{"step_index":0,"title":"Plan","action":"web_search","status":"running","error":""}]}"""
         val task = client.getTask("t1")
