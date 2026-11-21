@@ -443,6 +443,16 @@ data class OpenRouterModel(
     val inputModalities: Set<String> = emptySet()
 )
 
+internal fun parseOpenRouterInputModalities(item: JSONObject): Set<String> {
+    val values = item.optJSONObject("architecture")?.optJSONArray("input_modalities") ?: return emptySet()
+    return buildSet {
+        for (index in 0 until values.length()) {
+            values.optString(index).trim().lowercase(Locale.ROOT)
+                .takeIf { it.isNotBlank() }?.let(::add)
+        }
+    }
+}
+
 class NexusViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = application.getSharedPreferences("nexus_local", 0)
     var settings by mutableStateOf(
@@ -1265,14 +1275,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                                     }
                                 }
                             }
-                            val inputModalitiesJson = item.optJSONObject("architecture")?.optJSONArray("input_modalities")
-                            val inputModalities = buildSet {
-                                if (inputModalitiesJson != null) {
-                                    for (modalityIndex in 0 until inputModalitiesJson.length()) {
-                                        inputModalitiesJson.optString(modalityIndex).takeIf { it.isNotBlank() }?.let { add(it) }
-                                    }
-                                }
-                            }
+                            val inputModalities = parseOpenRouterInputModalities(item)
                             OpenRouterModel(
                                 id, item.optString("name", id), item.optString("description", ""),
                                 item.optInt("context_length", 0), prompt, completion,
