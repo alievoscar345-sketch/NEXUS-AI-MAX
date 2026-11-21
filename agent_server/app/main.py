@@ -163,6 +163,12 @@ def init_db():
         if "supports_vision" not in _columns(c, "provider_credentials"):
             c.execute("ALTER TABLE provider_credentials ADD COLUMN supports_vision INTEGER NOT NULL DEFAULT 0")
         c.execute("""
+        CREATE TABLE IF NOT EXISTS skills(
+            id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            instructions TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'general',
+            enabled INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL, updated_at REAL NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS automations(
             id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL,
             prompt TEXT NOT NULL, schedule_type TEXT NOT NULL, run_at REAL,
@@ -181,6 +187,7 @@ def init_db():
             FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
         )
         """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id,enabled,name)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_automations_due ON automations(enabled,next_run_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_automation_runs_owner ON automation_runs(owner_id,created_at DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_provider_credentials_owner ON provider_credentials(owner_id,provider_id)")
@@ -266,6 +273,22 @@ class MemoryUpdateInput(BaseModel):
     content: str | None = Field(default=None, min_length=1, max_length=2000)
     category: str | None = Field(default=None, pattern="^(general|preference|project|goal|fact|instruction)$")
     pinned: bool | None = None
+
+
+class SkillInput(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    description: str = Field(default="", max_length=300)
+    instructions: str = Field(min_length=10, max_length=6000)
+    category: str = Field(default="general", pattern="^(general|writing|research|coding|planning|business|study|other)$")
+    enabled: bool = True
+
+
+class SkillUpdateInput(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    description: str | None = Field(default=None, max_length=300)
+    instructions: str | None = Field(default=None, min_length=10, max_length=6000)
+    category: str | None = Field(default=None, pattern="^(general|writing|research|coding|planning|business|study|other)$")
+    enabled: bool | None = None
 
 
 class AutomationInput(BaseModel):
