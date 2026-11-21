@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 import httpx
 import aiohttp
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, SecretStr
 
@@ -1193,6 +1193,62 @@ def list_tasks(limit: int = 30, owner_id: str = Depends(auth)):
         rows = c.execute("SELECT * FROM tasks WHERE owner_id=? ORDER BY created_at DESC LIMIT ?",
                          (owner_id, max(1, min(limit, 100)))).fetchall()
     return {"tasks": [serialize(r) for r in rows]}
+
+
+def _read_task_event_batch(tid: str, owner_id: str, after_event_id: int) -> dict[str, Any] | None:
+    with db() as c:
+        task = c.execute("SELECT status FROM tasks WHERE id=? AND owner_id=?",
+                         (tid, owner_id)).fetchone()
+        if not task:
+            return None
+        rows = c.execute("""SELECT id,created_at,kind,message FROM events
+            WHERE task_id=? AND id>? ORDER BY id LIMIT 200""",
+            (tid, after_event_id)).fetchall()
+    return {"status": task["status"], "events": [dict(row) for row in rows]}
+
+
+async def _task_event_stream(tid: str, owner_id: str, after_event_id: int, request: Request):
+    cursor = after_event_id
+    last_heartbeat = time.monotonic()
+    terminal_statuses = {"completed", "failed", "cancelled"}
+    while True:
+        if await request.is_disconnected():
+            break
+        batch = await run_db(_read_task_event_batch, tid, owner_id, cursor)
+        if batch is None:
+            break
+        for item in batch["events"]:
+            cursor = item["id"]
+            payload = json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+            yield f"id: {cursor}\\nevent: task_event\\ndata: {payload}\\n\\n"
+        if batch["status"] in terminal_statuses and not batch["events"]:
+            break
+        now = time.monotonic()
+        if now - last_heartbeat >= 15:
+            yield ": keep-alive\\n\\n"
+            last_heartbeat = now
+        await asyncio.sleep(1)
+
+
+@app.get("/v1/tasks/{tid}/events", dependencies=[Depends(auth)])
+async def stream_task_events(
+    tid: str,
+    request: Request,
+    after_event_id: int = 0,
+    owner_id: str = Depends(auth),
+):
+    if after_event_id < 0:
+        raise HTTPException(422, "after_event_id must be non-negative")
+    exists = await run_db(
+        lambda: _read_task_event_batch(tid, owner_id, after_event_id) is not None
+    )
+    if not exists:
+        raise HTTPException(404, "Task not found")
+    return StreamingResponse(
+        _task_event_stream(tid, owner_id, after_event_id, request),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/v1/tasks/{tid}", dependencies=[Depends(auth)])

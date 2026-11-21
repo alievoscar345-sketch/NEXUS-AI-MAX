@@ -112,6 +112,42 @@ class DurableTaskTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in incremental["events"]], [3])
         self.assertEqual(incremental["events"][0]["message"], "event-2")
 
+    def test_task_event_stream_emits_ordered_sse_events_and_stops_on_terminal_task(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id) VALUES(?,?,?,?,?,?)",
+                ("task-sse", "stream events", "completed", now, now, "personal"),
+            )
+            for index in range(2):
+                conn.execute(
+                    "INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                    ("task-sse", now + index, "progress", f"event-{index}"),
+                )
+
+        request = SimpleNamespace(is_disconnected=AsyncMock(return_value=False))
+
+        async def collect():
+            return [chunk async for chunk in main._task_event_stream(
+                "task-sse", "personal", 0, request
+            )]
+
+        chunks = asyncio.run(collect())
+        self.assertEqual(len(chunks), 2)
+        self.assertIn("id: 1\\nevent: task_event\\ndata:", chunks[0])
+        self.assertIn('"message":"event-0"', chunks[0])
+        self.assertIn("id: 2\\nevent: task_event\\ndata:", chunks[1])
+        self.assertIn('"message":"event-1"', chunks[1])
+
+    def test_task_event_stream_does_not_expose_another_owner_task(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id) VALUES(?,?,?,?,?,?)",
+                ("task-sse-private", "private stream", "completed", now, now, "owner-a"),
+            )
+        self.assertIsNone(main._read_task_event_batch("task-sse-private", "owner-b", 0))
+
     def test_get_task_rejects_negative_event_cursor(self):
         now = time.time()
         with main.db() as conn:
