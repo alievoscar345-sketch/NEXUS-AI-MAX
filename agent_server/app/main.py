@@ -146,7 +146,9 @@ def init_db():
             created_at REAL NOT NULL, updated_at REAL NOT NULL,
             supports_vision INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(owner_id, provider_id)
-        );
+        )
+        """)
+        c.execute("""
         CREATE TABLE IF NOT EXISTS memories(
             id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, title TEXT NOT NULL,
             content TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'general',
