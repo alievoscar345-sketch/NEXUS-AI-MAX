@@ -52,11 +52,19 @@ class AgentTaskClientTest {
     }
 
     @Test fun getTaskParsesEventsAndSteps() {
-        transport.responseBody = """{"id":"t1","status":"running","prompt":"Do work","summary":"","error":"","events":[{"created_at":1.5,"kind":"step_started","message":"1: Plan"}],"steps":[{"step_index":0,"title":"Plan","action":"web_search","status":"running","error":""}]}"""
+        transport.responseBody = """{"id":"t1","status":"running","prompt":"Do work","summary":"","error":"","events":[{"id":17,"created_at":1.5,"kind":"step_started","message":"1: Plan"}],"steps":[{"step_index":0,"title":"Plan","action":"web_search","status":"running","error":""}]}"""
         val task = client.getTask("t1")
         assertEquals("running", task.status)
         assertEquals("step_started", task.events.single().kind)
+        assertEquals(17L, task.events.single().id)
         assertEquals("web_search", task.steps.single().action)
+    }
+
+    @Test fun getTaskRequestsOnlyEventsAfterProvidedCursor() {
+        transport.responseBody = """{"id":"t1","status":"running","prompt":"Do work","summary":"","error":"","events":[{"id":22,"created_at":2.0,"kind":"progress","message":"new"}],"steps":[]}"""
+        val task = client.getTask("t1", afterEventId = 21L)
+        assertEquals(22L, task.events.single().id)
+        assertEquals("21", transport.lastRequest!!.url.queryParameter("after_event_id"))
     }
 
     @Test fun taskIdIsEncodedAsOnePathSegment() {

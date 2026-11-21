@@ -21,7 +21,7 @@ data class AgentTaskSnapshot(
     val steps: List<AgentTaskStep>
 )
 
-data class AgentTaskEvent(val createdAt: Double, val kind: String, val message: String)
+data class AgentTaskEvent(val id: Long, val createdAt: Double, val kind: String, val message: String)
 data class AgentTaskStep(val index: Int, val title: String, val action: String, val status: String, val error: String)
 
 data class AgentApproval(val id: String, val taskId: String, val description: String, val status: String)
@@ -54,8 +54,9 @@ class AgentTaskClient(
             ?: throw IOException("Agent API did not return a task ID")
     }
 
-    fun getTask(taskId: String): AgentTaskSnapshot {
-        val obj = request("GET", listOf("v1", "tasks", taskId))
+    fun getTask(taskId: String, afterEventId: Long? = null): AgentTaskSnapshot {
+        val query = afterEventId?.let { mapOf("after_event_id" to it.toString()) } ?: emptyMap()
+        val obj = request("GET", listOf("v1", "tasks", taskId), query = query)
         val events = obj.optJSONArray("events").toEventList()
         val steps = obj.optJSONArray("steps").toStepList()
         return AgentTaskSnapshot(
@@ -128,7 +129,8 @@ class AgentTaskClient(
         val array = this ?: return emptyList()
         return (0 until array.length()).mapNotNull { index ->
             val item = array.optJSONObject(index) ?: return@mapNotNull null
-            AgentTaskEvent(item.optDouble("created_at"), item.optString("kind"), item.optString("message"))
+            AgentTaskEvent(item.optLong("id"), item.optDouble("created_at"),
+                item.optString("kind"), item.optString("message"))
         }
     }
 

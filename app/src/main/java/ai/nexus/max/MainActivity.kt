@@ -581,10 +581,16 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 agentTasks = loadedTasks
                 val targetId = taskId ?: activeAgentTaskId ?: activeAgentTask?.id
                 if (targetId != null) {
-                    val loadedTask = withContext(Dispatchers.IO) { api.getTask(targetId) }
-                    activeAgentTask = loadedTask
-                    if (activeAgentTaskId != loadedTask.id) selectAgentTask(loadedTask.id)
-                    agentTasks = listOf(loadedTask) + agentTasks.filterNot { it.id == loadedTask.id }
+                    val previousTask = activeAgentTask?.takeIf { it.id == targetId }
+                    val eventCursor = previousTask?.events?.maxOfOrNull { it.id }
+                    val loadedTask = withContext(Dispatchers.IO) { api.getTask(targetId, eventCursor) }
+                    val mergedTask = if (previousTask != null && eventCursor != null) {
+                        loadedTask.copy(events = (previousTask.events + loadedTask.events)
+                            .distinctBy { it.id }.sortedBy { it.id })
+                    } else loadedTask
+                    activeAgentTask = mergedTask
+                    if (activeAgentTaskId != mergedTask.id) selectAgentTask(mergedTask.id)
+                    agentTasks = listOf(mergedTask) + agentTasks.filterNot { it.id == mergedTask.id }
                 }
                 agentApprovals = withContext(Dispatchers.IO) { api.listApprovals() }
                 agentMessage = null

@@ -93,6 +93,36 @@ class DurableTaskTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 main._workspace_write("task-1", "escape/secret.txt", "blocked")
 
+    def test_get_task_returns_event_ids_and_supports_incremental_cursor(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id) VALUES(?,?,?,?,?,?)",
+                ("task-event-cursor", "inspect event cursor", "running", now, now, "personal"),
+            )
+            for index in range(3):
+                conn.execute(
+                    "INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                    ("task-event-cursor", now + index, "progress", f"event-{index}"),
+                )
+        initial = main.get_task("task-event-cursor", owner_id="personal")
+        self.assertEqual([item["id"] for item in initial["events"]], [1, 2, 3])
+        self.assertEqual(initial["events"][0]["message"], "event-0")
+        incremental = main.get_task("task-event-cursor", after_event_id=2, owner_id="personal")
+        self.assertEqual([item["id"] for item in incremental["events"]], [3])
+        self.assertEqual(incremental["events"][0]["message"], "event-2")
+
+    def test_get_task_rejects_negative_event_cursor(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id) VALUES(?,?,?,?,?,?)",
+                ("task-event-negative", "invalid cursor", "running", now, now, "personal"),
+            )
+        with self.assertRaises(main.HTTPException) as raised:
+            main.get_task("task-event-negative", after_event_id=-1, owner_id="personal")
+        self.assertEqual(raised.exception.status_code, 422)
+
     def test_migrates_legacy_task_schema(self):
         with main.db() as conn:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
