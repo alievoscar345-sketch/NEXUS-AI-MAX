@@ -1374,12 +1374,14 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun createAgentTask(prompt: String, projectId: String? = null, contextText: String = "") {
+    fun createAgentTask(prompt: String, projectId: String? = null, contextText: String = "", modelSelection: String = "auto") {
         if (agentBusy || agentRefreshing) return
         agentBusy = true
         viewModelScope.launch {
             try {
-                val id = withContext(Dispatchers.IO) { agentTaskClient().createTask(prompt, projectId = projectId, contextText = contextText) }
+                val id = withContext(Dispatchers.IO) {
+                    agentTaskClient().createTask(prompt, projectId = projectId, contextText = contextText, modelSelection = modelSelection)
+                }
                 val loaded = withContext(Dispatchers.IO) { agentTaskClient().getTask(id) }
                 activeAgentTask = loaded
                 selectAgentTask(loaded.id)
@@ -4583,7 +4585,12 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
     var taskFileError by remember { mutableStateOf<String?>(null) }
     var selectedProjectId by remember { mutableStateOf<String?>(null) }
     var projectMenuExpanded by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { vm.refreshProjects() }
+    var selectedModelId by remember { mutableStateOf("auto") }
+    var modelMenuExpanded by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        vm.refreshProjects()
+        vm.loadRemoteModels()
+    }
     val taskContextPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             try {
@@ -4675,6 +4682,38 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                         }
                     }
                 }
+                Box {
+                    OutlinedButton(onClick = { modelMenuExpanded = true }, enabled = !vm.agentBusy) {
+                        val selectedModel = vm.remoteModels.firstOrNull { it.providerId == selectedModelId }
+                        Text(
+                            if (selectedModelId == "auto") "Модель: автоматически"
+                            else "Модель: " + (selectedModel?.let { it.model + " · " + it.providerId } ?: selectedModelId),
+                            color = MainText
+                        )
+                    }
+                    DropdownMenu(expanded = modelMenuExpanded, onDismissRequest = { modelMenuExpanded = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Автоматический выбор NEXUS") },
+                            onClick = { selectedModelId = "auto"; modelMenuExpanded = false }
+                        )
+                        vm.remoteModels.forEach { model ->
+                            DropdownMenuItem(
+                                text = { Text(model.model + " · " + model.providerId) },
+                                onClick = { selectedModelId = model.providerId; modelMenuExpanded = false }
+                            )
+                        }
+                    }
+                }
+                Text(
+                    if (selectedModelId == "auto")
+                        "NEXUS выберет модель по типу задачи, доступным возможностям и настройкам маршрутизации."
+                    else
+                        "Для этой задачи будет использоваться выбранная модель. Автоматическое переключение на другие модели отключено.",
+                    color = Muted, fontSize = 9.sp, lineHeight = 12.sp
+                )
+                if (vm.remoteModels.isEmpty()) {
+                    Text("Модели пока не загружены. Проверь подключение сервера и добавь провайдеры в Настройках.", color = Muted, fontSize = 9.sp)
+                }
                 OutlinedTextField(
                     value = prompt,
                     onValueChange = { prompt = it },
@@ -4695,7 +4734,7 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                 if (taskFileName != null) Text("Текст файла будет передан агенту как отдельный контекст задачи (лимит 24 КБ).", color = Muted, fontSize = 9.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
-                        onClick = { vm.createAgentTask(prompt, selectedProjectId, taskFileName?.let { "Attached text file: $it\n\n$taskFileContext" } ?: ""); prompt = ""; taskFileContext = ""; taskFileName = null },
+                        onClick = { vm.createAgentTask(prompt, selectedProjectId, taskFileName?.let { "Attached text file: $it\n\n$taskFileContext" } ?: "", selectedModelId); prompt = ""; taskFileContext = ""; taskFileName = null },
                         enabled = prompt.trim().length >= 3 && !vm.agentBusy && !vm.agentRefreshing && vm.agentServerConfigured && vm.agentServerUrl.isNotBlank()
                     ) { Text("Запустить") }
                     OutlinedButton(onClick = { vm.refreshAgentConsole(selectedTask) }, enabled = !vm.agentBusy && !vm.agentRefreshing) {
