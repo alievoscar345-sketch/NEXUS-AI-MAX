@@ -93,6 +93,40 @@ class DurableTaskTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 main._workspace_write("task-1", "escape/secret.txt", "blocked")
 
+    def test_workspace_api_lists_and_reads_files_for_task_owner(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id) VALUES(?,?,?,?,?,?)",
+                ("workspace-api", "workspace api", "completed", now, now, "owner-a"),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        with patch.object(main, "WORKSPACE", workspace):
+            main._workspace_write("workspace-api", "docs/summary.md", "NEXUS output")
+            listing = main.list_task_workspace("workspace-api", owner_id="owner-a")
+            read = main.read_task_workspace_file("workspace-api", "docs/summary.md", owner_id="owner-a")
+            with self.assertRaisesRegex(main.HTTPException, "Task not found"):
+                main.list_task_workspace("workspace-api", owner_id="owner-b")
+        self.assertEqual(listing["entries"][0]["name"], "docs")
+        self.assertEqual(read["content"], "NEXUS output")
+
+    def test_workspace_api_allows_owner_edits_only_after_task_finishes(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id) VALUES(?,?,?,?,?,?)",
+                ("workspace-edit", "workspace edit", "running", now, now, "owner-a"),
+            )
+        body = main.WorkspaceFileInput(path="report.md", content="edited")
+        with patch.object(main, "WORKSPACE", Path(self.temp.name) / "workspace"):
+            with self.assertRaisesRegex(main.HTTPException, "after the task has finished"):
+                main.write_task_workspace_file("workspace-edit", body, owner_id="owner-a")
+            with main.db() as conn:
+                conn.execute("UPDATE tasks SET status='completed' WHERE id='workspace-edit'")
+            result = main.write_task_workspace_file("workspace-edit", body, owner_id="owner-a")
+            self.assertEqual(result["bytes"], len("edited".encode("utf-8")))
+            self.assertEqual(main._workspace_read("workspace-edit", "report.md")["content"], "edited")
+
     def test_get_task_returns_event_ids_and_supports_incremental_cursor(self):
         now = time.time()
         with main.db() as conn:
