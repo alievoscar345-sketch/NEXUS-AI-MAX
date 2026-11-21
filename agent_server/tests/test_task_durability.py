@@ -612,6 +612,11 @@ class DurableTaskTests(unittest.TestCase):
                 ("task-thread-process", "finish an empty task", "queued", now, now),
             )
         self.assertEqual(main.claim_task(), "task-thread-process")
+        with main.db() as conn:
+            lease_owner = conn.execute(
+                "SELECT lease_owner FROM tasks WHERE id=?", ("task-thread-process",)
+            ).fetchone()["lease_owner"]
+        lease_context = main._LEASE_OWNER.set(lease_owner)
 
         loop_thread = threading.get_ident()
         observed = []
@@ -636,7 +641,10 @@ class DurableTaskTests(unittest.TestCase):
                               new=AsyncMock(side_effect=[{"steps": []}, {"summary": "finished"}])):
                 await main.process("task-thread-process")
 
-        asyncio.run(run())
+        try:
+            asyncio.run(run())
+        finally:
+            main._LEASE_OWNER.reset(lease_context)
         self.assertTrue(observed)
         self.assertTrue({name for name, _ in observed}.issuperset(set(helper_names)))
         self.assertTrue(all(thread_id != loop_thread for _, thread_id in observed))
