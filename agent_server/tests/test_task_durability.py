@@ -56,7 +56,7 @@ class DurableTaskTests(unittest.TestCase):
     def test_workspace_search_finds_text_with_line_numbers(self):
         workspace = Path(self.temp.name) / "workspace"
         with patch.object(main, "WORKSPACE", workspace):
-            main._workspace_write("task-1", "src/readme.md", "first line\\nNEXUS agent\\nlast line")
+            main._workspace_write("task-1", "src/readme.md", "first line\nNEXUS agent\nlast line")
             result = main._workspace_search("task-1", "nexus")
         self.assertEqual(len(result["matches"]), 1)
         self.assertEqual(result["matches"][0]["line"], 2)
