@@ -200,6 +200,16 @@ def init_db():
             description TEXT NOT NULL DEFAULT '', context TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'active', created_at REAL NOT NULL, updated_at REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS project_file_versions(
+            id TEXT PRIMARY KEY, project_id TEXT NOT NULL, owner_id TEXT NOT NULL,
+            path TEXT NOT NULL, revision INTEGER NOT NULL, content BLOB NOT NULL,
+            sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+            message TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL,
+            UNIQUE(project_id,path,revision),
+            FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_files_latest
+            ON project_file_versions(project_id,path,revision DESC);
         CREATE TABLE IF NOT EXISTS skills(
             id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL,
             description TEXT NOT NULL DEFAULT '',
@@ -335,6 +345,17 @@ class ProjectUpdateInput(BaseModel):
     description: str | None = Field(default=None, max_length=500)
     context: str | None = Field(default=None, max_length=12000)
     status: str | None = Field(default=None, pattern="^(active|archived)$")
+
+
+class ProjectFileWriteInput(BaseModel):
+    path: str = Field(min_length=1, max_length=240)
+    content: str
+    message: str = Field(default="Update project file", max_length=200)
+
+
+class ProjectFileRestoreInput(BaseModel):
+    revision: int = Field(ge=1)
+    message: str = Field(default="Restore previous version", max_length=200)
 
 
 class SkillInput(BaseModel):
@@ -1940,6 +1961,134 @@ def list_projects(owner_id: str = Depends(auth)):
             FROM projects p WHERE p.owner_id=? ORDER BY CASE p.status WHEN 'active' THEN 0 ELSE 1 END,p.updated_at DESC""",
             (owner_id,)).fetchall()
     return {"projects": [{**_project_dict(row), "task_count": row["task_count"]} for row in rows]}
+
+
+def _validate_project_file_path(path: str) -> str:
+    if not isinstance(path, str) or not path.strip() or len(path) > 240:
+        raise HTTPException(422, "Project file path must contain 1–240 characters")
+    if "\x00" in path or path.startswith(("/", "\\")) or "\\" in path:
+        raise HTTPException(422, "Project file path must be a safe relative POSIX path")
+    parts = path.split("/")
+    if any(part in {"", ".", ".."} or part.startswith(".nexus") for part in parts):
+        raise HTTPException(422, "Project file path contains a reserved or invalid component")
+    return "/".join(parts)
+
+
+def _project_file_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "path": row["path"], "revision": row["revision"],
+        "bytes": row["size_bytes"], "sha256": row["sha256"],
+        "message": row["message"], "created_at": row["created_at"],
+    }
+
+
+@app.get("/v1/projects/{project_id}/files", dependencies=[Depends(auth)])
+def list_project_files(project_id: str, owner_id: str = Depends(auth)):
+    with db() as c:
+        project = c.execute("SELECT id FROM projects WHERE id=? AND owner_id=?",
+                            (project_id, owner_id)).fetchone()
+        if not project:
+            raise HTTPException(404, "Project not found")
+        rows = c.execute("""SELECT v.* FROM project_file_versions v
+            JOIN (SELECT path,MAX(revision) AS revision FROM project_file_versions
+                  WHERE project_id=? GROUP BY path) latest
+            ON latest.path=v.path AND latest.revision=v.revision
+            WHERE v.project_id=? AND v.owner_id=? ORDER BY v.path COLLATE NOCASE""",
+            (project_id, project_id, owner_id)).fetchall()
+    return {"files": [_project_file_dict(row) for row in rows]}
+
+
+@app.get("/v1/projects/{project_id}/files/content", dependencies=[Depends(auth)])
+def read_project_file(project_id: str, path: str, owner_id: str = Depends(auth)):
+    safe_path = _validate_project_file_path(path)
+    with db() as c:
+        row = c.execute("""SELECT v.* FROM project_file_versions v
+            JOIN projects p ON p.id=v.project_id
+            WHERE v.project_id=? AND v.owner_id=? AND p.owner_id=? AND v.path=?
+            ORDER BY v.revision DESC LIMIT 1""",
+            (project_id, owner_id, owner_id, safe_path)).fetchone()
+    if not row:
+        raise HTTPException(404, "Project file not found")
+    try:
+        content = bytes(row["content"]).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(415, "Project file is not valid UTF-8 text") from exc
+    return {"path": safe_path, "content": content, **_project_file_dict(row)}
+
+
+@app.put("/v1/projects/{project_id}/files", dependencies=[Depends(auth)])
+def write_project_file(project_id: str, body: ProjectFileWriteInput, owner_id: str = Depends(auth)):
+    safe_path = _validate_project_file_path(body.path)
+    encoded = body.content.encode("utf-8")
+    if len(encoded) > 2 * 1024 * 1024:
+        raise HTTPException(413, "Project text files are limited to 2 MiB per revision")
+    digest = hashlib.sha256(encoded).hexdigest()
+    now = time.time()
+    version_id = str(uuid.uuid4())
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        project = c.execute("SELECT id FROM projects WHERE id=? AND owner_id=?",
+                            (project_id, owner_id)).fetchone()
+        if not project:
+            raise HTTPException(404, "Project not found")
+        previous = c.execute("""SELECT MAX(revision) AS revision FROM project_file_versions
+            WHERE project_id=? AND path=?""", (project_id, safe_path)).fetchone()
+        revision = int(previous["revision"] or 0) + 1
+        c.execute("""INSERT INTO project_file_versions(
+            id,project_id,owner_id,path,revision,content,sha256,size_bytes,message,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (version_id, project_id, owner_id, safe_path, revision, sqlite3.Binary(encoded),
+             digest, len(encoded), body.message.strip() or "Update project file", now))
+        c.execute("UPDATE projects SET updated_at=? WHERE id=? AND owner_id=?",
+                  (now, project_id, owner_id))
+        row = c.execute("SELECT * FROM project_file_versions WHERE id=?", (version_id,)).fetchone()
+    return {"file": _project_file_dict(row)}
+
+
+@app.get("/v1/projects/{project_id}/files/versions", dependencies=[Depends(auth)])
+def list_project_file_versions(project_id: str, path: str, owner_id: str = Depends(auth)):
+    safe_path = _validate_project_file_path(path)
+    with db() as c:
+        project = c.execute("SELECT id FROM projects WHERE id=? AND owner_id=?",
+                            (project_id, owner_id)).fetchone()
+        if not project:
+            raise HTTPException(404, "Project not found")
+        rows = c.execute("""SELECT path,revision,sha256,size_bytes,message,created_at
+            FROM project_file_versions WHERE project_id=? AND owner_id=? AND path=?
+            ORDER BY revision DESC""", (project_id, owner_id, safe_path)).fetchall()
+    return {"versions": [_project_file_dict(row) for row in rows]}
+
+
+@app.post("/v1/projects/{project_id}/files/restore", dependencies=[Depends(auth)])
+def restore_project_file(project_id: str, path: str, body: ProjectFileRestoreInput,
+                         owner_id: str = Depends(auth)):
+    safe_path = _validate_project_file_path(path)
+    now = time.time()
+    new_id = str(uuid.uuid4())
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        project = c.execute("SELECT id FROM projects WHERE id=? AND owner_id=?",
+                            (project_id, owner_id)).fetchone()
+        if not project:
+            raise HTTPException(404, "Project not found")
+        source = c.execute("""SELECT content,sha256,size_bytes FROM project_file_versions
+            WHERE project_id=? AND owner_id=? AND path=? AND revision=?""",
+            (project_id, owner_id, safe_path, body.revision)).fetchone()
+        if not source:
+            raise HTTPException(404, "Project file revision not found")
+        latest = c.execute("""SELECT MAX(revision) AS revision FROM project_file_versions
+            WHERE project_id=? AND path=?""", (project_id, safe_path)).fetchone()
+        revision = int(latest["revision"] or 0) + 1
+        c.execute("""INSERT INTO project_file_versions(
+            id,project_id,owner_id,path,revision,content,sha256,size_bytes,message,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (new_id, project_id, owner_id, safe_path, revision, source["content"],
+             source["sha256"], source["size_bytes"],
+             body.message.strip() or f"Restore revision {body.revision}", now))
+        c.execute("UPDATE projects SET updated_at=? WHERE id=? AND owner_id=?",
+                  (now, project_id, owner_id))
+        row = c.execute("SELECT * FROM project_file_versions WHERE id=?", (new_id,)).fetchone()
+    return {"file": _project_file_dict(row), "restored_from_revision": body.revision}
 
 
 @app.post("/v1/projects", dependencies=[Depends(auth)])
