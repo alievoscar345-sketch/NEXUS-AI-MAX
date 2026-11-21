@@ -437,24 +437,35 @@ def _claim_step(tid: str, step_id: str):
             error='',updated_at=? WHERE id=? AND task_id=? AND status IN ('pending','retry_wait')
             AND EXISTS (
                 SELECT 1 FROM tasks WHERE id=? AND status='running'
-                AND cancel_requested=0 AND lease_owner=?
+                AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?
             )""",
-            (time.time(), step_id, tid, tid, WORKER_ID)).rowcount
+            (time.time(), step_id, tid, tid, WORKER_ID, time.time())).rowcount
         if not changed:
             return None
         return c.execute("SELECT * FROM task_steps WHERE id=? AND task_id=?",
                          (step_id, tid)).fetchone()
 
 
-def _save_step_result(tid: str, step_id: str, status: str, result_json: str):
+def _save_step_result(tid: str, step_id: str, status: str, result_json: str) -> bool:
+    now = time.time()
     with db() as c:
-        c.execute("UPDATE task_steps SET status=?,result_json=?,updated_at=? WHERE id=?",
-                  (status, result_json, time.time(), step_id))
+        c.execute("BEGIN IMMEDIATE")
+        owned = c.execute("""SELECT 1 FROM tasks WHERE id=? AND status='running'
+            AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
+            (tid, WORKER_ID, now)).fetchone()
+        if not owned:
+            return False
+        changed = c.execute("""UPDATE task_steps SET status=?,result_json=?,updated_at=?
+            WHERE id=? AND task_id=? AND status='running'""",
+            (status, result_json, now, step_id, tid)).rowcount
+        if not changed:
+            return False
         rows = c.execute("SELECT result_json FROM task_steps WHERE task_id=? AND result_json!='' ORDER BY step_index",
                          (tid,)).fetchall()
         all_results = [json.loads(x["result_json"]) for x in rows]
-        c.execute("UPDATE tasks SET results_json=?,updated_at=? WHERE id=?",
-                  (json.dumps(all_results, ensure_ascii=False), time.time(), tid))
+        c.execute("UPDATE tasks SET results_json=?,updated_at=? WHERE id=? AND status='running' AND lease_owner=?",
+                  (json.dumps(all_results, ensure_ascii=False), now, tid, WORKER_ID))
+        return True
 
 
 def _record_step_failure(tid: str, step_id: str, retry: bool, next_at: float | None, error: str):
@@ -544,8 +555,10 @@ async def process(tid: str):
                              "input": json.loads(claimed["input_json"])}
                 result = await run_step(step_data, tid, claimed["idempotency_key"])
                 status = "waiting_for_approval" if result.get("status") == "awaiting_approval" else "completed"
-                await run_db(_save_step_result, tid, claimed["id"], status,
-                             json.dumps(result, ensure_ascii=False))
+                saved = await run_db(_save_step_result, tid, claimed["id"], status,
+                                     json.dumps(result, ensure_ascii=False))
+                if not saved:
+                    return
                 await run_db(event, tid, "step_finished", f"{claimed['step_index'] + 1}: {status}")
                 if status == "waiting_for_approval":
                     transitioned = await run_db(_set_task_waiting_for_approval, tid)

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import time
 import sqlite3
@@ -91,6 +92,46 @@ class DurableTaskTests(unittest.TestCase):
         self.assertEqual(task["lease_owner"], "")
         self.assertEqual(step["status"], "retry_wait")
         self.assertIn("Recovered", step["error"])
+
+    def test_step_claim_rejects_expired_lease(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("task-expired-claim", "expired lease", "running", now, now, main.WORKER_ID, now - 1),
+            )
+        main._persist_plan("task-expired-claim", [
+            {"title": "Read", "action": "fetch_url", "input": {"url": "https://example.com"}}
+        ], 3)
+        with main.db() as conn:
+            step = conn.execute("SELECT id FROM task_steps WHERE task_id=?",
+                                ("task-expired-claim",)).fetchone()
+        self.assertIsNone(main._claim_step("task-expired-claim", step["id"]))
+
+    def test_step_result_write_rejects_lost_lease(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("task-stale-result", "stale result", "running", now, now, "former-worker", now + 600),
+            )
+            conn.execute(
+                "INSERT INTO task_steps(id,task_id,step_index,title,action,input_json,idempotency_key,status,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                ("step-stale-result", "task-stale-result", 0, "Read", "fetch_url", "{}", "stale-result-key",
+                 "running", now, now),
+            )
+        saved = main._save_step_result(
+            "task-stale-result", "step-stale-result", "completed", json.dumps({"ok": True})
+        )
+        self.assertFalse(saved)
+        with main.db() as conn:
+            row = conn.execute("SELECT status,result_json FROM task_steps WHERE id=?",
+                                ("step-stale-result",)).fetchone()
+        self.assertEqual(row["status"], "running")
+        self.assertEqual(row["result_json"], "")
 
     def test_step_claim_requires_live_task_lease_and_no_cancellation(self):
         now = time.time()
