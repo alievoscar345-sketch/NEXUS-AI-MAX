@@ -1901,6 +1901,47 @@ class DurableTaskTests(unittest.TestCase):
         )
         return result["project"]["id"]
 
+    def test_binary_project_files_round_trip_with_immutable_revisions(self):
+        project_id = self._create_test_project()
+        payload = bytes([0, 255, 1, 2, 128, 10])
+        first = main._write_project_file_bytes(
+            project_id, "tenant-project", "assets/icon.bin", payload,
+            "Upload icon", "application/octet-stream", True,
+        )
+        second = main._write_project_file_bytes(
+            project_id, "tenant-project", "assets/icon.bin", b"new-binary",
+            "Replace icon", "application/octet-stream", True,
+        )
+        self.assertEqual(first["revision"], 1)
+        self.assertEqual(first["bytes"], len(payload))
+        self.assertTrue(first["is_binary"])
+        self.assertEqual(second["revision"], 2)
+        with main.db() as conn:
+            rows = conn.execute(
+                "SELECT content,sha256,size_bytes FROM project_file_versions "
+                "WHERE project_id=? AND path=? ORDER BY revision",
+                (project_id, "assets/icon.bin"),
+            ).fetchall()
+        self.assertEqual(bytes(rows[0]["content"]), payload)
+        self.assertEqual(hashlib.sha256(payload).hexdigest(), rows[0]["sha256"])
+        self.assertEqual(rows[0]["size_bytes"], len(payload))
+
+    def test_binary_project_file_write_is_owner_scoped_and_size_limited(self):
+        project_id = self._create_test_project()
+        with self.assertRaises(main.HTTPException) as raised:
+            main._write_project_file_bytes(
+                project_id, "another-owner", "private.bin", b"secret",
+                "Upload", "application/octet-stream", True,
+            )
+        self.assertEqual(raised.exception.status_code, 404)
+        with patch.object(main, "MAX_PROJECT_FILE_BYTES", 4):
+            with self.assertRaises(main.HTTPException) as raised:
+                main._write_project_file_bytes(
+                    project_id, "tenant-project", "large.bin", b"12345",
+                    "Upload", "application/octet-stream", True,
+                )
+        self.assertEqual(raised.exception.status_code, 413)
+
     def test_project_files_are_persisted_and_versioned(self):
         project_id = self._create_test_project()
         first = main.write_project_file(
