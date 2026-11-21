@@ -309,7 +309,8 @@ class DurableTaskTests(unittest.TestCase):
                     asyncio.run(main._github_task_action(
                         "github-stale-task", "owner-a", "github_create_branch", {}
                     ))
-                github_api.assert_not_awaited()
+                self.assertEqual(github_api.await_count, 2)
+                self.assertTrue(all(call.args[1] == "GET" for call in github_api.await_args_list))
         finally:
             main._LEASE_OWNER.reset(stale)
 
