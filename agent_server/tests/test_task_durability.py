@@ -637,7 +637,12 @@ class DurableTaskTests(unittest.TestCase):
         with main.db() as conn:
             count = conn.execute("SELECT COUNT(*) AS n FROM approvals WHERE task_id=?",
                                  ("task-approval",)).fetchone()["n"]
+            event_count = conn.execute(
+                "SELECT COUNT(*) AS n FROM events WHERE task_id=? AND kind='approval_required'",
+                ("task-approval",),
+            ).fetchone()["n"]
         self.assertEqual(count, 1)
+        self.assertEqual(event_count, 1)
 
 
     def test_stale_worker_cannot_create_approval(self):

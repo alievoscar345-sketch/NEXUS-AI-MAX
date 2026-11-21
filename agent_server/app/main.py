@@ -337,16 +337,17 @@ def _create_approval(tid: str, description: str, idempotency_key: str) -> str | 
             (tid, _current_lease_owner(), now)).fetchone()
         if not owned:
             return None
-        c.execute("""INSERT OR IGNORE INTO approvals(id,task_id,description,status,created_at,idempotency_key)
+        inserted = c.execute("""INSERT OR IGNORE INTO approvals(id,task_id,description,status,created_at,idempotency_key)
                      VALUES(?,?,?,'pending',?,?)""",
-                  (approval_id, tid, description, now, idempotency_key))
+                  (approval_id, tid, description, now, idempotency_key)).rowcount
         approval = c.execute("SELECT id FROM approvals WHERE idempotency_key=?",
                              (idempotency_key,)).fetchone()
         if not approval:
             raise RuntimeError("Approval record could not be created")
-        c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
-                  (tid, now, "approval_required", description[:2000]))
-        c.execute("UPDATE tasks SET updated_at=? WHERE id=?", (now, tid))
+        if inserted:
+            c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                      (tid, now, "approval_required", description[:2000]))
+            c.execute("UPDATE tasks SET updated_at=? WHERE id=?", (now, tid))
         return approval["id"]
 
 
