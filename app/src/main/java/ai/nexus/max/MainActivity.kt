@@ -979,6 +979,19 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun updateAutomation(automation: NexusAutomation) {
+        if (automationBusy) return
+        automationBusy = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { agentTaskClient().updateAutomation(automation) }
+                nexusAutomations = withContext(Dispatchers.IO) { agentTaskClient().listAutomations() }
+                automationMessage = "Изменения автоматизации сохранены."
+            } catch (e: Exception) { automationMessage = e.message ?: "Не удалось обновить автоматизацию." }
+            finally { automationBusy = false }
+        }
+    }
+
     fun refreshAutomationRuns(id: String) {
         if (automationRunsBusy) return
         automationRunsBusy = true
@@ -4204,6 +4217,7 @@ private fun SkillManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
 @Composable
 private fun AutomationManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
     var expandedHistoryId by remember { mutableStateOf<String?>(null) }
+    var editingAutomationId by remember { mutableStateOf<String?>(null) }
     var name by remember { mutableStateOf("") }
     var prompt by remember { mutableStateOf("") }
     var scheduleType by remember { mutableStateOf("daily") }
@@ -4283,15 +4297,24 @@ private fun AutomationManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                         LocalDateTime.parse(onceDateTime, DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"))
                             .atZone(ZoneId.systemDefault()).toEpochSecond().toDouble()
                     }.getOrNull() else null
-                    vm.createAutomation(name, prompt, scheduleType, localTime,
-                        if (scheduleType == "weekly") weekdays.sorted() else emptyList(),
-                        if (scheduleType == "interval") intervalText.toIntOrNull() else null, selectedProjectId, oneTimeRun)
-                    name = ""; prompt = ""
+                    val days = if (scheduleType == "weekly") weekdays.sorted() else emptyList()
+                    val interval = if (scheduleType == "interval") intervalText.toIntOrNull() else null
+                    val existing = vm.nexusAutomations.firstOrNull { it.id == editingAutomationId }
+                    if (existing == null) vm.createAutomation(name, prompt, scheduleType, localTime,
+                        days, interval, selectedProjectId, oneTimeRun)
+                    else vm.updateAutomation(existing.copy(name = name, prompt = prompt, scheduleType = scheduleType,
+                        localTime = localTime, timezone = ZoneId.systemDefault().id, weekdays = days,
+                        runAt = oneTimeRun, intervalMinutes = interval, projectId = selectedProjectId))
+                    name = ""; prompt = ""; editingAutomationId = null
                 }, enabled = !vm.automationBusy && vm.agentServerConfigured && name.isNotBlank() &&
                     prompt.trim().length >= 3 && (scheduleType != "weekly" || weekdays.isNotEmpty()) &&
                     (scheduleType != "interval" || (intervalText.toIntOrNull() ?: 0) >= 5) &&
                     (scheduleType != "once" || (runCatching { LocalDateTime.parse(onceDateTime, DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")).atZone(ZoneId.systemDefault()).toEpochSecond() > Instant.now().epochSecond }.getOrDefault(false)))
-                ) { Text("Создать автоматизацию") }
+                ) { Text(if (editingAutomationId == null) "Создать автоматизацию" else "Сохранить изменения") }
+                if (editingAutomationId != null) TextButton(onClick = {
+                    editingAutomationId = null; name = ""; prompt = ""; selectedProjectId = null
+                    scheduleType = "daily"; localTime = "09:00"; intervalText = "60"
+                }) { Text("Отменить редактирование", color = Muted) }
                 vm.automationMessage?.let { Text(it, color = Muted, fontSize = 10.sp) }
                 Divider(color = DividerTone)
                 Text("МОИ АВТОМАТИЗАЦИИ · ${vm.nexusAutomations.size}", color = Muted,
@@ -4306,6 +4329,15 @@ private fun AutomationManagerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                                     color = if (item.enabled) Color(0xFF8FC6A0) else Muted, fontSize = 8.sp)
                             }
                             Text(item.prompt, color = Muted, fontSize = 10.sp, maxLines = 3)
+                            TextButton(onClick = {
+                                editingAutomationId = item.id; name = item.name; prompt = item.prompt
+                                scheduleType = item.scheduleType; localTime = item.localTime
+                                weekdays = item.weekdays.toSet(); intervalText = (item.intervalMinutes ?: 60).toString()
+                                selectedProjectId = item.projectId
+                                onceDateTime = item.runAt?.let { runCatching { Instant.ofEpochMilli((it * 1000).toLong())
+                                    .atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")) }.getOrNull() }
+                                    ?: LocalDateTime.now().plusHours(1).format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"))
+                            }, enabled = !vm.automationBusy) { Text("Изменить расписание и задачу", color = Blue, fontSize = 9.sp) }
                             item.projectId?.let { id ->
                                 Text("Проект: " + (vm.nexusProjects.firstOrNull { it.id == id }?.name ?: "привязанный проект"),
                                     color = Blue, fontSize = 9.sp)
