@@ -4274,7 +4274,7 @@ def list_task_checkpoints(tid: str, after_sequence: int = 0, owner_id: str = Dep
 def restore_task_checkpoint(tid: str, checkpoint_id: str, body: dict[str, Any],
                             owner_id: str = Depends(auth)):
     expected_latest = body.get("expected_latest_sequence")
-    if not isinstance(expected_latest, int) or expected_latest < 1:
+    if type(expected_latest) is not int or expected_latest < 1:
         raise HTTPException(422, "expected_latest_sequence must be a positive integer")
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
