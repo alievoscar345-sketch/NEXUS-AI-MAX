@@ -1317,6 +1317,33 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun controlAgentTask(taskId: String, pause: Boolean) {
+        if (agentBusy || agentRefreshing) return
+        agentBusy = true
+        viewModelScope.launch {
+            try {
+                val status = withContext(Dispatchers.IO) {
+                    if (pause) agentTaskClient().pauseTask(taskId)
+                    else agentTaskClient().resumeTask(taskId)
+                }
+                agentMessage = when (status) {
+                    "pause_requested" -> "Пауза запрошена. Текущий шаг завершится безопасно."
+                    "paused" -> "Задача приостановлена."
+                    "queued" -> "Задача возобновлена."
+                    "waiting_for_approval" -> "Задача возобновлена и ожидает подтверждения."
+                    else -> "Состояние задачи: $status"
+                }
+                val loaded = withContext(Dispatchers.IO) { agentTaskClient().getTask(taskId) }
+                activeAgentTask = loaded
+                agentTasks = listOf(loaded) + agentTasks.filterNot { it.id == loaded.id }
+            } catch (e: Exception) {
+                agentMessage = e.message ?: if (pause) "Не удалось приостановить задачу." else "Не удалось возобновить задачу."
+            } finally {
+                agentBusy = false
+            }
+        }
+    }
+
     fun refreshAgentApprovals() {
         if (agentBusy) return
         viewModelScope.launch {
@@ -4439,7 +4466,18 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                     Divider(color = DividerTone)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("ВЫПОЛНЕНИЕ · " + task.status.uppercase(), color = MainText, fontSize = 10.sp, modifier = Modifier.weight(1f))
-                        if (task.status in setOf("queued", "planning", "running", "retry_wait", "waiting_for_approval")) {
+                        if (task.status == "paused") {
+                            TextButton(onClick = { vm.controlAgentTask(task.id, pause = false) },
+                                enabled = !vm.agentBusy && !vm.agentRefreshing) {
+                                Text("Продолжить", color = Blue)
+                            }
+                        } else if (task.status in setOf("queued", "planning", "running", "retry_wait")) {
+                            TextButton(onClick = { vm.controlAgentTask(task.id, pause = true) },
+                                enabled = !vm.agentBusy && !vm.agentRefreshing) {
+                                Text("Пауза", color = Blue)
+                            }
+                        }
+                        if (task.status in setOf("queued", "planning", "running", "retry_wait", "waiting_for_approval", "paused")) {
                             TextButton(onClick = { vm.cancelAgentTask(task.id) }, enabled = !vm.agentBusy && !vm.agentRefreshing) {
                                 Text("Отменить", color = Color(0xFFE5A0A0))
                             }
