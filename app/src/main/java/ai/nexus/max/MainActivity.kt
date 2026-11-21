@@ -1386,12 +1386,13 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshAgentCheckpoints(taskId: String) {
-        if (agentCheckpointBusy || !agentServerConfigured || agentServerUrl.isBlank()) return
+        if (!agentServerConfigured || agentServerUrl.isBlank()) return
         if (agentCheckpointTaskId != taskId) {
             agentCheckpointTaskId = taskId
             agentCheckpointLatestSequence = 0
             agentCheckpoints = emptyList()
         }
+        if (agentCheckpointBusy) return
         val cursor = agentCheckpointLatestSequence
         agentCheckpointBusy = true
         viewModelScope.launch {
@@ -1414,6 +1415,10 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
 
     fun restoreAgentCheckpoint(taskId: String, checkpoint: AgentTaskCheckpoint) {
         if (agentCheckpointBusy || !checkpoint.available || checkpoint.sequence < 1) return
+        if (agentCheckpointTaskId != taskId) {
+            agentMessage = "Сначала обнови историю контрольных точек этой задачи."
+            return
+        }
         val expectedLatest = agentCheckpointLatestSequence
         if (expectedLatest < 1) {
             agentMessage = "Сначала обнови историю контрольных точек."
@@ -4479,7 +4484,11 @@ private fun ChatProjectPickerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
             title = { Text("Восстановить контрольную точку #${checkpoint.sequence}?") },
             text = {
                 Text(
-                    "Текущая рабочая папка, версии файлов проекта, план и результаты будут заменены состоянием выбранного снимка. Более поздние изменения будут потеряны. После восстановления задача перейдёт в состояние «приостановлена»."
+                    (if (checkpoint.legacy)
+                        "Это старая контрольная точка: будет восстановлена рабочая папка и план, но версии файлов проекта и опубликованные результаты останутся без изменений. "
+                    else
+                        "Рабочая папка, версии файлов проекта, опубликованные результаты и план будут заменены состоянием выбранного снимка. ") +
+                        "Более поздние изменения будут потеряны. После восстановления задача перейдёт в состояние «приостановлена»."
                 )
             },
             confirmButton = {
