@@ -286,7 +286,7 @@ class NewTask(BaseModel):
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
     project_id: str | None = Field(default=None, max_length=64)
     context_text: str = Field(default="", max_length=24000)
-    model_selection: str = Field(default="auto", min_length=2, max_length=160, pattern=r"^(auto|[^\\s]{1,159})$")
+    model_selection: str = Field(default="auto", min_length=2, max_length=160, pattern=r"^(auto|[^\s]{1,159})$")
 
 
 class Approval(BaseModel):
