@@ -515,6 +515,12 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var agentWorkspaceBusy by mutableStateOf(false)
         private set
+    var agentCheckpoints by mutableStateOf<List<AgentTaskCheckpoint>>(emptyList())
+        private set
+    var agentCheckpointLatestSequence by mutableStateOf(0)
+        private set
+    var agentCheckpointBusy by mutableStateOf(false)
+        private set
     var agentArtifacts by mutableStateOf<List<AgentArtifact>>(emptyList())
         private set
     var agentArtifactFileName by mutableStateOf<String?>(null)
@@ -1374,6 +1380,62 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 agentMessage = e.message ?: "Не удалось обновить состояние автономного агента."
             } finally {
                 agentRefreshing = false
+            }
+        }
+    }
+
+    fun refreshAgentCheckpoints(taskId: String) {
+        if (agentCheckpointBusy || !agentServerConfigured || agentServerUrl.isBlank()) return
+        agentCheckpointBusy = true
+        viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) { agentTaskClient().listTaskCheckpoints(taskId) }
+                if (activeAgentTaskId == taskId || activeAgentTask?.id == taskId) {
+                    agentCheckpointLatestSequence = result.first
+                    agentCheckpoints = result.second
+                }
+            } catch (e: Exception) {
+                agentMessage = e.message ?: "Не удалось загрузить историю контрольных точек."
+            } finally {
+                agentCheckpointBusy = false
+            }
+        }
+    }
+
+    fun restoreAgentCheckpoint(taskId: String, checkpoint: AgentTaskCheckpoint) {
+        if (agentCheckpointBusy || !checkpoint.available || checkpoint.sequence < 1) return
+        val expectedLatest = agentCheckpointLatestSequence
+        if (expectedLatest < 1) {
+            agentMessage = "Сначала обнови историю контрольных точек."
+            return
+        }
+        agentCheckpointBusy = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    agentTaskClient().restoreTaskCheckpoint(taskId, checkpoint.id, expectedLatest)
+                }
+                val api = agentTaskClient()
+                val loadedTask = withContext(Dispatchers.IO) { api.getTask(taskId) }
+                val history = withContext(Dispatchers.IO) { api.listTaskCheckpoints(taskId) }
+                val workspace = withContext(Dispatchers.IO) { api.listWorkspace(taskId, ".") }
+                val artifacts = withContext(Dispatchers.IO) { api.listArtifacts(taskId) }
+                activeAgentTask = loadedTask
+                selectAgentTask(taskId)
+                agentTasks = listOf(loadedTask) + agentTasks.filterNot { it.id == taskId }
+                agentCheckpointLatestSequence = history.first
+                agentCheckpoints = history.second
+                agentWorkspaceTaskId = taskId
+                agentWorkspacePath = "."
+                agentWorkspaceEntries = workspace
+                agentArtifacts = artifacts
+                agentWorkspaceFilePath = null
+                agentWorkspaceFileContent = ""
+                agentMessage = "Контрольная точка #${checkpoint.sequence} восстановлена. Задача приостановлена; можно проверить файлы и продолжить её вручную."
+            } catch (e: Exception) {
+                agentMessage = e.message ?: "Не удалось восстановить контрольную точку."
+            } finally {
+                agentCheckpointBusy = false
             }
         }
     }
