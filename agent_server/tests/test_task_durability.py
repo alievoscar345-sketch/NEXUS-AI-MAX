@@ -152,6 +152,68 @@ class DurableTaskTests(unittest.TestCase):
                 main.read_task_artifact("artifact-api", "../another-task-secret.txt", owner_id="owner-a")
             self.assertEqual(traversal.exception.status_code, 422)
 
+
+    def test_memory_crud_is_scoped_to_owner(self):
+        created = main.create_memory(
+            main.MemoryInput(title="Nutrition preference", content="Prefers evidence-based nutrition advice",
+                             category="preference", pinned=True),
+            owner_id="owner-a",
+        )["memory"]
+        memory_id = created["id"]
+        self.assertTrue(created["pinned"])
+        self.assertEqual(main.list_memories(owner_id="owner-a")["memories"][0]["id"], memory_id)
+        self.assertEqual(main.list_memories(owner_id="owner-b")["memories"], [])
+        updated = main.update_memory(
+            memory_id, main.MemoryUpdateInput(content="Wants peer-reviewed nutrition research", pinned=False),
+            owner_id="owner-a",
+        )["memory"]
+        self.assertEqual(updated["content"], "Wants peer-reviewed nutrition research")
+        self.assertFalse(updated["pinned"])
+        with self.assertRaises(main.HTTPException) as denied:
+            main.update_memory(memory_id, main.MemoryUpdateInput(title="Hijack"), owner_id="owner-b")
+        self.assertEqual(denied.exception.status_code, 404)
+        self.assertEqual(main.delete_memory(memory_id, owner_id="owner-a")["status"], "deleted")
+        with self.assertRaises(main.HTTPException) as missing:
+            main.delete_memory(memory_id, owner_id="owner-a")
+        self.assertEqual(missing.exception.status_code, 404)
+
+    def test_memory_retrieval_matches_recent_user_context_and_is_owner_scoped(self):
+        main.create_memory(
+            main.MemoryInput(title="NEXUS project", content="Building an Android AI assistant with long-term memory",
+                             category="project", pinned=True),
+            owner_id="owner-a",
+        )
+        main.create_memory(
+            main.MemoryInput(title="Travel", content="Prefers quiet hotels near public transport",
+                             category="preference"),
+            owner_id="owner-a",
+        )
+        main.create_memory(
+            main.MemoryInput(title="NEXUS project", content="Private memory from another account",
+                             category="project"),
+            owner_id="owner-b",
+        )
+        messages = [{"role": "user", "content": "How should we implement NEXUS Android memory retrieval?"}]
+        results = main._retrieve_relevant_memories("owner-a", messages)
+        self.assertEqual([item["title"] for item in results], ["NEXUS project"])
+        self.assertIn("Android AI assistant", results[0]["content"])
+        self.assertIsNotNone(results[0]["last_accessed_at"])
+        self.assertEqual(main._retrieve_relevant_memories("owner-b", messages)[0]["content"],
+                         "Private memory from another account")
+
+    def test_memory_search_ranks_title_matches(self):
+        main.create_memory(
+            main.MemoryInput(title="Cooking", content="General food notes"),
+            owner_id="personal",
+        )
+        main.create_memory(
+            main.MemoryInput(title="NEXUS roadmap", content="Android app and agent memory"),
+            owner_id="personal",
+        )
+        results = main.list_memories(q="NEXUS", owner_id="personal")["memories"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["title"], "NEXUS roadmap")
+
     def test_get_task_returns_event_ids_and_supports_incremental_cursor(self):
         now = time.time()
         with main.db() as conn:
