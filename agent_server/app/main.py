@@ -2598,7 +2598,15 @@ async def _github_commit_task_workspace(tid: str, integration: dict[str, str],
     excluded_names = {".nexus-github-checkout.json", "local.properties", ".DS_Store"}
     excluded_suffixes = {".apk", ".aab", ".jks", ".keystore", ".zip"}
     pending: list[tuple[str, Path, str, int]] = []
+    deleted: list[str] = []
     skipped: list[str] = []
+    for relative in existing:
+        parts = PurePosixPath(relative).parts
+        if not parts or any(part in excluded_dirs for part in parts):
+            continue
+        local_path = root.joinpath(*parts)
+        if not local_path.exists() and not local_path.is_symlink():
+            deleted.append(relative)
     for current_root, dirs, files in os.walk(root, followlinks=False):
         current = Path(current_root)
         dirs[:] = [name for name in dirs
@@ -2628,10 +2636,10 @@ async def _github_commit_task_workspace(tid: str, integration: dict[str, str],
             if existing.get(relative) == git_blob_sha:
                 continue
             pending.append((relative, resolved, git_blob_sha, len(data)))
-    if not pending:
+    if not pending and not deleted:
         return {"branch": selected_branch, "unchanged": True, "files_committed": 0,
-                "files_skipped": len(skipped), "skipped_paths": skipped[:100],
-                "commit": None}
+                "files_deleted": 0, "files_skipped": len(skipped),
+                "skipped_paths": skipped[:100], "commit": None}
     semaphore = asyncio.Semaphore(4)
     async def create_blob(item: tuple[str, Path, str, int]) -> dict[str, Any]:
         relative, source_path, _, _ = item
@@ -2645,6 +2653,8 @@ async def _github_commit_task_workspace(tid: str, integration: dict[str, str],
             raise RuntimeError("GitHub did not return a blob SHA for " + relative)
         return {"path": relative, "mode": "100644", "type": "blob", "sha": sha}
     entries = await asyncio.gather(*(create_blob(item) for item in pending))
+    entries.extend({"path": relative, "mode": "100644", "type": "blob", "sha": None}
+                   for relative in deleted)
     tree = await _github_api(token, "POST", f"/repos/{repo_path}/git/trees",
                              {"base_tree": base_tree, "tree": entries})
     tree_sha = str((tree or {}).get("sha", ""))
