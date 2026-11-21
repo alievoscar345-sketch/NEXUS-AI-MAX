@@ -928,16 +928,16 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
 
         async def event_stream():
             try:
-                yield "data: " + json.dumps(first_chunk, ensure_ascii=False, separators=(",", ":")) + "\\n\\n"
+                yield "data: " + json.dumps(first_chunk, ensure_ascii=False, separators=(",", ":")) + "\n\n"
                 async for chunk in stream_iterator:
-                    yield "data: " + json.dumps(chunk, ensure_ascii=False, separators=(",", ":")) + "\\n\\n"
+                    yield "data: " + json.dumps(chunk, ensure_ascii=False, separators=(",", ":")) + "\n\n"
             except ModelGatewayError:
                 error = {"error": {"message": "The model stream was interrupted.",
                                    "type": "provider_stream_error"}}
-                yield "data: " + json.dumps(error, separators=(",", ":")) + "\\n\\n"
+                yield "data: " + json.dumps(error, separators=(",", ":")) + "\n\n"
             finally:
                 await stream_iterator.aclose()
-            yield "data: [DONE]\\n\\n"
+            yield "data: [DONE]\n\n"
 
         return StreamingResponse(
             event_stream(),
