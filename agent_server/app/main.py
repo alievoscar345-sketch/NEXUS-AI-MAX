@@ -1085,12 +1085,12 @@ def _list_memories(owner_id: str, query: str = "", limit: int = 100) -> list[dic
             (owner_id, 500),
         ).fetchall()
     if query.strip():
-        terms = {term.casefold() for term in re.findall(r"[\\w-]{2,}", query) if len(term) >= 2}
+        terms = {term.casefold() for term in re.findall(r"[\w-]{2,}", query) if len(term) >= 2}
         if terms:
             ranked = []
             for row in rows:
-                title_terms = set(re.findall(r"[\\w-]{2,}", row["title"].casefold()))
-                content_terms = set(re.findall(r"[\\w-]{2,}", row["content"].casefold()))
+                title_terms = set(re.findall(r"[\w-]{2,}", row["title"].casefold()))
+                content_terms = set(re.findall(r"[\w-]{2,}", row["content"].casefold()))
                 overlap = len(terms & content_terms) + 2 * len(terms & title_terms)
                 if overlap:
                     ranked.append((overlap + (0.25 if row["pinned"] else 0), row))
@@ -1129,14 +1129,14 @@ def _retrieve_relevant_memories(owner_id: str, messages: list[dict[str, Any]]) -
         "тебя", "твой", "твоя", "его", "её", "они", "она", "оно", "быть", "есть",
         "про", "надо", "нужно", "можно", "пожалуйста", "сейчас", "тогда", "чтобы",
     }
-    terms = {word.casefold() for word in re.findall(r"[\\w-]{3,}", query) if word.casefold() not in stop_words}
+    terms = {word.casefold() for word in re.findall(r"[\w-]{3,}", query) if word.casefold() not in stop_words}
     if not terms:
         return []
     memories = _list_memories(owner_id, "", 500)
     ranked = []
     for item in memories:
-        title_terms = set(re.findall(r"[\\w-]{3,}", item["title"].casefold()))
-        content_terms = set(re.findall(r"[\\w-]{3,}", item["content"].casefold()))
+        title_terms = set(re.findall(r"[\w-]{3,}", item["title"].casefold()))
+        content_terms = set(re.findall(r"[\w-]{3,}", item["content"].casefold()))
         overlap = len(terms & content_terms) + 2 * len(terms & title_terms)
         if overlap:
             ranked.append((overlap + (0.5 if item["pinned"] else 0), item))
@@ -1219,7 +1219,7 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
     messages = list(body.messages)
     memories = await run_db(_retrieve_relevant_memories, owner_id, messages)
     if memories:
-        memory_text = "\\n".join(
+        memory_text = "\n".join(
             f"- [{item['category']}] {item['title']}: {item['content']}"
             for item in memories
         )
