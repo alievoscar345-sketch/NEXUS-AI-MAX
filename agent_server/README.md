@@ -6,7 +6,7 @@ Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent 
 
 - Authenticated API for creating, listing, inspecting, and cancelling tasks.
 - Persistent SQLite task queue, ordered task steps, event log, retry scheduling, safe pause/resume, and lease-fenced worker writes.
-- Long tasks checkpoint at durable step boundaries when an execution window expires, release their lease, and automatically re-enter the queue to continue from the next unfinished step. This supports work spanning multiple execution windows and backend restarts while the service is deployed and running.
+- Long tasks retain durable checkpoints and automatically recover after backend restarts; the active worker renews its lease rather than stopping at a fixed task-duration budget.
 - Task planning and evaluation through a provider-agnostic OpenAI-compatible Model Gateway.
 - Multi-provider routing using task category, configured benchmark metadata, cost/latency metadata, and provider priority.
 - Limited provider fallback for network failures, timeouts, and transient HTTP errors. No fallback after streamed output has started.
@@ -15,10 +15,10 @@ Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent 
 - Standard chat endpoint with bounded text and inline image payloads. The Android app extracts supported document text locally and sends it as message context.
 - Provider connectivity checks and an image-understanding probe that can confirm and enable the provider's vision capability.
 - Task-scoped workspace files, artifact creation/listing/reading, and Android agent-console integration.
-- Optional isolated Docker code execution with digest-pinned images, no network, read-only container root, resource limits, and task-workspace-only writable mount; requires explicit operator configuration.
+- Optional isolated Docker code execution with digest-pinned images, no network egress, read-only container root, no fixed CPU/memory/PID/wall-clock ceilings, and task-workspace-only writable mount; requires explicit operator configuration.
 - Optional Tavily search and HTTPS text/JSON fetching with private-network destination protections.
 - Approval records for proposed external side effects.
-- Optional isolated code execution through a digest-pinned Docker runner with bounded commands, no network, resource limits, and task-workspace-only write access.
+- Optional isolated code execution through a digest-pinned Docker runner with no default command timeout or fixed CPU/memory/PID ceilings, no network egress, bounded output capture, and task-workspace-only write access.
 
 ## Not yet implemented
 
