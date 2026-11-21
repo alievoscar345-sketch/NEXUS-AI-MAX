@@ -1365,6 +1365,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 val extension = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
                 val isPdf = mime == "application/pdf" || extension == "pdf"
                 val isDocx = mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || extension == "docx"
+                val isXlsx = mime == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" || extension == "xlsx"
+                val isPptx = mime == "application/vnd.openxmlformats-officedocument.presentationml.presentation" || extension == "pptx"
                 val normalizedImageMime = when (mime.lowercase(Locale.ROOT)) {
                     "image/jpg" -> "image/jpeg"
                     "image/png", "image/jpeg", "image/webp", "image/gif" -> mime.lowercase(Locale.ROOT)
@@ -1443,13 +1445,21 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     }.trim()
                     if (extracted.isBlank()) throw IllegalArgumentException("В DOCX не найден текст.")
                     ChatAttachment(name, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "", extracted)
+                } else if (isXlsx) {
+                    val bytes = readUriLimited(resolver, uri, 10 * 1024 * 1024, "XLSX слишком большой. Максимум 10 МБ.", "Не удалось прочитать XLSX.")
+                    val extracted = extractXlsxText(bytes)
+                    ChatAttachment(name, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "", extracted)
+                } else if (isPptx) {
+                    val bytes = readUriLimited(resolver, uri, 10 * 1024 * 1024, "PPTX слишком большой. Максимум 10 МБ.", "Не удалось прочитать PPTX.")
+                    val extracted = extractPptxText(bytes)
+                    ChatAttachment(name, "application/vnd.openxmlformats-officedocument.presentationml.presentation", "", extracted)
                 } else if (mime.startsWith("text/") || mime == "application/json" || mime == "application/xml" ||
                     extension in setOf("txt", "md", "csv", "json", "xml")
                 ) {
                     val bytes = readUriLimited(resolver, uri, 1024 * 1024, "Текстовый документ слишком большой. Максимум 1 МБ.", "Не удалось прочитать документ.")
                     ChatAttachment(name, mime, "", bytes.toString(Charsets.UTF_8))
                 } else {
-                    throw IllegalArgumentException("Поддерживаются изображения, TXT, MD, CSV, JSON, XML, PDF и DOCX.")
+                    throw IllegalArgumentException("Поддерживаются изображения, TXT, MD, CSV, JSON, XML, PDF, DOCX, XLSX и PPTX.")
                 }
                 withContext(Dispatchers.Main) {
                     pendingAttachments = pendingAttachments + attachment
@@ -2427,7 +2437,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                     Divider(color = DividerTone, modifier = Modifier.padding(vertical = 5.dp))
                                     Text("ИНСТРУМЕНТЫ ПРИЛОЖЕНИЯ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                                     FeatureSwitchRow("Понимание изображений", "Отправка прикреплённых изображений в API", imageInputEnabled, true) { imageInputEnabled = it }
-                                    FeatureSwitchRow("Анализ документов", "TXT, MD, CSV, JSON, XML, PDF и DOCX", fileAnalysisEnabled, true) { fileAnalysisEnabled = it }
+                                    FeatureSwitchRow("Анализ документов", "TXT, MD, CSV, JSON, XML, PDF, DOCX, XLSX и PPTX", fileAnalysisEnabled, true) { fileAnalysisEnabled = it }
                                     FeatureSwitchRow("Голосовой ввод", "Распознавание речи Android", voiceInputEnabled, true) { voiceInputEnabled = it }
                                     FeatureSwitchRow("Озвучивание ответов", "Синтез речи на устройстве", speechOutputEnabled, true) { speechOutputEnabled = it }
                                     Spacer(Modifier.height(5.dp))
@@ -2460,7 +2470,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                     text = { Text("Файл или документ", color = if (fileAnalysisEnabled) MainText else Muted) },
                                     leadingIcon = { Icon(Icons.Filled.AttachFile, null, tint = Blue) },
                                     enabled = fileAnalysisEnabled,
-                                    onClick = { attachmentMenuExpanded = false; documentPicker.launch(arrayOf("text/*", "application/json", "application/xml", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")) }
+                                    onClick = { attachmentMenuExpanded = false; documentPicker.launch(arrayOf("text/*", "application/json", "application/xml", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.openxmlformats-officedocument.presentationml.presentation")) }
                                 )
 
                             }
