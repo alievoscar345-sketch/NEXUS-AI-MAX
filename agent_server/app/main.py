@@ -127,11 +127,6 @@ def init_db():
             updated_at REAL NOT NULL
         );
         """)
-        project_file_columns = _columns(c, "project_file_versions")
-        if "content_type" not in project_file_columns:
-            c.execute("ALTER TABLE project_file_versions ADD COLUMN content_type TEXT NOT NULL DEFAULT 'text/plain; charset=utf-8'")
-        if "is_binary" not in project_file_columns:
-            c.execute("ALTER TABLE project_file_versions ADD COLUMN is_binary INTEGER NOT NULL DEFAULT 0")
         migrations = {
             "lease_owner": "TEXT NOT NULL DEFAULT ''",
             "lease_expires_at": "REAL",
@@ -256,6 +251,10 @@ def init_db():
         )
         """)
         project_file_cols = _columns(c, "project_file_versions")
+        if "content_type" not in project_file_cols:
+            c.execute("ALTER TABLE project_file_versions ADD COLUMN content_type TEXT NOT NULL DEFAULT 'text/plain; charset=utf-8'")
+        if "is_binary" not in project_file_cols:
+            c.execute("ALTER TABLE project_file_versions ADD COLUMN is_binary INTEGER NOT NULL DEFAULT 0")
         if "is_deleted" not in project_file_cols:
             c.execute("ALTER TABLE project_file_versions ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0")
         c.execute("""
