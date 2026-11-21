@@ -1264,20 +1264,20 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun exportAgentArtifactFile(uri: Uri) {
-        if (agentWorkspaceBusy || agentArtifactFileName == null) return
-        val content = agentArtifactContent
+    fun exportAgentArtifactFile(taskId: String, name: String, uri: Uri) {
+        if (agentWorkspaceBusy) return
         agentWorkspaceBusy = true
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
+                    val bytes = agentTaskClient().downloadArtifact(taskId, name)
                     val output = getApplication<Application>().contentResolver.openOutputStream(uri)
                         ?: throw IllegalStateException("Не удалось открыть файл для сохранения.")
-                    output.use { it.write(content.toByteArray(Charsets.UTF_8)) }
+                    output.use { it.write(bytes) }
                 }
-                agentMessage = "Результат агента сохранён на устройстве."
+                agentMessage = "Файл $name сохранён на устройстве."
             } catch (e: Exception) {
-                agentMessage = e.message ?: "Не удалось экспортировать результат."
+                agentMessage = e.message ?: "Не удалось скачать файл агента."
             } finally {
                 agentWorkspaceBusy = false
             }
@@ -4500,10 +4500,13 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
     ) { uri ->
         uri?.let { vm.exportAgentWorkspaceFile(it) }
     }
+    var artifactDownloadTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     val artifactExportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("text/plain")
+        ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { uri ->
-        uri?.let { vm.exportAgentArtifactFile(it) }
+        val target = artifactDownloadTarget
+        if (uri != null && target != null) vm.exportAgentArtifactFile(target.first, target.second, uri)
+        artifactDownloadTarget = null
     }
     var selectedTask by remember { mutableStateOf(vm.activeAgentTaskId) }
     LaunchedEffect(vm.activeAgentTaskId) {
@@ -4670,11 +4673,28 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                     LazyColumn(Modifier.heightIn(max = 75.dp)) {
                         items(vm.agentArtifacts, key = { it.name }) { artifact ->
                             Row(
-                                Modifier.fillMaxWidth().clickable(enabled = !vm.agentWorkspaceBusy) { vm.openAgentArtifact(task.id, artifact.name) }.padding(vertical = 4.dp),
+                                Modifier.fillMaxWidth().padding(vertical = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(artifact.name, color = MainText, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                                Text(
+                                    artifact.name,
+                                    color = MainText,
+                                    fontSize = 10.sp,
+                                    modifier = Modifier.weight(1f).clickable(
+                                        enabled = !vm.agentWorkspaceBusy && artifact.bytes <= 100_000 &&
+                                            (artifact.contentType.startsWith("text/") ||
+                                                artifact.contentType.contains("json") ||
+                                                artifact.contentType.contains("xml"))
+                                    ) { vm.openAgentArtifact(task.id, artifact.name) }
+                                )
                                 Text("${artifact.bytes} Б", color = Muted, fontSize = 9.sp)
+                                TextButton(
+                                    onClick = {
+                                        artifactDownloadTarget = task.id to artifact.name
+                                        artifactExportLauncher.launch(artifact.name)
+                                    },
+                                    enabled = !vm.agentWorkspaceBusy
+                                ) { Text("Скачать", color = Blue, fontSize = 9.sp) }
                             }
                         }
                         if (vm.agentArtifacts.isEmpty()) item { Text("Агент пока не создал отдельных файлов-результатов.", color = Muted, fontSize = 9.sp) }
@@ -4689,10 +4709,7 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                             maxLines = 5,
                             readOnly = true
                         )
-                        TextButton(
-                            onClick = { artifactExportLauncher.launch(vm.agentArtifactFileName ?: "nexus-result.txt") },
-                            enabled = !vm.agentWorkspaceBusy
-                        ) { Text("Скачать результат", color = Blue, fontSize = 10.sp) }
+                        Text("Предпросмотр текста. Для сохранения исходного файла используйте «Скачать» в списке выше.", color = Muted, fontSize = 9.sp)
                     }
                     if (vm.agentWorkspaceTaskId == task.id && vm.agentWorkspaceFilePath != null) {
                         var draft by remember(vm.agentWorkspaceFilePath, vm.agentWorkspaceFileContent) { mutableStateOf(vm.agentWorkspaceFileContent) }
