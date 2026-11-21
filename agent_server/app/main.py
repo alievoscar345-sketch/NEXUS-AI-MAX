@@ -516,14 +516,24 @@ def _set_task_planning(tid: str) -> bool:
     return bool(changed)
 
 
-def _mark_task_cancelled(tid: str):
+def _mark_task_cancelled(tid: str) -> bool:
+    """Finalize an explicit cancellation without allowing a stale worker to cancel a reclaimed task."""
     now = time.time()
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
-        c.execute("UPDATE tasks SET status='cancelled',cancel_requested=1,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
-                  (now, tid))
-        c.execute("UPDATE approvals SET status='cancelled' WHERE task_id=? AND status='pending'",
-                  (tid,))
+        task = c.execute("SELECT status,cancel_requested FROM tasks WHERE id=?", (tid,)).fetchone()
+        if not task or (task["status"] != "cancelled" and not task["cancel_requested"]):
+            return False
+        changed = c.execute(
+            """UPDATE tasks SET status='cancelled',cancel_requested=1,lease_owner='',
+                lease_expires_at=NULL,updated_at=?
+                WHERE id=? AND (status='cancelled' OR cancel_requested=1)""",
+            (now, tid),
+        ).rowcount
+        if changed:
+            c.execute("UPDATE approvals SET status='cancelled' WHERE task_id=? AND status='pending'",
+                      (tid,))
+        return bool(changed)
 
 
 def _next_pending_step(tid: str, now: float):

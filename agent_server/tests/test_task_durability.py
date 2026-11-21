@@ -539,6 +539,39 @@ class DurableTaskTests(unittest.TestCase):
         self.assertEqual(task["cancel_requested"], 1)
         self.assertEqual(event_count, 1)
 
+    def test_stale_worker_cannot_finalize_cancellation_without_cancel_request(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("task-stale-cancel-finalize", "reclaimed by another worker", "running",
+                 now, now, "current-worker-claim", now + 600),
+            )
+            conn.execute(
+                "INSERT INTO approvals(id,task_id,description,status,created_at,idempotency_key) "
+                "VALUES(?,?,?,?,?,?)",
+                ("approval-stale-cancel-finalize", "task-stale-cancel-finalize",
+                 "Pending action", "pending", now, "stale-cancel-finalize-key"),
+            )
+
+        finalized = main._mark_task_cancelled("task-stale-cancel-finalize")
+
+        self.assertFalse(finalized)
+        with main.db() as conn:
+            task = conn.execute(
+                "SELECT status,cancel_requested,lease_owner FROM tasks WHERE id=?",
+                ("task-stale-cancel-finalize",),
+            ).fetchone()
+            approval = conn.execute(
+                "SELECT status FROM approvals WHERE id=?",
+                ("approval-stale-cancel-finalize",),
+            ).fetchone()
+        self.assertEqual(task["status"], "running")
+        self.assertEqual(task["cancel_requested"], 0)
+        self.assertEqual(task["lease_owner"], "current-worker-claim")
+        self.assertEqual(approval["status"], "pending")
+
     def test_worker_cancellation_finalization_cancels_pending_approvals(self):
         now = time.time()
         with main.db() as conn:
