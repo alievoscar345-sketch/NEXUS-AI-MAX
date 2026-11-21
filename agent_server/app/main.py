@@ -42,7 +42,7 @@ MAX_SECONDS = max(60, min(int(os.getenv("NEXUS_AGENT_MAX_TASK_SECONDS", "1800"))
 CONTINUATION_DELAY_SECONDS = max(1, min(int(os.getenv("NEXUS_AGENT_CONTINUATION_DELAY_SECONDS", "5")), 60))
 MAX_STEP_ATTEMPTS = max(1, min(int(os.getenv("NEXUS_AGENT_STEP_MAX_ATTEMPTS", "3")), 8))
 RETRY_BASE_SECONDS = max(1, min(int(os.getenv("NEXUS_AGENT_RETRY_BASE_SECONDS", "10")), 300))
-LEASE_SECONDS = MAX_SECONDS + 180
+LEASE_SECONDS = max(MAX_SECONDS, 300) + 180
 WORKER_ID = str(uuid.uuid4())
 _LEASE_OWNER = contextvars.ContextVar("nexus_lease_owner", default=WORKER_ID)
 
