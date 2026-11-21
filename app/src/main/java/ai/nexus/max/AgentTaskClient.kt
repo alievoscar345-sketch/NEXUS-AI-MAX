@@ -229,8 +229,10 @@ class AgentTaskClient(
         }
     }
 
-    fun listTaskCheckpoints(taskId: String): Pair<Int, List<AgentTaskCheckpoint>> {
-        val obj = request("GET", listOf("v1", "tasks", taskId, "checkpoints"))
+    fun listTaskCheckpoints(taskId: String, afterSequence: Int = 0): Pair<Int, List<AgentTaskCheckpoint>> {
+        require(afterSequence >= 0) { "Checkpoint cursor must be non-negative" }
+        val obj = request("GET", listOf("v1", "tasks", taskId, "checkpoints"),
+            query = mapOf("after_sequence" to afterSequence.toString()))
         val items = obj.optJSONArray("checkpoints") ?: JSONArray()
         val checkpoints = (0 until items.length()).mapNotNull { index ->
             val item = items.optJSONObject(index) ?: return@mapNotNull null
