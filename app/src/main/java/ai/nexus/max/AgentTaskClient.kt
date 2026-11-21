@@ -182,6 +182,7 @@ class AgentTaskClient(
     }
 
     fun connectGitHub(repoFullName: String, token: String): NexusGitHubIntegration {
+        require(base.isHttps) { "GitHub credentials may only be sent to an HTTPS NEXUS server" }
         require(repoFullName.matches(Regex("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"))) {
             "GitHub repository must use owner/repository format"
         }
