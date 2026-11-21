@@ -1964,6 +1964,39 @@ class DurableTaskTests(unittest.TestCase):
                 with self.assertRaises(main.HTTPException):
                     main._validate_project_file_path(path)
 
+    def test_project_file_read_rejects_corrupted_content_hash(self):
+        project_id = self._create_test_project()
+        main.write_project_file(
+            project_id, main.ProjectFileWriteInput(path="integrity.txt", content="trusted"),
+            owner_id="tenant-project",
+        )
+        with main.db() as conn:
+            conn.execute(
+                "UPDATE project_file_versions SET content=? WHERE project_id=? AND path=?",
+                (sqlite3.Binary(b"tampered"), project_id, "integrity.txt"),
+            )
+        with self.assertRaises(main.HTTPException) as raised:
+            main.read_project_file(project_id, "integrity.txt", owner_id="tenant-project")
+        self.assertEqual(raised.exception.status_code, 500)
+
+    def test_project_file_restore_rejects_corrupted_source_version(self):
+        project_id = self._create_test_project()
+        main.write_project_file(
+            project_id, main.ProjectFileWriteInput(path="integrity.txt", content="trusted"),
+            owner_id="tenant-project",
+        )
+        with main.db() as conn:
+            conn.execute(
+                "UPDATE project_file_versions SET content=? WHERE project_id=? AND path=?",
+                (sqlite3.Binary(b"tampered"), project_id, "integrity.txt"),
+            )
+        with self.assertRaises(main.HTTPException) as raised:
+            main.restore_project_file(
+                project_id, "integrity.txt", main.ProjectFileRestoreInput(revision=1),
+                owner_id="tenant-project",
+            )
+        self.assertEqual(raised.exception.status_code, 500)
+
     def test_project_file_revision_size_is_checked_before_database_write(self):
         project_id = self._create_test_project()
         with self.assertRaises(main.HTTPException) as raised:
