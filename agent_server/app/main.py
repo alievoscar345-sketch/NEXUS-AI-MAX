@@ -732,7 +732,7 @@ def recover_interrupted_tasks():
             (now, now, now))
 
 
-def claim_task() -> str | None:
+def _claim_task_with_lease() -> tuple[str, str] | None:
     now = time.time()
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
@@ -743,26 +743,24 @@ def claim_task() -> str | None:
         if not row:
             return None
         tid = row["id"]
+        owner = f"{WORKER_ID}:{uuid.uuid4()}"
         changed = c.execute("""UPDATE tasks SET status='running',lease_owner=?,lease_expires_at=?,
             attempt_count=attempt_count+1,next_attempt_at=NULL,updated_at=?
             WHERE id=? AND status IN ('queued','retry_wait') AND cancel_requested=0""",
-            (f"{WORKER_ID}:{uuid.uuid4()}", now + LEASE_SECONDS, now, tid)).rowcount
-        return tid if changed else None
+            (owner, now + LEASE_SECONDS, now, tid)).rowcount
+        return (tid, owner) if changed else None
 
 
-def _task_lease_owner(tid: str) -> str | None:
-    with db() as c:
-        row = c.execute("SELECT lease_owner FROM tasks WHERE id=?", (tid,)).fetchone()
-    return row["lease_owner"] if row else None
+def claim_task() -> str | None:
+    claimed = _claim_task_with_lease()
+    return claimed[0] if claimed else None
 
 
 async def worker():
     while True:
-        tid = await run_db(claim_task)
-        if tid:
-            owner = await run_db(_task_lease_owner, tid)
-            if not owner:
-                continue
+        claimed = await run_db(_claim_task_with_lease)
+        if claimed:
+            tid, owner = claimed
             context_token = _LEASE_OWNER.set(owner)
             try:
                 await process(tid)
