@@ -75,6 +75,38 @@ class DurableTaskTests(unittest.TestCase):
         self.assertEqual(len(set(owners)), 2)
         self.assertTrue(all(owner.startswith(main.WORKER_ID + ":") for owner in owners))
 
+    def test_concurrent_workers_never_claim_the_same_step(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("task-concurrent-step", "concurrent step claim", "planning", now, now,
+                 main.WORKER_ID, now + 600),
+            )
+        main._persist_plan("task-concurrent-step", [
+            {"title": "Single step", "action": "fetch_url",
+             "input": {"url": "https://example.com"}}
+        ], 3)
+        with main.db() as conn:
+            step = conn.execute(
+                "SELECT id FROM task_steps WHERE task_id=?", ("task-concurrent-step",)
+            ).fetchone()
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            claims = list(pool.map(
+                lambda _: main._claim_step("task-concurrent-step", step["id"]), range(8)
+            ))
+
+        accepted = [claim for claim in claims if claim is not None]
+        self.assertEqual(len(accepted), 1)
+        with main.db() as conn:
+            row = conn.execute(
+                "SELECT status,attempt_count FROM task_steps WHERE id=?", (step["id"],)
+            ).fetchone()
+        self.assertEqual(row["status"], "running")
+        self.assertEqual(row["attempt_count"], 1)
+
     def test_persists_steps_and_stable_idempotency_key(self):
         now = time.time()
         with main.db() as conn:
