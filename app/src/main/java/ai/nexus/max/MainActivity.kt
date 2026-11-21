@@ -576,6 +576,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startAgentEventStream(taskId: String) {
         if (!agentServerConfigured || agentServerUrl.isBlank()) return
+        val taskStatus = activeAgentTask?.takeIf { it.id == taskId }?.status
+        if (taskStatus in setOf("completed", "failed", "cancelled")) return
         if (agentEventStreamTaskId == taskId && agentEventStreamCall?.isCanceled() == false) return
         stopAgentEventStream()
         val cursor = activeAgentTask?.takeIf { it.id == taskId }?.events?.maxOfOrNull { it.id } ?: 0L
