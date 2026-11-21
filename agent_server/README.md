@@ -72,7 +72,7 @@ The chat gateway does not yet proxy provider-specific web-search or reasoning to
 
 ## Personal memory
 
-The memory store is owner-scoped and supports creating, editing, pinning, searching, and deleting user-approved records. Relevant records are retrieved for later chats and inserted as untrusted context, so current user instructions take priority. Retrieval is currently lexical and title-weighted; it is not embedding-based semantic search.
+The memory store is owner-scoped and supports creating, editing, pinning, searching, and deleting user-approved records. Relevant records are retrieved for later chats and inserted as untrusted context, so current user instructions take priority. Automatic context retrieval uses BM25 term ranking with title weighting and a small pin preference; it is not embedding-based semantic search.
 
 - `GET /v1/memories`, `POST /v1/memories`, `PATCH /v1/memories/{id}`, and `DELETE /v1/memories/{id}` manage saved records.
 - `POST /v1/memories/suggest` analyzes user-authored messages from the current chat and proposes durable preferences, goals, facts, project context, or instructions.
@@ -81,15 +81,16 @@ The memory store is owner-scoped and supports creating, editing, pinning, search
 
 ### Personal skills and episodic recall
 
-Enabled user-created skills are now selected by relevance to the current chat or agent task instead of injecting the newest skills indiscriminately. Matching weighs skill names, descriptions, categories, and instructions; only a small relevant subset is added to the model context. Skills remain user-managed records and can be disabled or deleted.
+Enabled user-created skills are now selected by relevance to the current chat or agent task instead of injecting the newest skills indiscriminately. Matching uses field-weighted BM25 over skill names, descriptions, categories, and instructions; only a small relevant subset is added to normal chat and task-planning context. Skills remain user-managed records and can be disabled or deleted.
 
-Completed agent tasks also provide a bounded episodic recall source. NEXUS retrieves a few earlier completed tasks with overlapping goal/outcome terms and supplies their summaries as historical context in normal chat and new task planning. Episodes are explicitly marked as potentially incomplete or outdated; they are not treated as instructions or proof that a new task has succeeded. Retrieval is lexical and owner-scoped, not embedding-based semantic search.
+Completed agent tasks also provide a bounded episodic recall source. NEXUS retrieves a few earlier completed tasks with relevant goal/outcome terms and supplies their summaries as historical context during new task planning. Episodes are explicitly marked as potentially incomplete or outdated; they are not treated as instructions or proof that a new task has succeeded. Retrieval uses BM25 term ranking and is owner-scoped, not embedding-based semantic search.
 
 ## Scheduled automations
 
 The backend now stores owner-scoped automations and dispatches due schedules into the same durable task queue used by the autonomous agent. Supported schedules are one-time timestamps, daily local times, selected weekdays, and recurring intervals (5 minutes to 7 days). Daily and weekly schedules use an IANA time-zone identifier, so their wall-clock time follows daylight-saving changes. The scheduler runs inside the single backend worker; the service must remain online for a scheduled run to be dispatched. Missed runs are dispatched once after the service returns rather than replayed repeatedly.
 
 - `GET /v1/automations` — list schedules and latest task status.
+- `GET /v1/automations/{id}/runs` — inspect recent executions, including task status, summary, and errors.
 - `POST /v1/automations` — create a schedule.
 - `PUT /v1/automations/{id}` — replace its configuration.
 - `POST /v1/automations/{id}/pause` and `/resume` — pause or resume a schedule.
@@ -117,12 +118,12 @@ The supported worker actions are deliberately constrained. Do not interpret appr
 
 ## Projects and reusable skills
 
-Projects are owner-scoped containers for a durable name, description, and context. A task can be created with a project ID; the planner receives that project's context before producing a task plan. Archiving prevents new tasks from being attached while preserving project history. Deleting a project leaves its tasks intact and clears their project association.
+Projects are owner-scoped containers for a durable name, description, and context. A task or scheduled automation can be linked to an active project ID; the planner receives that project's context before producing a task plan. Scheduled runs inherit the project association. Archiving prevents new tasks from being attached while preserving project history. Deleting a project leaves its tasks intact and clears their project association.
 
 - `GET /v1/projects`, `POST /v1/projects`, `PATCH /v1/projects/{id}`, and `DELETE /v1/projects/{id}` manage projects.
-- `POST /v1/tasks` accepts an optional `project_id`; it must refer to an active project owned by the authenticated account.
+- `POST /v1/tasks` and `POST/PUT /v1/automations` accept an optional `project_id`; it must refer to an active project owned by the authenticated account.
 
-Reusable skills are owner-scoped instruction sets with name, description, category, instructions, and enabled state. The Android client can create, edit, enable/disable, and delete skills. Relevant enabled skills are selected by lexical overlap and supplied to the ordinary chat system context and autonomous task planner. Relevant user-approved memories are also retrieved for autonomous task planning. This is lightweight keyword matching, not semantic embedding search. Skills are treated as user preferences and cannot override system rules, safety controls, or tool permissions.
+Reusable skills are owner-scoped instruction sets with name, description, category, instructions, and enabled state. The Android client can create, edit, enable/disable, and delete skills. Relevant enabled skills are selected with field-weighted BM25 ranking and supplied to the ordinary chat system context and autonomous task planner. Relevant user-approved memories are also retrieved for chat and autonomous task planning. This is lexical ranking, not semantic embedding search. Skills are treated as user preferences and cannot override system rules, safety controls, or tool permissions.
 
 - `GET /v1/skills`, `POST /v1/skills`, `PATCH /v1/skills/{id}`, and `DELETE /v1/skills/{id}` manage skills.
 - Maximum 100 projects and 100 skills per account; skill instructions are capped at 6 KB.
