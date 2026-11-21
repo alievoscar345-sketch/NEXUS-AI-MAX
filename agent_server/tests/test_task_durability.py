@@ -1894,6 +1894,92 @@ class DurableTaskTests(unittest.TestCase):
         main._write_worker_heartbeat("stopped")
         self.assertEqual(main._read_worker_heartbeat()["state"], "stopped")
 
+    def _create_test_project(self, owner_id="tenant-project"):
+        result = main.create_project(
+            main.ProjectInput(name="Persistent project", description="Versioned files"),
+            owner_id=owner_id,
+        )
+        return result["project"]["id"]
+
+    def test_project_files_are_persisted_and_versioned(self):
+        project_id = self._create_test_project()
+        first = main.write_project_file(
+            project_id,
+            main.ProjectFileWriteInput(path="src/main.py", content="print('v1')", message="Initial"),
+            owner_id="tenant-project",
+        )
+        second = main.write_project_file(
+            project_id,
+            main.ProjectFileWriteInput(path="src/main.py", content="print('v2')", message="Update"),
+            owner_id="tenant-project",
+        )
+        self.assertEqual(first["file"]["revision"], 1)
+        self.assertEqual(second["file"]["revision"], 2)
+        current = main.read_project_file(project_id, "src/main.py", owner_id="tenant-project")
+        self.assertEqual(current["content"], "print('v2')")
+        listing = main.list_project_files(project_id, owner_id="tenant-project")
+        self.assertEqual(len(listing["files"]), 1)
+        self.assertEqual(listing["files"][0]["revision"], 2)
+        history = main.list_project_file_versions(
+            project_id, "src/main.py", owner_id="tenant-project"
+        )
+        self.assertEqual([item["revision"] for item in history["versions"]], [2, 1])
+
+    def test_project_file_restore_creates_new_revision_without_erasing_history(self):
+        project_id = self._create_test_project()
+        main.write_project_file(
+            project_id, main.ProjectFileWriteInput(path="README.md", content="old"),
+            owner_id="tenant-project",
+        )
+        main.write_project_file(
+            project_id, main.ProjectFileWriteInput(path="README.md", content="new"),
+            owner_id="tenant-project",
+        )
+        restored = main.restore_project_file(
+            project_id, "README.md",
+            main.ProjectFileRestoreInput(revision=1, message="Rollback"),
+            owner_id="tenant-project",
+        )
+        self.assertEqual(restored["file"]["revision"], 3)
+        self.assertEqual(restored["restored_from_revision"], 1)
+        current = main.read_project_file(project_id, "README.md", owner_id="tenant-project")
+        self.assertEqual(current["content"], "old")
+        history = main.list_project_file_versions(
+            project_id, "README.md", owner_id="tenant-project"
+        )
+        self.assertEqual([item["revision"] for item in history["versions"]], [3, 2, 1])
+
+    def test_project_file_access_is_owner_scoped(self):
+        project_id = self._create_test_project()
+        with self.assertRaises(main.HTTPException) as raised:
+            main.write_project_file(
+                project_id, main.ProjectFileWriteInput(path="secret.txt", content="private"),
+                owner_id="other-owner",
+            )
+        self.assertEqual(raised.exception.status_code, 404)
+
+    def test_project_file_paths_reject_traversal_and_reserved_names(self):
+        for path in ("../outside.txt", "/absolute.txt", "a/../../outside", "a\\b", ".nexus/history"):
+            with self.subTest(path=path):
+                with self.assertRaises(main.HTTPException):
+                    main._validate_project_file_path(path)
+
+    def test_project_file_revision_size_is_checked_before_database_write(self):
+        project_id = self._create_test_project()
+        with self.assertRaises(main.HTTPException) as raised:
+            main.write_project_file(
+                project_id,
+                main.ProjectFileWriteInput(path="large.txt", content="x" * (2 * 1024 * 1024 + 1)),
+                owner_id="tenant-project",
+            )
+        self.assertEqual(raised.exception.status_code, 413)
+        with main.db() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) AS n FROM project_file_versions WHERE project_id=?",
+                (project_id,),
+            ).fetchone()["n"]
+        self.assertEqual(count, 0)
+
     def test_db_context_commits_and_closes_connection(self):
         now = time.time()
         with main.db() as conn:
