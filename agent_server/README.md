@@ -107,6 +107,7 @@ Every `/v1` route requires `Authorization: Bearer` with `NEXUS_AGENT_API_KEY`.
 - `GET /v1/tasks/{id}` — inspect a task and its event log.
 - `GET /v1/tasks/{id}/events?after_event_id=N` — resume the task event stream from a cursor.
 - `POST /v1/tasks/{id}/cancel` — request cooperative cancellation.
+- `POST /v1/tasks/{id}/pause` and `/resume` — pause at a durable step boundary and continue later; an in-flight step is allowed to finish before pausing.
 - `GET /v1/approvals` — list pending approvals.
 - `POST /v1/approvals/{id}` — record an approval decision.
 - Task workspace and artifact endpoints are task- and owner-scoped.
