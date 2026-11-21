@@ -457,6 +457,7 @@ internal fun parseOpenRouterInputModalities(item: JSONObject): Set<String> {
 
 class NexusViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = application.getSharedPreferences("nexus_local", 0)
+    init { if (SecureSecretStore.load(application).isNotBlank()) AgentTaskNotifications.schedule(application) }
     var settings by mutableStateOf(
         ApiSettings(
             baseUrl = prefs.getString("base_url", "https://anymodel.org/v1") ?: "https://anymodel.org/v1",
@@ -678,11 +679,13 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         providerVaultMessage = "Настройки сервера сохранены."
+        if (agentServerConfigured) AgentTaskNotifications.schedule(getApplication())
     }
 
     fun clearAgentServerToken() {
         SecureSecretStore.clear(getApplication())
         agentServerConfigured = false
+        AgentTaskNotifications.cancel(getApplication())
         remoteProviders = emptyList()
         remoteModels = emptyList()
         providerVaultMessage = "Токен доступа удалён с устройства."
