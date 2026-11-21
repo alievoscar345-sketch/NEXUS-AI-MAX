@@ -1270,10 +1270,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    val bytes = agentTaskClient().downloadArtifact(taskId, name)
                     val output = getApplication<Application>().contentResolver.openOutputStream(uri)
                         ?: throw IllegalStateException("Не удалось открыть файл для сохранения.")
-                    output.use { it.write(bytes) }
+                    output.use { agentTaskClient().downloadArtifact(taskId, name, it) }
                 }
                 agentMessage = "Файл $name сохранён на устройстве."
             } catch (e: Exception) {
