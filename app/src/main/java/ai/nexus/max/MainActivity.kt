@@ -424,6 +424,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var activeAgentTask by mutableStateOf<AgentTaskSnapshot?>(null)
         private set
+    var activeAgentTaskId by mutableStateOf(prefs.getString("agent_active_task_id", null))
+        private set
     var agentApprovals by mutableStateOf<List<AgentApproval>>(emptyList())
         private set
     var agentBusy by mutableStateOf(false)
@@ -563,6 +565,12 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     private fun agentTaskClient(): AgentTaskClient =
         AgentTaskClient(agentServerUrl, agentAuthorization(), client)
 
+    fun selectAgentTask(taskId: String?) {
+        activeAgentTaskId = taskId
+        prefs.edit().putString("agent_active_task_id", taskId).apply()
+        if (taskId == null) activeAgentTask = null
+    }
+
     fun refreshAgentConsole(taskId: String? = null) {
         if (agentBusy || agentRefreshing || !agentServerConfigured || agentServerUrl.isBlank()) return
         agentRefreshing = true
@@ -571,10 +579,11 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 val api = agentTaskClient()
                 val loadedTasks = withContext(Dispatchers.IO) { api.listTasks() }
                 agentTasks = loadedTasks
-                val targetId = taskId ?: activeAgentTask?.id
+                val targetId = taskId ?: activeAgentTaskId ?: activeAgentTask?.id
                 if (targetId != null) {
                     val loadedTask = withContext(Dispatchers.IO) { api.getTask(targetId) }
                     activeAgentTask = loadedTask
+                    if (activeAgentTaskId != loadedTask.id) selectAgentTask(loadedTask.id)
                     agentTasks = listOf(loadedTask) + agentTasks.filterNot { it.id == loadedTask.id }
                 }
                 agentApprovals = withContext(Dispatchers.IO) { api.listApprovals() }
@@ -606,6 +615,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val loaded = withContext(Dispatchers.IO) { agentTaskClient().getTask(taskId) }
                 activeAgentTask = loaded
+                selectAgentTask(loaded.id)
                 agentTasks = listOf(loaded) + agentTasks.filterNot { it.id == loaded.id }
                 agentMessage = null
             } catch (e: Exception) {
@@ -622,6 +632,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 val id = withContext(Dispatchers.IO) { agentTaskClient().createTask(prompt) }
                 val loaded = withContext(Dispatchers.IO) { agentTaskClient().getTask(id) }
                 activeAgentTask = loaded
+                selectAgentTask(loaded.id)
                 agentTasks = listOf(loaded) + agentTasks.filterNot { it.id == loaded.id }
                 agentMessage = "Задача передана автономному агенту."
             } catch (e: Exception) {
@@ -3074,7 +3085,7 @@ private fun extractMarkdownCode(content: String, node: ASTNode, fenced: Boolean)
 @Composable
 private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
     var prompt by remember { mutableStateOf("") }
-    var selectedTask by remember { mutableStateOf<String?>(null) }
+    var selectedTask by remember { mutableStateOf(vm.activeAgentTaskId) }
     LaunchedEffect(vm.agentServerUrl, vm.agentServerConfigured, selectedTask) {
         if (vm.agentServerConfigured && vm.agentServerUrl.isNotBlank()) {
             while (true) {
@@ -3123,6 +3134,7 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                         Column(
                             Modifier.fillMaxWidth().clickable {
                                 selectedTask = task.id
+                                vm.selectAgentTask(task.id)
                                 vm.refreshAgentTask(task.id)
                             }.padding(vertical = 7.dp)
                         ) {
@@ -3156,6 +3168,11 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                 if (vm.agentApprovals.isNotEmpty()) {
                     Divider(color = DividerTone)
                     Text("ЗАПРОСЫ НА ПОДТВЕРЖДЕНИЕ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Одобрение фиксирует решение и возобновляет задачу. Внешние действия этот backend пока не выполняет.",
+                        color = Muted,
+                        fontSize = 9.sp
+                    )
                     LazyColumn(Modifier.heightIn(max = 110.dp)) {
                         items(vm.agentApprovals, key = { it.id }) { approval ->
                             Column(Modifier.padding(vertical = 5.dp)) {

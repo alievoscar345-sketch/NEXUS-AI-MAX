@@ -76,6 +76,20 @@ class AgentTaskClientTest {
         }
     }
 
+    @Test fun decideApprovalUsesBackendRouteAndPayload() {
+        transport.responseBody = """{"approval_id":"approval-7","status":"approved"}"""
+        assertEquals("approved", client.decideApproval("approval/7", true, "reviewed"))
+        val request = transport.lastRequest!!
+        assertEquals("POST", request.method)
+        assertEquals("/v1/approvals/approval%2F7", request.url.encodedPath)
+        assertEquals("Bearer test-token", request.header("Authorization"))
+        val buffer = Buffer()
+        request.body!!.writeTo(buffer)
+        val payload = org.json.JSONObject(buffer.readUtf8())
+        assertTrue(payload.getBoolean("approved"))
+        assertEquals("reviewed", payload.getString("note"))
+    }
+
     @Test fun rejectsNonHttpsServer() {
         try {
             AgentTaskClient("http://example.com", "token")
