@@ -134,9 +134,9 @@ class DurableTaskTests(unittest.TestCase):
 
         chunks = asyncio.run(collect())
         self.assertEqual(len(chunks), 2)
-        self.assertIn("id: 1\\nevent: task_event\\ndata:", chunks[0])
+        self.assertIn("id: 1\nevent: task_event\ndata:", chunks[0])
         self.assertIn('"message":"event-0"', chunks[0])
-        self.assertIn("id: 2\\nevent: task_event\\ndata:", chunks[1])
+        self.assertIn("id: 2\nevent: task_event\ndata:", chunks[1])
         self.assertIn('"message":"event-1"', chunks[1])
 
     def test_task_event_stream_does_not_expose_another_owner_task(self):

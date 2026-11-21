@@ -1220,12 +1220,12 @@ async def _task_event_stream(tid: str, owner_id: str, after_event_id: int, reque
         for item in batch["events"]:
             cursor = item["id"]
             payload = json.dumps(item, ensure_ascii=False, separators=(",", ":"))
-            yield f"id: {cursor}\\nevent: task_event\\ndata: {payload}\\n\\n"
+            yield f"id: {cursor}\nevent: task_event\ndata: {payload}\n\n"
         if batch["status"] in terminal_statuses and not batch["events"]:
             break
         now = time.monotonic()
         if now - last_heartbeat >= 15:
-            yield ": keep-alive\\n\\n"
+            yield ": keep-alive\n\n"
             last_heartbeat = now
         await asyncio.sleep(1)
 
