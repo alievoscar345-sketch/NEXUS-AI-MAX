@@ -318,6 +318,7 @@ class DurableTaskTests(unittest.TestCase):
         task_root = workspace / "workspace-commit"
         (task_root / "app" / "src").mkdir(parents=True)
         (task_root / "app" / "src" / "Main.kt").write_text("package sample", encoding="utf-8")
+        (task_root / "app" / "src" / "Main.kt").chmod(0o755)
         (task_root / ".nexus-github-checkout.json").write_text("{}", encoding="utf-8")
         token = main._LEASE_OWNER.set(worker)
         try:
@@ -342,6 +343,8 @@ class DurableTaskTests(unittest.TestCase):
             self.assertEqual(github_api.await_count, 7)
             self.assertEqual(github_api.await_args_list[-1].args[1], "PATCH")
             self.assertEqual(github_api.await_args_list[-1].args[3]["force"], False)
+            tree_payload = github_api.await_args_list[4].args[3]
+            self.assertEqual(tree_payload["tree"][0]["mode"], "100755")
         finally:
             main._LEASE_OWNER.reset(token)
 
