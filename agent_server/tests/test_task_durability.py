@@ -2447,6 +2447,100 @@ class DurableTaskTests(unittest.TestCase):
             self.assertEqual((task_root / "source.txt").read_text(encoding="utf-8"), "confirmed")
             self.assertEqual(artifact.read_bytes(), b"existing artifact")
 
+
+    def test_checkpoint_history_lists_verified_file_manifests_and_owner_scope(self):
+        now = time.time()
+        task_id = "checkpoint-history-api"
+        worker = main.WORKER_ID + ":checkpoint-history"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id,plan_json,results_json,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (task_id, "checkpoint history", "running", now, now, "owner-a",
+                 '[{"title":"Build"}]', "[]", worker, now + 600),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        checkpoint_root = Path(self.temp.name) / "checkpoints"
+        token = main._LEASE_OWNER.set(worker)
+        try:
+            with patch.object(main, "WORKSPACE", workspace), patch.object(main, "CHECKPOINT_ROOT", checkpoint_root):
+                main._workspace_write(task_id, "src/main.py", "print('checkpoint')")
+                saved = main._create_task_checkpoint(task_id, "step_completed", "step-1")
+                self.assertEqual(saved["sequence"], 1)
+                result = main.list_task_checkpoints(task_id, owner_id="owner-a")
+                self.assertEqual(result["latest_sequence"], 1)
+                item = result["checkpoints"][0]
+                self.assertTrue(item["available"])
+                self.assertEqual(item["workspace_files"][0]["path"], "src/main.py")
+                self.assertEqual(item["workspace_files"][0]["sha256"],
+                                 main.hashlib.sha256(b"print('checkpoint')").hexdigest())
+                self.assertEqual(item["plan_steps"], 1)
+                self.assertEqual(item["reason"], "step_completed")
+                with self.assertRaises(main.HTTPException) as denied:
+                    main.list_task_checkpoints(task_id, owner_id="owner-b")
+                self.assertEqual(denied.exception.status_code, 404)
+        finally:
+            main._LEASE_OWNER.reset(token)
+
+    def test_manual_checkpoint_restore_is_owner_scoped_guarded_and_pauses_task(self):
+        now = time.time()
+        task_id = "manual-checkpoint-restore"
+        worker = main.WORKER_ID + ":manual-restore"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id,plan_json,results_json,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (task_id, "manual restore", "running", now, now, "owner-a",
+                 '[{"title":"Original"}]', "[]", worker, now + 600),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        checkpoint_root = Path(self.temp.name) / "checkpoints"
+        token = main._LEASE_OWNER.set(worker)
+        try:
+            with patch.object(main, "WORKSPACE", workspace), patch.object(main, "CHECKPOINT_ROOT", checkpoint_root):
+                main._workspace_write(task_id, "src/main.py", "stable version")
+                saved = main._create_task_checkpoint(task_id, "before_change")
+                with main.db() as conn:
+                    conn.execute("UPDATE tasks SET status='completed',lease_owner='',lease_expires_at=NULL WHERE id=?",
+                                 (task_id,))
+                main._workspace_write(task_id, "src/main.py", "later mutation")
+                with self.assertRaises(main.HTTPException) as denied:
+                    main.restore_task_checkpoint(task_id, saved["id"],
+                        {"expected_latest_sequence": 1}, owner_id="owner-b")
+                self.assertEqual(denied.exception.status_code, 404)
+                with self.assertRaises(main.HTTPException) as stale:
+                    main.restore_task_checkpoint(task_id, saved["id"],
+                        {"expected_latest_sequence": 2}, owner_id="owner-a")
+                self.assertEqual(stale.exception.status_code, 409)
+                restored = main.restore_task_checkpoint(task_id, saved["id"],
+                    {"expected_latest_sequence": 1}, owner_id="owner-a")
+                self.assertEqual(restored["status"], "paused")
+                self.assertEqual(main._workspace_read(task_id, "src/main.py")["content"], "stable version")
+                with main.db() as conn:
+                    task = conn.execute("SELECT status,plan_json FROM tasks WHERE id=?", (task_id,)).fetchone()
+                    event = conn.execute("SELECT kind FROM events WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                                         (task_id,)).fetchone()
+                self.assertEqual(task["status"], "paused")
+                self.assertEqual(json.loads(task["plan_json"])[0]["title"], "Original")
+                self.assertEqual(event["kind"], "checkpoint_manually_restored")
+        finally:
+            main._LEASE_OWNER.reset(token)
+
+    def test_manual_checkpoint_restore_rejects_active_task(self):
+        now = time.time()
+        task_id = "active-checkpoint-restore"
+        worker = main.WORKER_ID + ":active-restore"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (task_id, "active restore", "running", now, now, "owner-a", worker, now + 600),
+            )
+        with self.assertRaises(main.HTTPException) as conflict:
+            main.restore_task_checkpoint(task_id, "missing",
+                {"expected_latest_sequence": 1}, owner_id="owner-a")
+        self.assertEqual(conflict.exception.status_code, 409)
+
     def test_db_context_commits_and_closes_connection(self):
         now = time.time()
         with main.db() as conn:
