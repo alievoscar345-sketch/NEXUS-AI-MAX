@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import httpx
 
+from app import main
 from app.model_gateway import ModelConfig, ModelGateway, ModelGatewayError, infer_task_type
 
 
@@ -64,6 +65,32 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(chunks[0]["choices"][0]["delta"]["content"], "partial")
         self.assertEqual(chunks[-1]["error"]["type"], "provider_stream_error")
+
+    async def test_chat_endpoint_returns_sse_when_stream_requested(self):
+        provider_body = (
+            'data: {"choices":[{"index":0,"delta":{"content":"streamed"}}]}\\n\\n'
+            'data: [DONE]\\n\\n'
+        )
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, text=provider_body,
+                                           headers={"content-type": "text/event-stream"})
+        )
+        gateway = ModelGateway([config()], transport=transport)
+        with patch.object(main, "API_KEY", "test-key"), \
+             patch.object(main, "provider_models_for_owner", return_value=[config()]), \
+             patch.object(main, "ModelGateway", return_value=gateway):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=main.app), base_url="http://nexus.test"
+            ) as client:
+                response = await client.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer test-key"},
+                    json={"messages": [{"role": "user", "content": "hello"}], "stream": True},
+                )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/event-stream", response.headers["content-type"])
+        self.assertIn('"content":"streamed"', response.text)
+        self.assertTrue(response.text.rstrip().endswith("data: [DONE]"))
 
     async def test_parses_json_completion(self):
         def handler(request):
