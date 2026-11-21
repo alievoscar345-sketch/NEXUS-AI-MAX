@@ -92,6 +92,32 @@ class DurableTaskTests(unittest.TestCase):
         self.assertEqual(step["status"], "retry_wait")
         self.assertIn("Recovered", step["error"])
 
+    def test_step_claim_requires_live_task_lease_and_no_cancellation(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,cancel_requested) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("task-claim-guard", "guard step claim", "running", now, now, main.WORKER_ID, 1),
+            )
+        main._persist_plan("task-claim-guard", [
+            {"title": "Read", "action": "fetch_url", "input": {"url": "https://example.com"}}
+        ], 3)
+        with main.db() as conn:
+            step = conn.execute(
+                "SELECT id,status,attempt_count FROM task_steps WHERE task_id=?",
+                ("task-claim-guard",),
+            ).fetchone()
+        claimed = main._claim_step("task-claim-guard", step["id"])
+        self.assertIsNone(claimed)
+        with main.db() as conn:
+            after = conn.execute(
+                "SELECT status,attempt_count FROM task_steps WHERE id=?",
+                (step["id"],),
+            ).fetchone()
+        self.assertEqual(after["status"], "pending")
+        self.assertEqual(after["attempt_count"], 0)
+
     def test_recovery_preserves_task_with_active_lease(self):
         now = time.time()
         with main.db() as conn:
