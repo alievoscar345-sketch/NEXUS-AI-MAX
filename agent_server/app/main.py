@@ -40,6 +40,9 @@ from .credentials import CredentialEncryptionError, decrypt_secret, encrypt_secr
 from .sandbox import SandboxUnavailable, execute as execute_sandbox
 
 DB_PATH = Path(os.getenv("NEXUS_AGENT_DB", "./data/nexus-agent.db"))
+CHECKPOINT_ROOT = (DB_PATH.parent / "checkpoints").resolve()
+MAX_TASK_CHECKPOINT_BYTES = max(1, int(os.getenv("NEXUS_AGENT_MAX_CHECKPOINT_BYTES", str(2 * 1024 * 1024 * 1024))))
+MAX_TASK_CHECKPOINT_FILES = max(1, int(os.getenv("NEXUS_AGENT_MAX_CHECKPOINT_FILES", "50000")))
 WORKSPACE = Path(os.getenv("NEXUS_AGENT_WORKSPACE", "./data/workspace")).resolve()
 API_KEY = os.getenv("NEXUS_AGENT_API_KEY", "")
 TAVILY_KEY = os.getenv("TAVILY_API_KEY", "")
@@ -147,6 +150,18 @@ def init_db():
             if name not in existing:
                 c.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
         c.execute("""
+        CREATE TABLE IF NOT EXISTS task_checkpoints(
+            id TEXT PRIMARY KEY, task_id TEXT NOT NULL, owner_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL, step_id TEXT, reason TEXT NOT NULL,
+            plan_json TEXT NOT NULL, results_json TEXT NOT NULL, steps_json TEXT NOT NULL,
+            archive_path TEXT NOT NULL, archive_sha256 TEXT NOT NULL,
+            archive_bytes INTEGER NOT NULL, created_at REAL NOT NULL,
+            UNIQUE(task_id,sequence),
+            FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_checkpoints_latest
+            ON task_checkpoints(task_id,sequence DESC);
+
         CREATE TABLE IF NOT EXISTS task_steps(
             id TEXT PRIMARY KEY,
             task_id TEXT NOT NULL,
@@ -822,6 +837,197 @@ def _workspace_list(tid: str, relative_path: str = ".") -> dict[str, Any]:
     return {"path": relative_path, "entries": entries}
 
 
+
+def _checkpoint_archive_path(tid: str, sequence: int) -> Path:
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", tid)
+    task_dir = CHECKPOINT_ROOT / safe_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    return task_dir / f"{sequence:012d}.zip"
+
+
+def _create_task_checkpoint(tid: str, reason: str = "step_completed",
+                            step_id: str | None = None) -> dict[str, Any] | None:
+    """Persist an immutable workspace archive and matching task/step state at a lease-fenced boundary."""
+    now = time.time()
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        task = c.execute("""SELECT owner_id,plan_json,results_json FROM tasks
+            WHERE id=? AND status IN ('running','planning') AND cancel_requested=0
+            AND lease_owner=? AND lease_expires_at>?""",
+            (tid, _current_lease_owner(), now)).fetchone()
+        if not task:
+            return None
+        sequence = int(c.execute(
+            "SELECT COALESCE(MAX(sequence),0)+1 AS n FROM task_checkpoints WHERE task_id=?",
+            (tid,)).fetchone()["n"])
+        step_rows = c.execute(
+            "SELECT * FROM task_steps WHERE task_id=? ORDER BY step_index", (tid,)
+        ).fetchall()
+        steps_json = json.dumps([dict(row) for row in step_rows], ensure_ascii=False)
+        plan_json = task["plan_json"]
+        results_json = task["results_json"]
+        owner_id = task["owner_id"]
+
+    root = _task_workspace_root(tid)
+    root.mkdir(parents=True, exist_ok=True)
+    archive = _checkpoint_archive_path(tid, sequence)
+    temporary = archive.with_name(archive.name + ".tmp-" + uuid.uuid4().hex)
+    total_bytes = 0
+    file_count = 0
+    digest = hashlib.sha256()
+    try:
+        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED,
+                             allowZip64=True) as bundle:
+            for current, dirs, files in os.walk(root, followlinks=False):
+                current_path = Path(current)
+                dirs[:] = sorted(d for d in dirs if not (current_path / d).is_symlink())
+                for filename in sorted(files):
+                    source = current_path / filename
+                    if source.is_symlink() or not source.is_file():
+                        continue
+                    resolved = source.resolve()
+                    try:
+                        resolved.relative_to(root)
+                    except ValueError:
+                        continue
+                    size = source.stat().st_size
+                    total_bytes += size
+                    file_count += 1
+                    if total_bytes > MAX_TASK_CHECKPOINT_BYTES:
+                        raise ValueError("Task workspace exceeds the configured checkpoint size limit")
+                    if file_count > MAX_TASK_CHECKPOINT_FILES:
+                        raise ValueError("Task workspace exceeds the configured checkpoint file-count limit")
+                    relative = source.relative_to(root).as_posix()
+                    bundle.write(source, relative)
+        with temporary.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        archive_bytes = temporary.stat().st_size
+        if archive_bytes > MAX_TASK_CHECKPOINT_BYTES:
+            raise ValueError("Checkpoint archive exceeds the configured size limit")
+        os.replace(temporary, archive)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+    created_at = time.time()
+    checkpoint_id = str(uuid.uuid4())
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        owned = c.execute("""SELECT 1 FROM tasks WHERE id=?
+            AND status IN ('running','planning') AND cancel_requested=0
+            AND lease_owner=? AND lease_expires_at>?""",
+            (tid, _current_lease_owner(), created_at)).fetchone()
+        if not owned:
+            archive.unlink(missing_ok=True)
+            return None
+        c.execute("""INSERT INTO task_checkpoints(
+            id,task_id,owner_id,sequence,step_id,reason,plan_json,results_json,steps_json,
+            archive_path,archive_sha256,archive_bytes,created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (checkpoint_id, tid, owner_id, sequence, step_id, reason, plan_json,
+             results_json, steps_json, str(archive), digest.hexdigest(), archive_bytes, created_at))
+        c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                  (tid, created_at, "checkpoint", f"Checkpoint {sequence} saved: {reason}"))
+        c.execute("UPDATE tasks SET updated_at=? WHERE id=?", (created_at, tid))
+    return {"id": checkpoint_id, "sequence": sequence, "files": file_count,
+            "bytes": total_bytes, "archive_bytes": archive_bytes,
+            "sha256": digest.hexdigest()}
+
+
+def _restore_latest_task_checkpoint(tid: str) -> dict[str, Any] | None:
+    """Verify and restore the newest immutable workspace + DB-state checkpoint."""
+    with db() as c:
+        checkpoint = c.execute("""SELECT * FROM task_checkpoints
+            WHERE task_id=? ORDER BY sequence DESC LIMIT 1""", (tid,)).fetchone()
+    if not checkpoint:
+        return None
+    archive = Path(checkpoint["archive_path"])
+    try:
+        archive.resolve().relative_to(CHECKPOINT_ROOT)
+    except ValueError as exc:
+        raise ValueError("Checkpoint archive path is outside the checkpoint store") from exc
+    if not archive.is_file() or archive.stat().st_size != int(checkpoint["archive_bytes"]):
+        raise ValueError("Checkpoint archive is missing or has an unexpected size")
+    digest = hashlib.sha256()
+    with archive.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if not hmac.compare_digest(digest.hexdigest(), checkpoint["archive_sha256"]):
+        raise ValueError("Checkpoint archive SHA-256 verification failed")
+
+    staging = WORKSPACE / (".restore-" + uuid.uuid4().hex)
+    root = _task_workspace_root(tid)
+    backup = WORKSPACE / (".backup-" + uuid.uuid4().hex)
+    staging.mkdir(parents=True, exist_ok=False)
+    total_bytes = 0
+    file_count = 0
+    try:
+        with zipfile.ZipFile(archive, "r") as bundle:
+            for info in bundle.infolist():
+                name = info.filename
+                path = PurePosixPath(name)
+                if (not name or path.is_absolute() or "\\" in name
+                        or any(part in {"", ".", ".."} for part in path.parts)):
+                    raise ValueError("Checkpoint contains an unsafe workspace path")
+                mode = info.external_attr >> 16
+                if stat.S_ISLNK(mode):
+                    raise ValueError("Checkpoint contains a symbolic link")
+                if info.is_dir():
+                    staging.joinpath(*path.parts).mkdir(parents=True, exist_ok=True)
+                    continue
+                file_count += 1
+                total_bytes += info.file_size
+                if total_bytes > MAX_TASK_CHECKPOINT_BYTES or file_count > MAX_TASK_CHECKPOINT_FILES:
+                    raise ValueError("Checkpoint exceeds configured restore limits")
+                target = staging.joinpath(*path.parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with bundle.open(info, "r") as source, target.open("wb") as destination:
+                    shutil.copyfileobj(source, destination, 1024 * 1024)
+        if root.is_symlink():
+            raise ValueError("Task workspace root cannot be a symbolic link")
+        if root.exists():
+            os.replace(root, backup)
+        try:
+            os.replace(staging, root)
+        except Exception:
+            if backup.exists():
+                os.replace(backup, root)
+            raise
+        if backup.exists():
+            shutil.rmtree(backup)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+
+    snapshot_steps = json.loads(checkpoint["steps_json"])
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        task = c.execute("SELECT id FROM tasks WHERE id=?", (tid,)).fetchone()
+        if not task:
+            raise ValueError("Task disappeared while restoring its checkpoint")
+        c.execute("UPDATE tasks SET plan_json=?,results_json=? WHERE id=?",
+                  (checkpoint["plan_json"], checkpoint["results_json"], tid))
+        c.execute("DELETE FROM task_steps WHERE task_id=?", (tid,))
+        for step in snapshot_steps:
+            c.execute("""INSERT INTO task_steps(
+                id,task_id,step_index,title,action,input_json,status,attempt_count,max_attempts,
+                idempotency_key,result_json,error,next_attempt_at,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (step["id"], step["task_id"], step["step_index"], step["title"],
+                 step["action"], step["input_json"], step["status"], step["attempt_count"],
+                 step["max_attempts"], step["idempotency_key"], step["result_json"],
+                 step["error"], step["next_attempt_at"], step["created_at"], step["updated_at"]))
+        restored_at = time.time()
+        c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                  (tid, restored_at, "checkpoint_restored",
+                   f"Restored checkpoint {checkpoint['sequence']} after worker interruption"))
+    return {"sequence": int(checkpoint["sequence"]), "files": file_count,
+            "bytes": total_bytes}
+
+
+def _workspace_search(tid: str, query: str) -> dict[str, Any]:
+
 def _workspace_search(tid: str, query: str) -> dict[str, Any]:
     if not isinstance(query, str) or not query or len(query) > 200:
         raise ValueError("Search query must contain 1 to 200 characters")
@@ -1429,6 +1635,9 @@ async def _process_task(tid: str):
             persisted = await run_db(_persist_plan, tid, steps, MAX_STEP_ATTEMPTS)
             if not persisted:
                 return
+            checkpoint = await run_db(_create_task_checkpoint, tid, "initial_plan_persisted")
+            if checkpoint is None:
+                return
 
         while True:
             if await run_db(_pause_task_if_requested, tid):
@@ -1463,6 +1672,9 @@ async def _process_task(tid: str):
                 if next_steps:
                     appended = await run_db(_append_plan_steps, tid, next_steps, MAX_STEP_ATTEMPTS)
                     if not appended:
+                        return
+                    checkpoint = await run_db(_create_task_checkpoint, tid, "continuation_plan_persisted")
+                    if checkpoint is None:
                         return
                     await run_db(_worker_event, tid, "continuation_planned",
                                  f"Autonomous planner added {len(next_steps)} further steps")
@@ -1504,6 +1716,11 @@ async def _process_task(tid: str):
                                      json.dumps(result, ensure_ascii=False))
                 if not saved:
                     return
+                checkpoint = await run_db(
+                    _create_task_checkpoint, tid, f"step_{status}", claimed["id"]
+                )
+                if checkpoint is None:
+                    return
                 await run_db(_worker_event, tid, "step_finished", f"{claimed['step_index'] + 1}: {status}")
                 if status == "waiting_for_approval":
                     transitioned = await run_db(_set_task_waiting_for_approval, tid)
@@ -1539,6 +1756,23 @@ def recover_interrupted_tasks():
     """Single-worker SQLite recovery. Safe because supported actions are read-only or idempotent."""
     now = time.time()
     with db() as c:
+        candidates = c.execute("""SELECT id FROM tasks WHERE status IN ('planning','running')
+            AND (lease_expires_at IS NULL OR lease_expires_at<=?)""", (now,)).fetchall()
+    restore_failures: dict[str, str] = {}
+    for candidate in candidates:
+        tid = candidate["id"]
+        try:
+            restored = _restore_latest_task_checkpoint(tid)
+            if restored:
+                logging.getLogger("nexus.recovery").info(
+                    "Restored task %s from checkpoint %s", tid, restored["sequence"]
+                )
+        except Exception as exc:
+            restore_failures[tid] = str(exc)[:1000]
+            logging.getLogger("nexus.recovery").exception(
+                "Unable to restore task %s checkpoint", tid
+            )
+    with db() as c:
         c.execute("BEGIN IMMEDIATE")
         # Preserve work that may still be owned by another live worker.
         # Missing leases are legacy/interrupted work; future leases remain valid.
@@ -1548,6 +1782,16 @@ def recover_interrupted_tasks():
         for row in rows:
             tid = row["id"]
             cancelled = bool(row["cancel_requested"])
+            restore_error = restore_failures.get(tid)
+            if restore_error:
+                c.execute("""UPDATE tasks SET status='failed',error=?,lease_owner='',
+                    lease_expires_at=NULL,updated_at=? WHERE id=?""",
+                    ("Checkpoint restore failed; task was stopped to prevent continuing with inconsistent files: "
+                     + restore_error, now, tid))
+                c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                          (tid, now, "checkpoint_restore_failed",
+                           "Task stopped because its last checkpoint could not be safely restored"))
+                continue
             step_status = "skipped" if cancelled else "retry_wait"
             c.execute("""UPDATE task_steps SET status=?,next_attempt_at=?,updated_at=?,
                 error=? WHERE task_id=? AND status='running'""",
