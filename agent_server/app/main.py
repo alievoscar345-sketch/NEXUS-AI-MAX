@@ -2254,7 +2254,7 @@ def _github_branch_name(value: str, require_feature: bool = False) -> str:
         raise ValueError("Invalid GitHub branch name")
     if require_feature and not value.startswith("nexus-agent/"):
         raise ValueError("NEXUS may write only to nexus-agent/* feature branches")
-    if value in {"main", "master", "nexus-1.0-development"}:
+    if require_feature and value in {"main", "master", "nexus-1.0-development"}:
         raise ValueError("Protected branches cannot be modified")
     return value
 
