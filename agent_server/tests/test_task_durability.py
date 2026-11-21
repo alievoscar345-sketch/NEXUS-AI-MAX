@@ -2157,6 +2157,126 @@ class DurableTaskTests(unittest.TestCase):
             main.list_project_files(project_id, owner_id="tenant-project")["files"], []
         )
 
+
+    def test_task_checkpoint_restores_workspace_and_persisted_plan_state(self):
+        now = time.time()
+        owner = main.WORKER_ID + ":checkpoint-test"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id,plan_json,results_json,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                ("checkpoint-task", "checkpoint test", "running", now, now, "owner-a",
+                 '[{"title":"first"}]', '[]', owner, now + 600),
+            )
+            conn.execute(
+                "INSERT INTO task_steps(id,task_id,step_index,title,action,input_json,status,attempt_count,"
+                "max_attempts,idempotency_key,result_json,error,next_attempt_at,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("step-1", "checkpoint-task", 0, "Write file", "workspace_write", '{}',
+                 "completed", 1, 3, "checkpoint-key", '{"status":"completed"}', "", None, now, now),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        checkpoint_root = Path(self.temp.name) / "checkpoints"
+        task_root = workspace / "checkpoint-task"
+        task_root.mkdir(parents=True)
+        (task_root / "src").mkdir()
+        (task_root / "src" / "main.py").write_text("stable version", encoding="utf-8")
+        token = main._LEASE_OWNER.set(owner)
+        try:
+            with patch.object(main, "WORKSPACE", workspace), patch.object(main, "CHECKPOINT_ROOT", checkpoint_root):
+                saved = main._create_task_checkpoint("checkpoint-task", "step_completed", "step-1")
+                self.assertEqual(saved["sequence"], 1)
+                (task_root / "src" / "main.py").write_text("uncommitted mutation", encoding="utf-8")
+                (task_root / "untracked.tmp").write_text("must disappear", encoding="utf-8")
+                with main.db() as conn:
+                    conn.execute("UPDATE tasks SET plan_json='[{\\"title\\":\\"corrupt future plan\\"}]' WHERE id='checkpoint-task'")
+                    conn.execute("UPDATE task_steps SET status='running',result_json='' WHERE id='step-1'")
+                restored = main._restore_latest_task_checkpoint("checkpoint-task")
+                self.assertEqual(restored["sequence"], 1)
+                self.assertEqual((task_root / "src" / "main.py").read_text(encoding="utf-8"), "stable version")
+                self.assertFalse((task_root / "untracked.tmp").exists())
+                with main.db() as conn:
+                    task = conn.execute("SELECT plan_json FROM tasks WHERE id='checkpoint-task'").fetchone()
+                    step = conn.execute("SELECT status,result_json FROM task_steps WHERE id='step-1'").fetchone()
+                self.assertEqual(task["plan_json"], '[{"title":"first"}]')
+                self.assertEqual(step["status"], "completed")
+                self.assertEqual(json.loads(step["result_json"])["status"], "completed")
+        finally:
+            main._LEASE_OWNER.reset(token)
+
+    def test_interrupted_task_recovery_restores_latest_checkpoint_before_requeue(self):
+        now = time.time()
+        owner = main.WORKER_ID + ":checkpoint-recovery"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id,plan_json,results_json,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                ("checkpoint-recovery", "recover me", "running", now, now, "owner-a",
+                 '[{"title":"durable plan"}]', '[]', owner, now + 600),
+            )
+            conn.execute(
+                "INSERT INTO task_steps(id,task_id,step_index,title,action,input_json,status,attempt_count,"
+                "max_attempts,idempotency_key,result_json,error,next_attempt_at,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("recovery-step", "checkpoint-recovery", 0, "Build", "code_execute", '{}',
+                 "pending", 0, 3, "recovery-key", "", "", None, now, now),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        checkpoint_root = Path(self.temp.name) / "checkpoints"
+        task_root = workspace / "checkpoint-recovery"
+        task_root.mkdir(parents=True)
+        (task_root / "README.md").write_text("checkpoint content", encoding="utf-8")
+        token = main._LEASE_OWNER.set(owner)
+        try:
+            with patch.object(main, "WORKSPACE", workspace), patch.object(main, "CHECKPOINT_ROOT", checkpoint_root):
+                main._create_task_checkpoint("checkpoint-recovery", "initial_plan_persisted")
+                (task_root / "README.md").write_text("partial work from crashed step", encoding="utf-8")
+                with main.db() as conn:
+                    conn.execute("UPDATE tasks SET lease_expires_at=? WHERE id=?",
+                                 (time.time() - 1, "checkpoint-recovery"))
+                    conn.execute("UPDATE task_steps SET status='running' WHERE id='recovery-step'")
+                main.recover_interrupted_tasks()
+                self.assertEqual((task_root / "README.md").read_text(encoding="utf-8"), "checkpoint content")
+                with main.db() as conn:
+                    task = conn.execute("SELECT status FROM tasks WHERE id='checkpoint-recovery'").fetchone()
+                    step = conn.execute("SELECT status FROM task_steps WHERE id='recovery-step'").fetchone()
+                self.assertEqual(task["status"], "retry_wait")
+                self.assertEqual(step["status"], "pending")
+        finally:
+            main._LEASE_OWNER.reset(token)
+
+    def test_interrupted_task_with_corrupt_checkpoint_is_stopped_safely(self):
+        now = time.time()
+        owner = main.WORKER_ID + ":checkpoint-corrupt"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                ("checkpoint-corrupt", "stop safely", "running", now, now, "owner-a", owner, now + 600),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        checkpoint_root = Path(self.temp.name) / "checkpoints"
+        task_root = workspace / "checkpoint-corrupt"
+        task_root.mkdir(parents=True)
+        (task_root / "file.txt").write_text("known good", encoding="utf-8")
+        token = main._LEASE_OWNER.set(owner)
+        try:
+            with patch.object(main, "WORKSPACE", workspace), patch.object(main, "CHECKPOINT_ROOT", checkpoint_root):
+                saved = main._create_task_checkpoint("checkpoint-corrupt")
+                archive = Path(checkpoint_root / "checkpoint-corrupt" / "000000000001.zip")
+                self.assertTrue(archive.exists())
+                archive.write_bytes(b"tampered")
+                with main.db() as conn:
+                    conn.execute("UPDATE tasks SET lease_expires_at=? WHERE id=?",
+                                 (time.time() - 1, "checkpoint-corrupt"))
+                main.recover_interrupted_tasks()
+                with main.db() as conn:
+                    task = conn.execute("SELECT status,error FROM tasks WHERE id='checkpoint-corrupt'").fetchone()
+                self.assertEqual(task["status"], "failed")
+                self.assertIn("Checkpoint restore failed", task["error"])
+        finally:
+            main._LEASE_OWNER.reset(token)
+
     def test_db_context_commits_and_closes_connection(self):
         now = time.time()
         with main.db() as conn:
