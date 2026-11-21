@@ -211,6 +211,40 @@ class AgentTaskClientTest {
         assertEquals(500, org.json.JSONObject(body.readUtf8()).getInt("max_steps"))
     }
 
+    @Test fun githubStatusParsesConnectedRepositoryWithoutSecret() {
+        transport.responseBody = """{"connected":true,"integration":{"repo_full_name":"owner/app","github_login":"owner","default_branch":"main"}}"""
+        val status = client.githubStatus()
+        assertTrue(status.connected)
+        assertEquals("owner/app", status.repoFullName)
+        assertEquals("main", status.defaultBranch)
+        assertEquals("/v1/github/status", transport.lastRequest!!.url.encodedPath)
+        assertEquals("Bearer test-token", transport.lastRequest!!.header("Authorization"))
+    }
+
+    @Test fun connectGitHubSendsTokenOnlyToAuthenticatedServerEndpoint() {
+        transport.responseBody = """{"status":"connected","repo_full_name":"owner/app","github_login":"owner","default_branch":"main","secret_returned":false}"""
+        val result = client.connectGitHub("owner/app", "github_pat_test-secret")
+        assertTrue(result.connected)
+        assertEquals("owner/app", result.repoFullName)
+        val request = transport.lastRequest!!
+        assertEquals("POST", request.method)
+        assertEquals("/v1/github/connect", request.url.encodedPath)
+        val body = Buffer()
+        request.body!!.writeTo(body)
+        val payload = org.json.JSONObject(body.readUtf8())
+        assertEquals("owner/app", payload.getString("repo_full_name"))
+        assertEquals("github_pat_test-secret", payload.getString("token"))
+    }
+
+    @Test fun connectGitHubRejectsMalformedRepositoryNames() {
+        try {
+            client.connectGitHub("../private", "github_pat_test-secret")
+            fail("Expected repository validation")
+        } catch (error: IllegalArgumentException) {
+            assertTrue(error.message!!.contains("repository"))
+        }
+    }
+
     @Test fun rejectsNonHttpsServer() {
         try {
             AgentTaskClient("http://example.com", "token")
