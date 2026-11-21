@@ -3,6 +3,7 @@ import json
 import ipaddress
 import socket
 import tempfile
+import zipfile
 import time
 import sqlite3
 import threading
@@ -242,6 +243,65 @@ class DurableTaskTests(unittest.TestCase):
         self.assertEqual(bytes(stored["encrypted_token"]), b"encrypted-token")
         self.assertEqual(main.disconnect_github(owner_id="owner-a")["status"], "disconnected")
         self.assertFalse(main.github_status(owner_id="owner-a")["connected"])
+
+    def test_github_zipball_checkout_extracts_files_safely_and_is_idempotent(self):
+        now = time.time()
+        worker = main.WORKER_ID + ":checkout"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("checkout-task", "checkout repo", "running", now, now, worker, now + 600),
+            )
+        archive_path = Path(self.temp.name) / "repo.zip"
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            archive.writestr("owner-repo-sha/README.md", "# NEXUS")
+            archive.writestr("owner-repo-sha/app/src/Main.kt", "package sample")
+        workspace = Path(self.temp.name) / "workspace"
+        lease = main._LEASE_OWNER.set(worker)
+        try:
+            with patch.object(main, "WORKSPACE", workspace):
+                result = main._extract_github_zipball(
+                    "checkout-task", archive_path, "nexus-agent/task-checkout-task", "commit-sha"
+                )
+                self.assertFalse(result["already_checked_out"])
+                self.assertEqual(result["files"], 2)
+                self.assertEqual((workspace / "checkout-task" / "README.md").read_text(), "# NEXUS")
+                self.assertEqual(
+                    (workspace / "checkout-task" / "app" / "src" / "Main.kt").read_text(),
+                    "package sample",
+                )
+                again = main._extract_github_zipball(
+                    "checkout-task", archive_path, "nexus-agent/task-checkout-task", "commit-sha"
+                )
+                self.assertTrue(again["already_checked_out"])
+                self.assertEqual(again["files"], 0)
+        finally:
+            main._LEASE_OWNER.reset(lease)
+
+    def test_github_zipball_checkout_rejects_path_traversal(self):
+        now = time.time()
+        worker = main.WORKER_ID + ":checkout-security"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("checkout-security", "checkout untrusted archive", "running", now, now, worker, now + 600),
+            )
+        archive_path = Path(self.temp.name) / "unsafe.zip"
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            archive.writestr("repo-root/../../escaped.txt", "must not escape")
+        workspace = Path(self.temp.name) / "workspace"
+        lease = main._LEASE_OWNER.set(worker)
+        try:
+            with patch.object(main, "WORKSPACE", workspace):
+                with self.assertRaises(ValueError):
+                    main._extract_github_zipball(
+                        "checkout-security", archive_path, "nexus-agent/task-checkout-security", "sha"
+                    )
+            self.assertFalse((Path(self.temp.name) / "escaped.txt").exists())
+        finally:
+            main._LEASE_OWNER.reset(lease)
 
     def test_github_write_actions_reject_protected_branches(self):
         for branch_name in ("main", "master", "nexus-1.0-development", "feature/unsafe"):
