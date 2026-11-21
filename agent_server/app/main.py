@@ -2655,10 +2655,10 @@ def read_project_file(project_id: str, path: str, owner_id: str = Depends(auth))
     with db() as c:
         row = c.execute("""SELECT v.* FROM project_file_versions v
             JOIN projects p ON p.id=v.project_id
-            WHERE v.project_id=? AND v.owner_id=? AND p.owner_id=? AND v.path=? AND v.is_deleted=0
+            WHERE v.project_id=? AND v.owner_id=? AND p.owner_id=? AND v.path=?
             ORDER BY v.revision DESC LIMIT 1""",
             (project_id, owner_id, owner_id, safe_path)).fetchone()
-    if not row:
+    if not row or row["is_deleted"]:
         raise HTTPException(404, "Project file not found")
     try:
         content = _verified_project_file_bytes(row).decode("utf-8")
