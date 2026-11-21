@@ -2247,7 +2247,7 @@ def list_project_file_versions(project_id: str, path: str, owner_id: str = Depen
                             (project_id, owner_id)).fetchone()
         if not project:
             raise HTTPException(404, "Project not found")
-        rows = c.execute("""SELECT path,revision,sha256,size_bytes,message,created_at
+        rows = c.execute("""SELECT path,revision,sha256,size_bytes,message,created_at,content_type,is_binary
             FROM project_file_versions WHERE project_id=? AND owner_id=? AND path=?
             ORDER BY revision DESC""", (project_id, owner_id, safe_path)).fetchall()
     return {"versions": [_project_file_dict(row) for row in rows]}
