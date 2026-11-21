@@ -69,9 +69,9 @@ class ProviderVisionTests(unittest.IsolatedAsyncioTestCase):
             api_key="not-a-real-key",
         )
         fake_gateway = FakeVisionGateway(response_text)
-        with patch.object(main, "DB_PATH", db_path), \\
-             patch.object(main, "API_KEY", "test-key"), \\
-             patch.object(main, "provider_models_for_owner", return_value=[model]), \\
+        with patch.object(main, "DB_PATH", db_path), \
+             patch.object(main, "API_KEY", "test-key"), \
+             patch.object(main, "provider_models_for_owner", return_value=[model]), \
              patch.object(main, "ModelGateway", return_value=fake_gateway):
             main.init_db()
             with main.db() as conn:
