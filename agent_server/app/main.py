@@ -1223,6 +1223,15 @@ def delete_memory(memory_id: str, owner_id: str = Depends(auth)):
     return {"id": memory_id, "status": "deleted"}
 
 
+def _chat_gateway_error_message(exc: ModelGatewayError, requires_vision: bool) -> str:
+    if requires_vision and "No configured model supports" in str(exc):
+        return (
+            "No connected provider is configured for image input. Open NEXUS settings, "
+            "save a provider, and run its image-understanding test."
+        )
+    return str(exc)
+
+
 @app.post("/v1/chat/completions", dependencies=[Depends(auth)])
 async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(auth)):
     requires_vision = validate_chat_messages(body.messages)
@@ -1260,7 +1269,7 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
             first_chunk = await anext(stream_iterator)
         except ModelGatewayError as exc:
             status = 503 if "No configured model supports" in str(exc) else 502
-            raise HTTPException(status, str(exc)) from exc
+            raise HTTPException(status, _chat_gateway_error_message(exc, requires_vision)) from exc
 
         async def event_stream():
             try:
