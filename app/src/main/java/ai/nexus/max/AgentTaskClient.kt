@@ -38,7 +38,7 @@ data class NexusAutomationRun(val id: String, val taskId: String, val scheduledF
 
 data class NexusAutomation(
     val id: String, val name: String, val prompt: String, val scheduleType: String,
-    val localTime: String, val timezone: String, val weekdays: List<Int>,
+    val localTime: String, val timezone: String, val weekdays: List<Int>, val runAt: Double?,
     val intervalMinutes: Int?, val enabled: Boolean, val nextRunAt: Double?,
     val projectId: String?,
     val lastRunAt: Double?, val lastTaskStatus: String?, val lastTaskSummary: String?
@@ -294,6 +294,7 @@ class AgentTaskClient(
                 item.optString("id"), item.optString("name"), item.optString("prompt"),
                 item.optString("schedule_type"), item.optString("local_time"), item.optString("timezone"),
                 (0 until days.length()).map { days.optInt(it) },
+                if (item.isNull("run_at")) null else item.optDouble("run_at"),
                 if (item.isNull("interval_minutes")) null else item.optInt("interval_minutes"),
                 item.optBoolean("enabled"), if (item.isNull("next_run_at")) null else item.optDouble("next_run_at"),
                 item.optString("project_id").takeIf { it.isNotBlank() && it != "null" },
@@ -317,12 +318,13 @@ class AgentTaskClient(
 
     fun createAutomation(
         name: String, prompt: String, scheduleType: String, localTime: String,
-        timezone: String, weekdays: List<Int>, intervalMinutes: Int?, projectId: String? = null
+        timezone: String, weekdays: List<Int>, intervalMinutes: Int?, projectId: String? = null, runAt: Double? = null
     ): NexusAutomation {
         val body = JSONObject().put("name", name.trim()).put("prompt", prompt.trim())
             .put("schedule_type", scheduleType).put("local_time", localTime)
             .put("timezone", timezone).put("weekdays", JSONArray(weekdays))
         if (intervalMinutes != null) body.put("interval_minutes", intervalMinutes)
+        if (runAt != null) body.put("run_at", runAt)
         projectId?.let { body.put("project_id", it) }
         val item = request("POST", listOf("v1", "automations"), body).optJSONObject("automation")
             ?: throw IOException("Automation API did not return a record")
@@ -334,6 +336,7 @@ class AgentTaskClient(
             .put("schedule_type", automation.scheduleType).put("local_time", automation.localTime)
             .put("timezone", automation.timezone).put("weekdays", JSONArray(automation.weekdays))
             .put("enabled", automation.enabled)
+        automation.runAt?.let { body.put("run_at", it) }
         automation.projectId?.let { body.put("project_id", it) }
         automation.intervalMinutes?.let { body.put("interval_minutes", it) }
         val item = request("PUT", listOf("v1", "automations", automation.id), body).optJSONObject("automation")
@@ -353,6 +356,7 @@ class AgentTaskClient(
             optString("id"), optString("name"), optString("prompt"), optString("schedule_type"),
             optString("local_time"), optString("timezone"),
             (0 until days.length()).map { days.optInt(it) },
+            if (isNull("run_at")) null else optDouble("run_at"),
             if (isNull("interval_minutes")) null else optInt("interval_minutes"),
             optBoolean("enabled"), if (isNull("next_run_at")) null else optDouble("next_run_at"),
             optString("project_id").takeIf { it.isNotBlank() && it != "null" },
