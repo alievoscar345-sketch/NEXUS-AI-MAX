@@ -250,6 +250,9 @@ class DurableTaskTests(unittest.TestCase):
                     main._github_branch_name(branch_name, require_feature=True)
         self.assertEqual(main._github_branch_name("nexus-agent/task-123", require_feature=True),
                          "nexus-agent/task-123")
+        self.assertEqual(main._github_branch_name("main"), "main")
+        with self.assertRaises(ValueError):
+            main._github_branch_name("main", require_feature=True)
 
     def test_github_write_is_fenced_to_current_task_lease(self):
         from unittest.mock import AsyncMock
