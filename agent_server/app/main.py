@@ -1543,8 +1543,8 @@ async def _worker_heartbeat_loop() -> None:
 
 async def worker():
     logger = logging.getLogger("nexus.worker")
-    heartbeat_task = asyncio.create_task(_worker_heartbeat_loop())
     await run_db(_write_worker_heartbeat, "running")
+    heartbeat_task = asyncio.create_task(_worker_heartbeat_loop())
     logger.info("Durable worker heartbeat reporting enabled")
     try:
         while True:
