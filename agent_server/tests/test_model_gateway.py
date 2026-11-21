@@ -49,12 +49,6 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stream_does_not_fallback_after_partial_output(self):
         calls = []
-        def handler(request):
-            calls.append(1)
-            async def body():
-                yield b'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\n\n'
-                raise httpx.ReadError("connection dropped", request=request)
-            return httpx.Response(200, stream=httpx.AsyncByteStream.__subclasshook__ if False else None)
         class BrokenStream(httpx.AsyncByteStream):
             async def __aiter__(self):
                 yield b'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\n\n'
