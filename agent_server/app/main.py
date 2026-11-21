@@ -163,6 +163,11 @@ def init_db():
         if "supports_vision" not in _columns(c, "provider_credentials"):
             c.execute("ALTER TABLE provider_credentials ADD COLUMN supports_vision INTEGER NOT NULL DEFAULT 0")
         c.execute("""
+        CREATE TABLE IF NOT EXISTS projects(
+            id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '', context TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active', created_at REAL NOT NULL, updated_at REAL NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS skills(
             id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL,
             description TEXT NOT NULL DEFAULT '',
@@ -187,6 +192,10 @@ def init_db():
             FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
         )
         """)
+        if "project_id" not in _columns(c, "tasks"):
+            c.execute("ALTER TABLE tasks ADD COLUMN project_id TEXT")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner_id,status,updated_at DESC)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(owner_id,project_id,created_at DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id,enabled,name)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_automations_due ON automations(enabled,next_run_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_automation_runs_owner ON automation_runs(owner_id,created_at DESC)")
@@ -223,6 +232,7 @@ def _worker_event(tid: str, kind: str, message: str) -> bool:
 def serialize(row):
     return {
         "id": row["id"], "prompt": row["prompt"], "status": row["status"],
+        "project_id": row["project_id"] if "project_id" in row.keys() else None,
         "created_at": row["created_at"], "updated_at": row["updated_at"],
         "plan": json.loads(row["plan_json"]), "results": json.loads(row["results_json"]),
         "summary": row["summary"], "error": row["error"],
@@ -245,6 +255,7 @@ class NewTask(BaseModel):
     autonomy: str = Field(default="level3", pattern="^level[123]$")
     max_steps: int = Field(default=8, ge=1, le=30)
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
+    project_id: str | None = Field(default=None, max_length=64)
 
 
 class Approval(BaseModel):
@@ -273,6 +284,20 @@ class MemoryUpdateInput(BaseModel):
     content: str | None = Field(default=None, min_length=1, max_length=2000)
     category: str | None = Field(default=None, pattern="^(general|preference|project|goal|fact|instruction)$")
     pinned: bool | None = None
+
+
+class ProjectInput(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=500)
+    context: str = Field(default="", max_length=12000)
+    status: str = Field(default="active", pattern="^(active|archived)$")
+
+
+class ProjectUpdateInput(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=500)
+    context: str | None = Field(default=None, max_length=12000)
+    status: str | None = Field(default=None, pattern="^(active|archived)$")
 
 
 class SkillInput(BaseModel):
@@ -1840,15 +1865,20 @@ def _create_task_record(body: NewTask, owner_id: str) -> dict[str, Any]:
     with db() as c:
         # Serialize the idempotency check and insert to make concurrent retries deterministic.
         c.execute("BEGIN IMMEDIATE")
+        if body.project_id:
+            project = c.execute("SELECT id FROM projects WHERE id=? AND owner_id=? AND status='active'",
+                                (body.project_id, owner_id)).fetchone()
+            if not project:
+                raise HTTPException(404, "Active project not found")
         if body.idempotency_key:
             existing = c.execute("SELECT id,status FROM tasks WHERE owner_id=? AND client_request_key=?",
                                  (owner_id, body.idempotency_key)).fetchone()
             if existing:
                 return {"id": existing["id"], "status": existing["status"], "deduplicated": True}
         c.execute("""INSERT INTO tasks(id,prompt,status,created_at,updated_at,max_attempts,
-            max_steps,client_request_key,owner_id) VALUES(?,?,?,?,?,?,?,?,?)""",
+            max_steps,client_request_key,owner_id,project_id) VALUES(?,?,?,?,?,?,?,?,?,?)""",
             (tid, body.prompt, "queued", now, now, MAX_STEP_ATTEMPTS,
-             body.max_steps, body.idempotency_key or "", owner_id))
+             body.max_steps, body.idempotency_key or "", owner_id, body.project_id))
         event_time = time.time()
         c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
                   (tid, event_time, "created", "Task queued in durable cloud worker"))
