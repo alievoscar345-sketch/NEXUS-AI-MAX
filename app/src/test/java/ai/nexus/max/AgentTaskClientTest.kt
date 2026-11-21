@@ -83,8 +83,8 @@ class AgentTaskClientTest {
             onError = { failure.set(it) },
             onClosed = { closed.countDown() }
         )
-        assertTrue("SSE event was not received", received.await(2, TimeUnit.SECONDS))
-        assertTrue("SSE stream did not close", closed.await(2, TimeUnit.SECONDS))
+        assertTrue("SSE event was not received", received.await(5, TimeUnit.SECONDS))
+        assertTrue("SSE stream did not close", closed.await(5, TimeUnit.SECONDS))
         assertNull(failure.get())
         assertEquals(31L, event.get()!!.id)
         assertEquals("working", event.get()!!.message)

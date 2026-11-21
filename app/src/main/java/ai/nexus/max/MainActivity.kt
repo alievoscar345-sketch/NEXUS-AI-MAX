@@ -3148,6 +3148,9 @@ private fun extractMarkdownCode(content: String, node: ASTNode, fenced: Boolean)
 private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
     var prompt by remember { mutableStateOf("") }
     var selectedTask by remember { mutableStateOf(vm.activeAgentTaskId) }
+    LaunchedEffect(vm.activeAgentTaskId) {
+        selectedTask = vm.activeAgentTaskId
+    }
     LaunchedEffect(vm.agentServerUrl, vm.agentServerConfigured, selectedTask) {
         if (vm.agentServerConfigured && vm.agentServerUrl.isNotBlank()) {
             try {
