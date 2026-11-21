@@ -711,7 +711,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         val query = history.asReversed().firstOrNull { it.role == "user" }?.content.orEmpty().take(3000)
         if (query.isBlank()) return null
         val terms = Regex("[\\p{L}\\p{N}]{3,}").findAll(query.lowercase()).map { it.value }.toSet()
-        val skills = agentTaskClient().listSkills().filter { it.enabled }.map { skill ->
+        val skills = agentTaskClient().listSkills(query, 4).filter { it.enabled }.map { skill ->
             val haystack = "${skill.name} ${skill.description} ${skill.category} ${skill.instructions}".lowercase()
             val score = terms.count { term -> haystack.contains(term) }
             skill to score
