@@ -139,6 +139,38 @@ class DurableTaskTests(unittest.TestCase):
         self.assertIn("id: 2\nevent: task_event\ndata:", chunks[1])
         self.assertIn('"message":"event-1"', chunks[1])
 
+    def test_task_event_batch_resumes_after_last_seen_event_id(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id) VALUES(?,?,?,?,?,?)",
+                ("task-sse-cursor", "resume stream", "running", now, now, "personal"),
+            )
+            for index in range(4):
+                conn.execute(
+                    "INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                    ("task-sse-cursor", now + index, "progress", f"event-{index}"),
+                )
+        batch = main._read_task_event_batch("task-sse-cursor", "personal", 2)
+        self.assertEqual([item["id"] for item in batch["events"]], [3, 4])
+        self.assertEqual(batch["status"], "running")
+
+    def test_task_event_stream_stops_when_client_disconnects(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id) VALUES(?,?,?,?,?,?)",
+                ("task-sse-disconnect", "disconnect stream", "running", now, now, "personal"),
+            )
+        request = SimpleNamespace(is_disconnected=AsyncMock(return_value=True))
+
+        async def collect():
+            return [chunk async for chunk in main._task_event_stream(
+                "task-sse-disconnect", "personal", 0, request
+            )]
+
+        self.assertEqual(asyncio.run(collect()), [])
+
     def test_task_event_stream_does_not_expose_another_owner_task(self):
         now = time.time()
         with main.db() as conn:

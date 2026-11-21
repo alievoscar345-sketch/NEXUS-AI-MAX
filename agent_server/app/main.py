@@ -152,6 +152,7 @@ def init_db():
             c.execute("ALTER TABLE provider_credentials ADD COLUMN supports_vision INTEGER NOT NULL DEFAULT 0")
         c.execute("CREATE INDEX IF NOT EXISTS idx_provider_credentials_owner ON provider_credentials(owner_id,provider_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(status,next_attempt_at,created_at)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_events_task_id_id ON events(task_id,id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_steps_task ON task_steps(task_id,step_index)")
 
 
