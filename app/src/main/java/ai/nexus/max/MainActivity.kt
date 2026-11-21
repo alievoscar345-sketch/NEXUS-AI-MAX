@@ -4462,6 +4462,32 @@ private fun ChatProjectPickerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
             }
         }
     }
+    pendingCheckpointRestore?.let { checkpoint ->
+        AlertDialog(
+            onDismissRequest = { if (!vm.agentCheckpointBusy) pendingCheckpointRestore = null },
+            title = { Text("Восстановить контрольную точку #${checkpoint.sequence}?") },
+            text = {
+                Text(
+                    "Текущая рабочая папка, версии файлов проекта, план и результаты будут заменены состоянием выбранного снимка. Более поздние изменения будут потеряны. После восстановления задача перейдёт в состояние «приостановлена»."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val taskId = selectedTask
+                        if (taskId != null) vm.restoreAgentCheckpoint(taskId, checkpoint)
+                        pendingCheckpointRestore = null
+                    },
+                    enabled = !vm.agentCheckpointBusy
+                ) { Text(if (vm.agentCheckpointBusy) "Восстановление…" else "Восстановить") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingCheckpointRestore = null }, enabled = !vm.agentCheckpointBusy) {
+                    Text("Отмена")
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -4979,12 +5005,22 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
         if (uri != null && target != null) vm.exportAgentArtifactFile(target.first, target.second, uri)
         artifactDownloadTarget = null
     }
+    var checkpointCompareFrom by remember { mutableStateOf<String?>(null) }
+    var checkpointCompareTo by remember { mutableStateOf<String?>(null) }
+    var checkpointFromMenu by remember { mutableStateOf(false) }
+    var checkpointToMenu by remember { mutableStateOf(false) }
+    var pendingCheckpointRestore by remember { mutableStateOf<AgentTaskCheckpoint?>(null) }
     var selectedTask by remember { mutableStateOf(vm.activeAgentTaskId) }
     LaunchedEffect(vm.activeAgentTaskId) {
         selectedTask = vm.activeAgentTaskId
     }
     LaunchedEffect(selectedTask) {
-        selectedTask?.let { vm.refreshAgentWorkspace(it) }
+        checkpointCompareFrom = null
+        checkpointCompareTo = null
+        selectedTask?.let {
+            vm.refreshAgentWorkspace(it)
+            vm.refreshAgentCheckpoints(it)
+        }
     }
     LaunchedEffect(vm.agentServerUrl, vm.agentServerConfigured, selectedTask) {
         if (vm.agentServerConfigured && vm.agentServerUrl.isNotBlank()) {
@@ -5135,6 +5171,131 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                         }
                         items(task.events.takeLast(6)) { event ->
                             Text("· " + event.message, color = Muted, fontSize = 9.sp)
+                        }
+                    }
+                }
+                vm.activeAgentTask?.takeIf { selectedTask == it.id }?.let { task ->
+                    Divider(color = DividerTone)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("ИСТОРИЯ КОНТРОЛЬНЫХ ТОЧЕК", color = Muted, fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { vm.refreshAgentCheckpoints(task.id) },
+                            enabled = !vm.agentCheckpointBusy) {
+                            Text(if (vm.agentCheckpointBusy) "Загрузка…" else "Обновить", color = Blue, fontSize = 9.sp)
+                        }
+                    }
+                    Text("Снимки файлов, плана и результатов. Для ручного отката задача должна быть приостановлена или завершена.",
+                        color = Muted, fontSize = 9.sp)
+                    LazyColumn(Modifier.heightIn(max = 118.dp)) {
+                        items(vm.agentCheckpoints, key = { it.id }) { checkpoint ->
+                            Column(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        "#${checkpoint.sequence} · ${checkpoint.reason}",
+                                        color = MainText, fontSize = 10.sp, modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        "${checkpoint.completedSteps}/${checkpoint.planSteps} шагов",
+                                        color = Muted, fontSize = 9.sp
+                                    )
+                                }
+                                val checkpointTime = remember(checkpoint.createdAt) {
+                                    DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")
+                                        .withZone(ZoneId.systemDefault())
+                                        .format(Instant.ofEpochMilli((checkpoint.createdAt * 1000).toLong()))
+                                }
+                                Text(
+                                    "$checkpointTime · ${checkpoint.workspaceFiles.size} файлов · ${checkpoint.artifacts.size} результатов · ${checkpoint.archiveBytes} Б",
+                                    color = Muted, fontSize = 8.sp
+                                )
+                                if (!checkpoint.available) {
+                                    Text("Недоступна: ${checkpoint.error}", color = Color(0xFFE5A0A0), fontSize = 9.sp)
+                                } else if (checkpoint.legacy) {
+                                    Text("Старая контрольная точка: откат проекта и артефактов недоступен.", color = Muted, fontSize = 8.sp)
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    TextButton(onClick = { checkpointCompareFrom = checkpoint.id },
+                                        enabled = checkpoint.available) {
+                                        Text(if (checkpointCompareFrom == checkpoint.id) "A выбрана" else "Сравнить A",
+                                            color = if (checkpointCompareFrom == checkpoint.id) Blue else Muted, fontSize = 8.sp)
+                                    }
+                                    TextButton(onClick = { checkpointCompareTo = checkpoint.id },
+                                        enabled = checkpoint.available) {
+                                        Text(if (checkpointCompareTo == checkpoint.id) "B выбрана" else "Сравнить B",
+                                            color = if (checkpointCompareTo == checkpoint.id) Blue else Muted, fontSize = 8.sp)
+                                    }
+                                    Spacer(Modifier.weight(1f))
+                                    TextButton(
+                                        onClick = { pendingCheckpointRestore = checkpoint },
+                                        enabled = checkpoint.available && !vm.agentCheckpointBusy &&
+                                            task.status in setOf("paused", "completed", "failed", "cancelled")
+                                    ) { Text("Восстановить", color = if (checkpoint.available) Blue else Muted, fontSize = 8.sp) }
+                                }
+                                Divider(color = DividerTone)
+                            }
+                        }
+                        if (vm.agentCheckpoints.isEmpty()) item {
+                            Text(if (vm.agentCheckpointBusy) "Загружаю историю…" else "Контрольные точки пока не найдены.",
+                                color = Muted, fontSize = 9.sp)
+                        }
+                    }
+                    val compareFrom = vm.agentCheckpoints.firstOrNull { it.id == checkpointCompareFrom }
+                    val compareTo = vm.agentCheckpoints.firstOrNull { it.id == checkpointCompareTo }
+                    if (vm.agentCheckpoints.size >= 2) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box {
+                                OutlinedButton(onClick = { checkpointFromMenu = true }) {
+                                    Text(compareFrom?.let { "A · #${it.sequence}" } ?: "Снимок A", color = MainText, fontSize = 9.sp)
+                                }
+                                DropdownMenu(expanded = checkpointFromMenu, onDismissRequest = { checkpointFromMenu = false }) {
+                                    vm.agentCheckpoints.filter { it.available }.forEach { item ->
+                                        DropdownMenuItem(
+                                            text = { Text("#${item.sequence} · ${item.reason}") },
+                                            onClick = { checkpointCompareFrom = item.id; checkpointFromMenu = false }
+                                        )
+                                    }
+                                }
+                            }
+                            Box {
+                                OutlinedButton(onClick = { checkpointToMenu = true }) {
+                                    Text(compareTo?.let { "B · #${it.sequence}" } ?: "Снимок B", color = MainText, fontSize = 9.sp)
+                                }
+                                DropdownMenu(expanded = checkpointToMenu, onDismissRequest = { checkpointToMenu = false }) {
+                                    vm.agentCheckpoints.filter { it.available }.forEach { item ->
+                                        DropdownMenuItem(
+                                            text = { Text("#${item.sequence} · ${item.reason}") },
+                                            onClick = { checkpointCompareTo = item.id; checkpointToMenu = false }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (compareFrom != null && compareTo != null) {
+                        val fromFiles = (compareFrom.workspaceFiles.map { "Рабочая папка/${it.path}" to it.sha256 } +
+                            compareFrom.projectFiles.map { "Проект/${it.path}" to it.sha256 } +
+                            compareFrom.artifacts.map { "Результаты/${it.name}" to it.sha256 }).toMap()
+                        val toFiles = (compareTo.workspaceFiles.map { "Рабочая папка/${it.path}" to it.sha256 } +
+                            compareTo.projectFiles.map { "Проект/${it.path}" to it.sha256 } +
+                            compareTo.artifacts.map { "Результаты/${it.name}" to it.sha256 }).toMap()
+                        val changedFiles = (fromFiles.keys + toFiles.keys).distinct().sorted()
+                            .filter { fromFiles[it] != toFiles[it] }
+                        Text("ИЗМЕНЕНИЯ · ${changedFiles.size}", color = Muted, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                        LazyColumn(Modifier.heightIn(max = 92.dp)) {
+                            items(changedFiles.take(20)) { path ->
+                                val status = when {
+                                    path !in fromFiles -> "Добавлен"
+                                    path !in toFiles -> "Удалён"
+                                    else -> "Изменён"
+                                }
+                                Text("$status · $path", color = MainText, fontSize = 9.sp)
+                            }
+                            if (changedFiles.isEmpty()) item {
+                                Text("Содержимое снимков совпадает.", color = Muted, fontSize = 9.sp)
+                            }
+                            if (changedFiles.size > 20) item {
+                                Text("Показаны первые 20 изменений.", color = Muted, fontSize = 8.sp)
+                            }
                         }
                     }
                 }
