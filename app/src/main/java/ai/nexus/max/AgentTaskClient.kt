@@ -177,6 +177,12 @@ class AgentTaskClient(
     fun cancelTask(taskId: String): String =
         request("POST", listOf("v1", "tasks", taskId, "cancel"), JSONObject())["status"]?.toString().orEmpty()
 
+    fun pauseTask(taskId: String): String =
+        request("POST", listOf("v1", "tasks", taskId, "pause"), JSONObject())["status"]?.toString().orEmpty()
+
+    fun resumeTask(taskId: String): String =
+        request("POST", listOf("v1", "tasks", taskId, "resume"), JSONObject())["status"]?.toString().orEmpty()
+
     fun listWorkspace(taskId: String, path: String = "."): List<AgentWorkspaceEntry> {
         val obj = request("GET", listOf("v1", "tasks", taskId, "workspace"), query = mapOf("path" to path))
         val entries = obj.optJSONArray("entries") ?: JSONArray()
