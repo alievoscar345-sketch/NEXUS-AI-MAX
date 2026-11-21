@@ -2569,6 +2569,41 @@ class DurableTaskTests(unittest.TestCase):
         finally:
             main._LEASE_OWNER.reset(token)
 
+
+    def test_manual_restore_of_corrupt_checkpoint_fails_task_closed(self):
+        now = time.time()
+        task_id = "corrupt-manual-checkpoint"
+        worker = main.WORKER_ID + ":corrupt-manual"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (task_id, "corrupt manual restore", "running", now, now, "owner-a", worker, now + 600),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        checkpoint_root = Path(self.temp.name) / "checkpoints"
+        token = main._LEASE_OWNER.set(worker)
+        try:
+            with patch.object(main, "WORKSPACE", workspace), patch.object(main, "CHECKPOINT_ROOT", checkpoint_root):
+                main._workspace_write(task_id, "file.txt", "checkpoint")
+                saved = main._create_task_checkpoint(task_id, "before_corruption")
+                with main.db() as conn:
+                    conn.execute("UPDATE tasks SET status='completed',lease_owner='',lease_expires_at=NULL WHERE id=?",
+                                 (task_id,))
+                Path(saved["archive_path"]).write_bytes(b"corrupted")
+                with self.assertRaises(main.HTTPException) as failure:
+                    main.restore_task_checkpoint(task_id, saved["id"],
+                        {"expected_latest_sequence": 1}, owner_id="owner-a")
+                self.assertEqual(failure.exception.status_code, 422)
+                with main.db() as conn:
+                    task = conn.execute("SELECT status,restore_checkpoint_id,lease_owner FROM tasks WHERE id=?",
+                                        (task_id,)).fetchone()
+                self.assertEqual(task["status"], "failed")
+                self.assertEqual(task["restore_checkpoint_id"], "")
+                self.assertEqual(task["lease_owner"], "")
+        finally:
+            main._LEASE_OWNER.reset(token)
+
     def test_manual_checkpoint_restore_rejects_active_task(self):
         now = time.time()
         task_id = "active-checkpoint-restore"
