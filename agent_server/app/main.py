@@ -2427,7 +2427,7 @@ async def _github_checkout_task_workspace(tid: str, integration: dict[str, str],
                         "already_checked_out": True, "files": 0, "bytes": 0}
         except (OSError, ValueError, AttributeError):
             pass
-    api_url = "https://api.github.com/repos/" + repo_path + "/tarball/" + quote(commit_sha, safe="")
+    api_url = "https://api.github.com/repos/" + repo_path + "/zipball/" + quote(commit_sha, safe="")
     headers = {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
                "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "NEXUS-AI-MAX"}
     archive_path = WORKSPACE / (".nexus-checkout-" + uuid.uuid4().hex + ".zip")
