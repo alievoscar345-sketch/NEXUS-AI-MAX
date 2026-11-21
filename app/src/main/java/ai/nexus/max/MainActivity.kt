@@ -5031,6 +5031,7 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                         vm.startAgentEventStream(taskId)
                         val workspacePath = if (vm.agentWorkspaceTaskId == taskId) vm.agentWorkspacePath else "."
                         vm.refreshAgentWorkspace(taskId, workspacePath)
+                        vm.refreshAgentCheckpoints(taskId)
                     }
                     vm.refreshAgentConsole(taskId)
                     delay(if (taskId == null) 10000 else 15000)
