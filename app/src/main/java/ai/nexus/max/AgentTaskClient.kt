@@ -77,7 +77,7 @@ class AgentTaskClient(
         taskId: String,
         afterEventId: Long,
         onEvent: (AgentTaskEvent) -> Unit,
-        onFailure: (IOException) -> Unit,
+        onError: (IOException) -> Unit,
         onClosed: () -> Unit = {}
     ): Call {
         require(afterEventId >= 0) { "Event cursor must be non-negative" }
@@ -101,7 +101,7 @@ class AgentTaskClient(
         val call = streamHttp.newCall(request)
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, error: IOException) {
-                if (!call.isCanceled()) onFailure(error)
+                if (!call.isCanceled()) onError(error)
                 onClosed()
             }
 
@@ -137,7 +137,7 @@ class AgentTaskClient(
                         }
                     } catch (error: Exception) {
                         if (!call.isCanceled()) {
-                            onFailure(if (error is IOException) error else IOException("Agent event stream failed", error))
+                            onError(if (error is IOException) error else IOException("Agent event stream failed", error))
                         }
                     } finally {
                         onClosed()

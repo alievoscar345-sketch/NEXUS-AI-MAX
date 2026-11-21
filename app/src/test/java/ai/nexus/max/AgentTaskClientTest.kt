@@ -71,7 +71,7 @@ class AgentTaskClientTest {
     }
 
     @Test fun streamTaskEventsParsesSseAndSendsCursor() {
-        transport.responseBody = "id: 31\\nevent: task_event\\ndata: {\\"id\\":31,\\"created_at\\":3.1,\\"kind\\":\\"progress\\",\\"message\\":\\"working\\"}\\n\\n"
+        transport.responseBody = "id: 31\nevent: task_event\ndata: {\"id\":31,\"created_at\":3.1,\"kind\":\"progress\",\"message\":\"working\"}\n\n"
         val received = CountDownLatch(1)
         val failure = AtomicReference<IOException?>()
         val event = AtomicReference<AgentTaskEvent?>()
@@ -80,7 +80,7 @@ class AgentTaskClientTest {
             "task-31",
             30L,
             onEvent = { event.set(it); received.countDown() },
-            onFailure = { failure.set(it) },
+            onError = { failure.set(it) },
             onClosed = { closed.countDown() }
         )
         assertTrue("SSE event was not received", received.await(2, TimeUnit.SECONDS))
