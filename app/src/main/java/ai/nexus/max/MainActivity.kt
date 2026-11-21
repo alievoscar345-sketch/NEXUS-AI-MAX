@@ -4565,7 +4565,7 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                 if (taskFileName != null) Text("Текст файла будет передан агенту как отдельный контекст задачи (лимит 24 КБ).", color = Muted, fontSize = 9.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
-                        onClick = { vm.createAgentTask(prompt, selectedProjectId, taskFileName?.let { "Attached text file: $it\\n\\n$taskFileContext" } ?: ""); prompt = ""; taskFileContext = ""; taskFileName = null },
+                        onClick = { vm.createAgentTask(prompt, selectedProjectId, taskFileName?.let { "Attached text file: $it\n\n$taskFileContext" } ?: ""); prompt = ""; taskFileContext = ""; taskFileName = null },
                         enabled = prompt.trim().length >= 3 && !vm.agentBusy && !vm.agentRefreshing && vm.agentServerConfigured && vm.agentServerUrl.isNotBlank()
                     ) { Text("Запустить") }
                     OutlinedButton(onClick = { vm.refreshAgentConsole(selectedTask) }, enabled = !vm.agentBusy && !vm.agentRefreshing) {
