@@ -51,7 +51,7 @@ def validate_repo_path(path: str) -> str:
             or filename in BLOCKED_NAMES
             or filename.startswith(".env")
             or PurePosixPath(filename).suffix in BLOCKED_SUFFIXES
-            or "secret" in lowered.split("/")):
+            or any("secret" in part for part in lowered.split("/"))):
         raise ValueError("This path is protected by the Developer Agent policy")
     if len(normalized) > 240:
         raise ValueError("Path is too long")
