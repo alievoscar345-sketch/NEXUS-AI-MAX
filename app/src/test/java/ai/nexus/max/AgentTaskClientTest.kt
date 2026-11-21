@@ -1,52 +1,58 @@
 package ai.nexus.max
 
-import okhttp3.mockwebserver.MockResponse
-import okhttp3.mockwebserver.MockWebServer
-import okhttp3.tls.HandshakeCertificates
-import okhttp3.tls.HeldCertificate
-import org.junit.After
+import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.Buffer
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import java.io.IOException
 
 class AgentTaskClientTest {
-    private lateinit var server: MockWebServer
+    private lateinit var transport: FakeTransport
     private lateinit var client: AgentTaskClient
 
-    @Before fun setUp() {
-        val heldCertificate = HeldCertificate.Builder()
-            .addSubjectAlternativeName("localhost")
-            .addSubjectAlternativeName("127.0.0.1")
-            .build()
-        val serverCertificates = HandshakeCertificates.Builder()
-            .heldCertificate(heldCertificate)
-            .build()
-        val clientCertificates = HandshakeCertificates.Builder()
-            .addTrustedCertificate(heldCertificate.certificate)
-            .build()
-        server = MockWebServer()
-        server.useHttps(serverCertificates.sslSocketFactory(), false)
-        server.start()
-        val http = okhttp3.OkHttpClient.Builder()
-            .sslSocketFactory(clientCertificates.sslSocketFactory(), clientCertificates.trustManager)
-            .build()
-        client = AgentTaskClient(server.url("/").toString(), "test-token", http)
+    private class FakeTransport : Interceptor {
+        var statusCode = 200
+        var responseBody = "{}"
+        var lastRequest: okhttp3.Request? = null
+
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val request = chain.request()
+            lastRequest = request
+            return Response.Builder()
+                .request(request)
+                .protocol(Protocol.HTTP_1_1)
+                .code(statusCode)
+                .message("test")
+                .body(responseBody.toResponseBody("application/json".toMediaType()))
+                .build()
+        }
     }
 
-    @After fun tearDown() { server.shutdown() }
+    @Before fun setUp() {
+        transport = FakeTransport()
+        val http = OkHttpClient.Builder().addInterceptor(transport).build()
+        client = AgentTaskClient("https://agent.example", "test-token", http)
+    }
 
     @Test fun createTaskSendsBearerAndIdempotencyKey() {
-        server.enqueue(MockResponse().setBody("""{"id":"task-123","status":"queued"}"""))
+        transport.responseBody = """{"id":"task-123","status":"queued"}"""
         assertEquals("task-123", client.createTask("Build a report", idempotencyKey = "stable-key-123"))
-        val request = server.takeRequest()
+        val request = transport.lastRequest!!
         assertEquals("POST", request.method)
-        assertEquals("Bearer test-token", request.getHeader("Authorization"))
-        assertEquals("stable-key-123", org.json.JSONObject(request.body.readUtf8()).getString("idempotency_key"))
+        assertEquals("Bearer test-token", request.header("Authorization"))
+        val buffer = Buffer()
+        request.body!!.writeTo(buffer)
+        assertEquals("stable-key-123", org.json.JSONObject(buffer.readUtf8()).getString("idempotency_key"))
     }
 
     @Test fun getTaskParsesEventsAndSteps() {
-        server.enqueue(MockResponse().setBody("""{"id":"t1","status":"running","prompt":"Do work","summary":"","error":"","events":[{"created_at":1.5,"kind":"step_started","message":"1: Plan"}],"steps":[{"step_index":0,"title":"Plan","action":"web_search","status":"running","error":""}]}"""))
+        transport.responseBody = """{"id":"t1","status":"running","prompt":"Do work","summary":"","error":"","events":[{"created_at":1.5,"kind":"step_started","message":"1: Plan"}],"steps":[{"step_index":0,"title":"Plan","action":"web_search","status":"running","error":""}]}"""
         val task = client.getTask("t1")
         assertEquals("running", task.status)
         assertEquals("step_started", task.events.single().kind)
@@ -54,13 +60,14 @@ class AgentTaskClientTest {
     }
 
     @Test fun taskIdIsEncodedAsOnePathSegment() {
-        server.enqueue(MockResponse().setBody("""{"id":"a/b","status":"queued","prompt":"x","summary":"","error":""}"""))
+        transport.responseBody = """{"id":"a/b","status":"queued","prompt":"x","summary":"","error":""}"""
         client.getTask("a/b")
-        assertTrue(server.takeRequest().path!!.contains("a%2Fb"))
+        assertTrue(transport.lastRequest!!.url.encodedPath.contains("a%2Fb"))
     }
 
     @Test fun apiErrorDetailIsSurfaced() {
-        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"detail":"Task already finished"}"""))
+        transport.statusCode = 409
+        transport.responseBody = """{"detail":"Task already finished"}"""
         try {
             client.cancelTask("t1")
             fail("Expected API error")
