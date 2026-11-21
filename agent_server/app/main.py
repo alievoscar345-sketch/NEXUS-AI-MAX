@@ -156,12 +156,18 @@ def init_db():
             sequence INTEGER NOT NULL, step_id TEXT, reason TEXT NOT NULL,
             plan_json TEXT NOT NULL, results_json TEXT NOT NULL, steps_json TEXT NOT NULL,
             archive_path TEXT NOT NULL, archive_sha256 TEXT NOT NULL,
-            archive_bytes INTEGER NOT NULL, created_at REAL NOT NULL,
+            archive_bytes INTEGER NOT NULL, project_manifest_json TEXT NOT NULL DEFAULT '{}',
+            artifact_manifest_json TEXT NOT NULL DEFAULT '[]', created_at REAL NOT NULL,
             UNIQUE(task_id,sequence),
             FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_task_checkpoints_latest
             ON task_checkpoints(task_id,sequence DESC);
+        checkpoint_cols = _columns(c, "task_checkpoints")
+        if "project_manifest_json" not in checkpoint_cols:
+            c.execute("ALTER TABLE task_checkpoints ADD COLUMN project_manifest_json TEXT NOT NULL DEFAULT '{}'")
+        if "artifact_manifest_json" not in checkpoint_cols:
+            c.execute("ALTER TABLE task_checkpoints ADD COLUMN artifact_manifest_json TEXT NOT NULL DEFAULT '[]'")
 
         CREATE TABLE IF NOT EXISTS task_steps(
             id TEXT PRIMARY KEY,
@@ -229,11 +235,15 @@ def init_db():
             message TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL,
             content_type TEXT NOT NULL DEFAULT 'text/plain; charset=utf-8',
             is_binary INTEGER NOT NULL DEFAULT 0,
+            is_deleted INTEGER NOT NULL DEFAULT 0,
             UNIQUE(project_id,path,revision),
             FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
         );
-        CREATE INDEX IF NOT EXISTS idx_project_files_latest
-            ON project_file_versions(project_id,path,revision DESC);
+        project_file_cols = _columns(c, "project_file_versions")
+        if "is_deleted" not in project_file_cols:
+            c.execute("ALTER TABLE project_file_versions ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_project_files_latest ON project_file_versions(project_id,path,revision DESC)")
+
         CREATE TABLE IF NOT EXISTS skills(
             id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL,
             description TEXT NOT NULL DEFAULT '',
