@@ -390,6 +390,42 @@ class DurableTaskTests(unittest.TestCase):
         self.assertEqual(after["status"], "pending")
         self.assertEqual(after["attempt_count"], 0)
 
+    def test_recovery_is_idempotent_and_does_not_duplicate_recovery_events(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("task-recovery-idempotent", "recover once", "running", now, now,
+                 "expired-worker", now - 1),
+            )
+            conn.execute(
+                "INSERT INTO task_steps(id,task_id,step_index,title,action,input_json,idempotency_key,status,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                ("step-recovery-idempotent", "task-recovery-idempotent", 0, "Read", "fetch_url",
+                 "{}", "recovery-idempotent-key", "running", now, now),
+            )
+
+        main.recover_interrupted_tasks()
+        main.recover_interrupted_tasks()
+
+        with main.db() as conn:
+            task = conn.execute(
+                "SELECT status,lease_owner FROM tasks WHERE id=?",
+                ("task-recovery-idempotent",),
+            ).fetchone()
+            step = conn.execute(
+                "SELECT status FROM task_steps WHERE id=?", ("step-recovery-idempotent",)
+            ).fetchone()
+            events = conn.execute(
+                "SELECT COUNT(*) AS n FROM events WHERE task_id=? AND kind='recovered'",
+                ("task-recovery-idempotent",),
+            ).fetchone()["n"]
+        self.assertEqual(task["status"], "retry_wait")
+        self.assertEqual(task["lease_owner"], "")
+        self.assertEqual(step["status"], "retry_wait")
+        self.assertEqual(events, 1)
+
     def test_recovery_preserves_task_with_active_lease(self):
         now = time.time()
         with main.db() as conn:
