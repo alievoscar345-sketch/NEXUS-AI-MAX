@@ -3,6 +3,7 @@ import tempfile
 import time
 import sqlite3
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import unittest
@@ -110,6 +111,33 @@ class DurableTaskTests(unittest.TestCase):
         with main.db() as conn:
             count = conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"]
         self.assertEqual(count, 1)
+
+    def test_concurrent_create_task_is_idempotent_and_event_is_atomic(self):
+        body = main.NewTask(
+            prompt="Run a concurrent idempotency check",
+            idempotency_key="parallel-client-key-0001",
+        )
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(
+                lambda _: main.create_task(body, owner_id="tenant-concurrent"),
+                range(16),
+            ))
+
+        task_ids = {item["id"] for item in results}
+        self.assertEqual(len(task_ids), 1)
+        self.assertTrue(any(item.get("deduplicated") for item in results))
+        task_id = next(iter(task_ids))
+        with main.db() as conn:
+            task_count = conn.execute(
+                "SELECT COUNT(*) AS n FROM tasks WHERE owner_id=? AND client_request_key=?",
+                ("tenant-concurrent", body.idempotency_key),
+            ).fetchone()["n"]
+            event_count = conn.execute(
+                "SELECT COUNT(*) AS n FROM events WHERE task_id=? AND kind='created'",
+                (task_id,),
+            ).fetchone()["n"]
+        self.assertEqual(task_count, 1)
+        self.assertEqual(event_count, 1)
 
     def test_provider_credentials_are_encrypted_and_owner_scoped(self):
         import os
