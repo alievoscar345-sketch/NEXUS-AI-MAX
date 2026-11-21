@@ -107,6 +107,7 @@ def init_db():
             "next_attempt_at": "REAL",
             "max_attempts": "INTEGER NOT NULL DEFAULT 3",
             "cancel_requested": "INTEGER NOT NULL DEFAULT 0",
+            "pause_requested": "INTEGER NOT NULL DEFAULT 0",
             "max_steps": "INTEGER NOT NULL DEFAULT 8",
             "client_request_key": "TEXT NOT NULL DEFAULT ''",
             "owner_id": "TEXT NOT NULL DEFAULT 'personal'",
@@ -1059,6 +1060,8 @@ async def process(tid: str):
                 return
 
         while True:
+            if await run_db(_pause_task_if_requested, tid):
+                return
             if await run_db(_task_cancelled, tid):
                 await run_db(_mark_task_cancelled, tid)
                 await run_db(_worker_event, tid, "cancelled", "Task cancellation acknowledged")
@@ -2201,6 +2204,85 @@ def get_task(tid: str, after_event_id: int | None = None, owner_id: str = Depend
     return {**serialize(row), "events": [dict(x) for x in events],
             "steps": [{**dict(x), "result": json.loads(x["result_json"]) if x["result_json"] else None}
                       for x in steps]}
+
+
+def _pause_task_if_requested(tid: str) -> bool:
+    """Pause only at a durable step boundary; an in-flight tool call is allowed to finish."""
+    now = time.time()
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("""SELECT pause_requested FROM tasks WHERE id=? AND status IN ('running','planning')
+            AND lease_owner=? AND lease_expires_at>?""",
+            (tid, _current_lease_owner(), now)).fetchone()
+        if not row or not row["pause_requested"]:
+            return False
+        changed = c.execute("""UPDATE tasks SET status='paused',pause_requested=0,
+            lease_owner='',lease_expires_at=NULL,updated_at=?
+            WHERE id=? AND status IN ('running','planning') AND lease_owner=? AND lease_expires_at>?""",
+            (now, tid, _current_lease_owner(), now)).rowcount
+        if changed:
+            c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                      (tid, now, "paused", "Task paused at a safe step boundary"))
+        return bool(changed)
+
+
+def _pause_task_record(tid: str, owner_id: str) -> dict[str, str]:
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT status FROM tasks WHERE id=? AND owner_id=?", (tid, owner_id)).fetchone()
+        if not row:
+            raise HTTPException(404, "Task not found")
+        status = row["status"]
+        if status in {"completed", "failed", "cancelled"}:
+            raise HTTPException(409, "Task already finished")
+        if status == "paused":
+            return {"id": tid, "status": "paused"}
+        now = time.time()
+        if status in {"queued", "retry_wait", "waiting_for_approval"}:
+            c.execute("""UPDATE tasks SET status='paused',pause_requested=0,lease_owner='',
+                lease_expires_at=NULL,updated_at=? WHERE id=? AND owner_id=?""", (now, tid, owner_id))
+            c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                      (tid, now, "paused", "Task paused before next worker claim"))
+            result_status = "paused"
+        elif status in {"running", "planning"}:
+            c.execute("UPDATE tasks SET pause_requested=1,updated_at=? WHERE id=? AND owner_id=?",
+                      (now, tid, owner_id))
+            c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                      (tid, now, "pause_requested", "Pause requested; current step will finish first"))
+            result_status = "pause_requested"
+        else:
+            raise HTTPException(409, "Task cannot be paused in its current state")
+    return {"id": tid, "status": result_status}
+
+
+def _resume_task_record(tid: str, owner_id: str) -> dict[str, str]:
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT status FROM tasks WHERE id=? AND owner_id=?", (tid, owner_id)).fetchone()
+        if not row:
+            raise HTTPException(404, "Task not found")
+        if row["status"] != "paused":
+            raise HTTPException(409, "Only paused tasks can be resumed")
+        pending_approval = c.execute("""SELECT 1 FROM approvals a
+            WHERE a.task_id=? AND a.status='pending' LIMIT 1""", (tid,)).fetchone()
+        next_status = "waiting_for_approval" if pending_approval else "queued"
+        now = time.time()
+        c.execute("""UPDATE tasks SET status=?,pause_requested=0,next_attempt_at=NULL,
+            lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND owner_id=? AND status='paused'""",
+            (next_status, now, tid, owner_id))
+        c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                  (tid, now, "resumed", "Task resumed by user"))
+    return {"id": tid, "status": next_status}
+
+
+@app.post("/v1/tasks/{tid}/pause", dependencies=[Depends(auth)])
+def pause_task(tid: str, owner_id: str = Depends(auth)):
+    return _pause_task_record(tid, owner_id)
+
+
+@app.post("/v1/tasks/{tid}/resume", dependencies=[Depends(auth)])
+def resume_task(tid: str, owner_id: str = Depends(auth)):
+    return _resume_task_record(tid, owner_id)
 
 
 def _cancel_task_record(tid: str, owner_id: str) -> dict[str, str]:
