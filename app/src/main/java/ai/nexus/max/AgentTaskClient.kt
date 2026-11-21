@@ -30,6 +30,7 @@ data class AgentTaskStep(val index: Int, val title: String, val action: String, 
 data class AgentApproval(val id: String, val taskId: String, val description: String, val status: String)
 data class AgentWorkspaceEntry(val name: String, val type: String, val bytes: Long?)
 data class AgentArtifact(val name: String, val bytes: Long)
+data class NexusMemory(val id: String, val title: String, val content: String, val category: String, val pinned: Boolean, val updatedAt: Double)
 
 class AgentTaskClient(
     baseUrl: String,
@@ -191,6 +192,41 @@ class AgentTaskClient(
         request("GET", listOf("v1", "tasks", taskId, "artifacts", "file"),
             query = mapOf("name" to name)).optString("content")
 
+    fun listMemories(query: String = "", limit: Int = 100): List<NexusMemory> {
+        val params = buildMap {
+            put("limit", limit.coerceIn(1, 100).toString())
+            if (query.isNotBlank()) put("q", query.take(200))
+        }
+        val items = request("GET", listOf("v1", "memories"), query = params)
+            .optJSONArray("memories") ?: JSONArray()
+        return (0 until items.length()).mapNotNull { index ->
+            val item = items.optJSONObject(index) ?: return@mapNotNull null
+            NexusMemory(item.optString("id"), item.optString("title"), item.optString("content"),
+                item.optString("category", "general"), item.optBoolean("pinned"),
+                item.optDouble("updated_at"))
+        }
+    }
+
+    fun createMemory(title: String, content: String, category: String = "general", pinned: Boolean = false): NexusMemory {
+        val obj = request("POST", listOf("v1", "memories"),
+            JSONObject().put("title", title.trim()).put("content", content.trim())
+                .put("category", category).put("pinned", pinned)).optJSONObject("memory")
+            ?: throw IOException("Memory API did not return a record")
+        return obj.toMemory()
+    }
+
+    fun updateMemory(memoryId: String, title: String, content: String, category: String, pinned: Boolean): NexusMemory {
+        val obj = request("PATCH", listOf("v1", "memories", memoryId),
+            JSONObject().put("title", title.trim()).put("content", content.trim())
+                .put("category", category).put("pinned", pinned)).optJSONObject("memory")
+            ?: throw IOException("Memory API did not return an updated record")
+        return obj.toMemory()
+    }
+
+    fun deleteMemory(memoryId: String) {
+        request("DELETE", listOf("v1", "memories", memoryId))
+    }
+
     fun listApprovals(): List<AgentApproval> {
         val approvals = request("GET", listOf("v1", "approvals")).optJSONArray("approvals") ?: JSONArray()
         return (0 until approvals.length()).mapNotNull { index ->
@@ -220,6 +256,8 @@ class AgentTaskClient(
             "GET" -> requestBuilder.get()
             "POST" -> requestBuilder.post((body ?: JSONObject()).toString().toRequestBody(jsonType))
             "PUT" -> requestBuilder.put((body ?: JSONObject()).toString().toRequestBody(jsonType))
+            "PATCH" -> requestBuilder.patch((body ?: JSONObject()).toString().toRequestBody(jsonType))
+            "DELETE" -> requestBuilder.delete()
             else -> throw IllegalArgumentException("Unsupported HTTP method")
         }
         http.newCall(requestBuilder.build()).execute().use { response ->
@@ -233,6 +271,11 @@ class AgentTaskClient(
             }
         }
     }
+
+    private fun JSONObject.toMemory(): NexusMemory = NexusMemory(
+        optString("id"), optString("title"), optString("content"),
+        optString("category", "general"), optBoolean("pinned"), optDouble("updated_at")
+    )
 
     private fun JSONArray?.toEventList(): List<AgentTaskEvent> {
         val array = this ?: return emptyList()
