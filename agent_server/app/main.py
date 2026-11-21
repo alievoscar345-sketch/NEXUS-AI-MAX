@@ -8,6 +8,7 @@ import hmac
 import re
 import ipaddress
 import json
+import math
 import os
 import socket
 import sqlite3
@@ -987,47 +988,68 @@ def _context_terms(value: str) -> set[str]:
             if word.casefold() not in stop_words}
 
 
-def _retrieve_relevant_skills(owner_id: str, query: str, limit: int = 5) -> list[dict[str, str]]:
-    terms = _context_terms(query)
-    if not terms:
+def _context_tokens(value: str) -> list[str]:
+    allowed = _context_terms(value)
+    return [token for token in re.findall(r"[\\w-]{3,}", value.casefold()) if token in allowed]
+
+
+def _bm25_rank_context(query: str, documents: list[dict[str, Any]],
+                       fields: list[tuple[str, float]], limit: int) -> list[tuple[float, dict[str, Any]]]:
+    """Rank a small personal-context corpus with field-weighted BM25."""
+    query_terms = _context_terms(query)
+    if not query_terms or not documents:
         return []
+    scores = [0.0] * len(documents)
+    k1, b = 1.5, 0.75
+    for field, weight in fields:
+        tokenized = [_context_tokens(str(doc.get(field, ""))) for doc in documents]
+        lengths = [len(tokens) for tokens in tokenized]
+        average_length = max(1.0, sum(lengths) / len(lengths))
+        document_frequency = {
+            term: sum(1 for tokens in tokenized if term in set(tokens))
+            for term in query_terms
+        }
+        for index, tokens in enumerate(tokenized):
+            frequencies: dict[str, int] = {}
+            for token in tokens:
+                if token in query_terms:
+                    frequencies[token] = frequencies.get(token, 0) + 1
+            for term, frequency in frequencies.items():
+                df = document_frequency[term]
+                inverse_frequency = math.log(1.0 + (len(documents) - df + 0.5) / (df + 0.5))
+                denominator = frequency + k1 * (1.0 - b + b * lengths[index] / average_length)
+                scores[index] += weight * inverse_frequency * frequency * (k1 + 1.0) / denominator
+    ranked = [(scores[index], doc) for index, doc in enumerate(documents) if scores[index] > 0]
+    ranked.sort(key=lambda item: (item[0], float(item[1].get("updated_at", 0))), reverse=True)
+    return ranked[:max(1, min(limit, len(ranked)))]
+
+
+def _retrieve_relevant_skills(owner_id: str, query: str, limit: int = 5) -> list[dict[str, str]]:
     with db() as c:
         rows = c.execute("""SELECT name,description,instructions,category,updated_at FROM skills
             WHERE owner_id=? AND enabled=1 ORDER BY updated_at DESC LIMIT 100""", (owner_id,)).fetchall()
-    ranked = []
-    for row in rows:
-        name_terms = _context_terms(row["name"])
-        body_terms = _context_terms(row["description"] + " " + row["instructions"])
-        category_terms = _context_terms(row["category"])
-        score = 4 * len(terms & name_terms) + len(terms & body_terms) + 2 * len(terms & category_terms)
-        if score:
-            ranked.append((score, row["updated_at"], row))
-    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    documents = [dict(row) for row in rows]
+    ranked = _bm25_rank_context(query, documents,
+        [("name", 3.0), ("description", 1.2), ("category", 1.5), ("instructions", 0.7)], limit)
     return [{"name": row["name"], "description": row["description"],
              "category": row["category"], "instructions": row["instructions"]}
-            for _, _, row in ranked[:max(1, min(limit, 10))]]
+            for _, row in ranked]
+
 
 
 def _retrieve_relevant_task_episodes(owner_id: str, query: str, limit: int = 3) -> list[dict[str, Any]]:
     """Recall prior completed work as untrusted episodic context, never as proof of current success."""
-    terms = _context_terms(query)
-    if not terms:
-        return []
     with db() as c:
         rows = c.execute("""SELECT id,prompt,summary,updated_at FROM tasks
             WHERE owner_id=? AND status='completed' AND summary<>''
             ORDER BY updated_at DESC LIMIT 200""", (owner_id,)).fetchall()
-    ranked = []
-    for row in rows:
-        prompt_terms = _context_terms(row["prompt"])
-        summary_terms = _context_terms(row["summary"])
-        score = 2 * len(terms & prompt_terms) + len(terms & summary_terms)
-        if score:
-            ranked.append((score, row["updated_at"], row))
-    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    documents = [dict(row) for row in rows]
+    ranked = _bm25_rank_context(query, documents, [("prompt", 2.0), ("summary", 1.0)], limit)
     return [{"task_id": row["id"], "goal": row["prompt"][:800],
              "outcome": row["summary"][:1800], "completed_at": row["updated_at"]}
-            for _, _, row in ranked[:max(1, min(limit, 5))]]
+            for _, row in ranked]
+
+
 
 
 
@@ -1381,25 +1403,9 @@ def _memory_user_text(messages: list[dict[str, Any]]) -> str:
 
 def _retrieve_relevant_memories(owner_id: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     query = _memory_user_text(messages)
-    if not query:
-        return []
-    stop_words = {
-        "the", "and", "for", "with", "that", "this", "from", "have", "what", "when",
-        "как", "что", "это", "для", "или", "при", "мне", "меня", "мой", "моя", "мои",
-        "тебя", "твой", "твоя", "его", "её", "они", "она", "оно", "быть", "есть",
-        "про", "надо", "нужно", "можно", "пожалуйста", "сейчас", "тогда", "чтобы",
-    }
-    terms = {word.casefold() for word in re.findall(r"[\w-]{3,}", query) if word.casefold() not in stop_words}
-    if not terms:
-        return []
     memories = _list_memories(owner_id, "", 500)
-    ranked = []
-    for item in memories:
-        title_terms = set(re.findall(r"[\w-]{3,}", item["title"].casefold()))
-        content_terms = set(re.findall(r"[\w-]{3,}", item["content"].casefold()))
-        overlap = len(terms & content_terms) + 2 * len(terms & title_terms)
-        if overlap:
-            ranked.append((overlap + (0.5 if item["pinned"] else 0), item))
+    ranked = _bm25_rank_context(query, memories, [("title", 2.5), ("content", 1.0)], 30)
+    ranked = [(score + (0.2 if item["pinned"] else 0), item) for score, item in ranked]
     ranked.sort(key=lambda pair: (pair[0], pair[1]["updated_at"]), reverse=True)
     selected = []
     total_chars = 0
@@ -1417,6 +1423,8 @@ def _retrieve_relevant_memories(owner_id: str, messages: list[dict[str, Any]]) -
         for item in selected:
             item["last_accessed_at"] = now
     return selected
+
+
 
 
 @app.get("/v1/memories", dependencies=[Depends(auth)])
