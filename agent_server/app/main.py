@@ -1027,6 +1027,8 @@ def _restore_checkpoint_project_files(tid: str, project_manifest_json: str) -> i
         task = c.execute("SELECT owner_id,project_id FROM tasks WHERE id=?", (tid,)).fetchone()
         if not task:
             raise ValueError("Task disappeared while restoring project revisions")
+        if task["project_id"] is None:
+            return 0
         if task["project_id"] != project_id:
             raise ValueError("Task project association changed since the checkpoint")
         project = c.execute("SELECT id FROM projects WHERE id=? AND owner_id=?",
