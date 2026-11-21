@@ -2500,8 +2500,13 @@ async def _github_build_android(tid: str, integration: dict[str, str],
     repo_path = quote(integration["repo_full_name"], safe="/")
     workflow = "build-android.yml"
     workflow_endpoint = f"/repos/{repo_path}/actions/workflows/{workflow}"
-    task_run_label = "NEXUS-" + tid
     await run_db(_assert_task_lease_for_github_write, tid)
+    branch_ref = await _github_api(token, "GET",
+        f"/repos/{repo_path}/git/ref/heads/{quote(selected_branch, safe='/')}")
+    head_sha = str((branch_ref or {}).get("object", {}).get("sha", ""))
+    if not head_sha:
+        raise RuntimeError("Android build branch did not return its current commit SHA")
+    task_run_label = "NEXUS-" + tid + "-" + head_sha[:12]
     runs = await _github_api(token, "GET",
         workflow_endpoint + "/runs?branch=" + quote(selected_branch, safe="") +
         "&event=workflow_dispatch&per_page=100")
