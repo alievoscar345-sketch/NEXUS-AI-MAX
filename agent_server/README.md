@@ -70,6 +70,15 @@ The Android app currently extracts text locally from TXT, MD, CSV, JSON, XML, PD
 
 The chat gateway does not yet proxy provider-specific web-search or reasoning tools. Those remain in the direct-provider mode until compatible server-side tool adapters are implemented.
 
+## Personal memory
+
+The memory store is owner-scoped and supports creating, editing, pinning, searching, and deleting user-approved records. Relevant records are retrieved for later chats and inserted as untrusted context, so current user instructions take priority. Retrieval is currently lexical and title-weighted; it is not embedding-based semantic search.
+
+- `GET /v1/memories`, `POST /v1/memories`, `PATCH /v1/memories/{id}`, and `DELETE /v1/memories/{id}` manage saved records.
+- `POST /v1/memories/suggest` analyzes user-authored messages from the current chat and proposes durable preferences, goals, facts, project context, or instructions.
+- Suggestions are drafts only. NEXUS does not save them until the user explicitly accepts each one in the Android memory manager.
+- The extractor is instructed to exclude credentials and sensitive personal categories; users should still review each proposed item before saving.
+
 ## Scheduled automations
 
 The backend now stores owner-scoped automations and dispatches due schedules into the same durable task queue used by the autonomous agent. Supported schedules are one-time timestamps, daily local times, selected weekdays, and recurring intervals (5 minutes to 7 days). Daily and weekly schedules use an IANA time-zone identifier, so their wall-clock time follows daylight-saving changes. The scheduler runs inside the single backend worker; the service must remain online for a scheduled run to be dispatched. Missed runs are dispatched once after the service returns rather than replayed repeatedly.
