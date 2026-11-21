@@ -1492,6 +1492,70 @@ def _skill_dict(row: sqlite3.Row) -> dict[str, Any]:
             "updated_at": row["updated_at"]}
 
 
+def _project_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {"id": row["id"], "name": row["name"], "description": row["description"],
+            "context": row["context"], "status": row["status"],
+            "created_at": row["created_at"], "updated_at": row["updated_at"]}
+
+
+@app.get("/v1/projects", dependencies=[Depends(auth)])
+def list_projects(owner_id: str = Depends(auth)):
+    with db() as c:
+        rows = c.execute("""SELECT p.*,
+            (SELECT COUNT(*) FROM tasks t WHERE t.project_id=p.id AND t.owner_id=p.owner_id) AS task_count
+            FROM projects p WHERE p.owner_id=? ORDER BY CASE p.status WHEN 'active' THEN 0 ELSE 1 END,p.updated_at DESC""",
+            (owner_id,)).fetchall()
+    return {"projects": [{**_project_dict(row), "task_count": row["task_count"]} for row in rows]}
+
+
+@app.post("/v1/projects", dependencies=[Depends(auth)])
+def create_project(body: ProjectInput, owner_id: str = Depends(auth)):
+    now = time.time()
+    project_id = str(uuid.uuid4())
+    with db() as c:
+        count = c.execute("SELECT COUNT(*) AS n FROM projects WHERE owner_id=?", (owner_id,)).fetchone()["n"]
+        if count >= 100:
+            raise HTTPException(409, "Project limit reached (100 projects)")
+        c.execute("""INSERT INTO projects(id,owner_id,name,description,context,status,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?)""",
+            (project_id, owner_id, body.name.strip(), body.description.strip(), body.context.strip(),
+             body.status, now, now))
+        row = c.execute("SELECT * FROM projects WHERE id=? AND owner_id=?", (project_id, owner_id)).fetchone()
+    return {"project": _project_dict(row)}
+
+
+@app.patch("/v1/projects/{project_id}", dependencies=[Depends(auth)])
+def update_project(project_id: str, body: ProjectUpdateInput, owner_id: str = Depends(auth)):
+    changes = body.model_dump(exclude_unset=True, exclude_none=True)
+    if not changes:
+        raise HTTPException(422, "At least one project field must be supplied")
+    with db() as c:
+        row = c.execute("SELECT * FROM projects WHERE id=? AND owner_id=?", (project_id, owner_id)).fetchone()
+        if not row:
+            raise HTTPException(404, "Project not found")
+        values = {key: changes.get(key, row[key]) for key in ("name", "description", "context", "status")}
+        if not str(values["name"]).strip():
+            raise HTTPException(422, "Project name cannot be blank")
+        now = time.time()
+        c.execute("""UPDATE projects SET name=?,description=?,context=?,status=?,updated_at=?
+            WHERE id=? AND owner_id=?""",
+            (str(values["name"]).strip(), str(values["description"]).strip(),
+             str(values["context"]).strip(), values["status"], now, project_id, owner_id))
+        updated = c.execute("SELECT * FROM projects WHERE id=? AND owner_id=?", (project_id, owner_id)).fetchone()
+    return {"project": _project_dict(updated)}
+
+
+@app.delete("/v1/projects/{project_id}", dependencies=[Depends(auth)])
+def delete_project(project_id: str, owner_id: str = Depends(auth)):
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        changed = c.execute("DELETE FROM projects WHERE id=? AND owner_id=?", (project_id, owner_id)).rowcount
+        if not changed:
+            raise HTTPException(404, "Project not found")
+        c.execute("UPDATE tasks SET project_id=NULL WHERE project_id=? AND owner_id=?", (project_id, owner_id))
+    return {"id": project_id, "status": "deleted", "tasks_preserved": True}
+
+
 @app.get("/v1/skills", dependencies=[Depends(auth)])
 def list_skills(owner_id: str = Depends(auth)):
     with db() as c:
