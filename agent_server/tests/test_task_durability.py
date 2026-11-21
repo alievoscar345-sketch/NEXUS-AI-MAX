@@ -461,8 +461,8 @@ class DurableTaskTests(unittest.TestCase):
         now = time.time()
         with main.db() as conn:
             conn.execute(
-                "INSERT INTO tasks(id,prompt,status,created_at,updated_at) VALUES(?,?,?,?,?)",
-                ("task-approval", "send a message", "running", now, now),
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) VALUES(?,?,?,?,?,?,?)",
+                ("task-approval", "send a message", "running", now, now, main.WORKER_ID, now + 600),
             )
         step = {"title": "Prepare message", "action": "draft_external_action",
                 "input": {"description": "Send approved message"}}
@@ -474,6 +474,42 @@ class DurableTaskTests(unittest.TestCase):
                                  ("task-approval",)).fetchone()["n"]
         self.assertEqual(count, 1)
 
+
+    def test_stale_worker_cannot_create_approval(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) VALUES(?,?,?,?,?,?,?)",
+                ("task-stale-approval", "draft", "running", now, now, "new-worker", now + 600),
+            )
+        step = {"title": "Draft", "action": "draft_external_action",
+                "input": {"description": "Do something"}}
+        with self.assertRaisesRegex(RuntimeError, "lease lost"):
+            asyncio.run(main.run_step(step, "task-stale-approval", "stale-approval-key"))
+        with main.db() as conn:
+            count = conn.execute("SELECT COUNT(*) AS n FROM approvals WHERE task_id=?",
+                                 ("task-stale-approval",)).fetchone()["n"]
+            task = conn.execute("SELECT status,lease_owner FROM tasks WHERE id=?",
+                                ("task-stale-approval",)).fetchone()
+        self.assertEqual(count, 0)
+        self.assertEqual(task["status"], "running")
+        self.assertEqual(task["lease_owner"], "new-worker")
+
+    def test_stale_worker_cannot_write_artifact(self):
+        now = time.time()
+        workspace = Path(self.temp.name) / "workspace"
+        workspace.mkdir()
+        with patch.object(main, "WORKSPACE", workspace):
+            with main.db() as conn:
+                conn.execute(
+                    "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) VALUES(?,?,?,?,?,?,?)",
+                    ("task-stale-artifact", "save", "running", now, now, "new-worker", now + 600),
+                )
+            step = {"title": "Save", "action": "save_artifact",
+                    "input": {"filename": "report.md", "content": "late write"}}
+            with self.assertRaisesRegex(RuntimeError, "lease lost"):
+                asyncio.run(main.run_step(step, "task-stale-artifact", "stale-artifact-key"))
+            self.assertFalse((workspace / "task-stale-artifact-report.md").exists())
 
     def test_run_db_executes_in_worker_thread(self):
         loop_thread = threading.get_ident()
@@ -551,8 +587,8 @@ class DurableTaskTests(unittest.TestCase):
         now = time.time()
         with main.db() as conn:
             conn.execute(
-                "INSERT INTO tasks(id,prompt,status,created_at,updated_at) VALUES(?,?,?,?,?)",
-                ("task-approval-thread", "draft a message", "running", now, now),
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) VALUES(?,?,?,?,?,?,?)",
+                ("task-approval-thread", "draft a message", "running", now, now, main.WORKER_ID, now + 600),
             )
         loop_thread = threading.get_ident()
         observed = []

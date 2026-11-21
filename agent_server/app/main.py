@@ -321,18 +321,50 @@ def _persist_plan(tid: str, steps: list[Any], max_attempts: int) -> bool:
         return bool(changed)
 
 
-def _create_approval(tid: str, description: str, idempotency_key: str) -> str:
+def _create_approval(tid: str, description: str, idempotency_key: str) -> str | None:
+    now = time.time()
     approval_id = str(uuid.uuid5(uuid.NAMESPACE_URL, idempotency_key))
     with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        owned = c.execute("""SELECT 1 FROM tasks WHERE id=? AND status='running'
+            AND cancel_requested=0 AND lease_owner=? AND lease_expires_at>?""",
+            (tid, WORKER_ID, now)).fetchone()
+        if not owned:
+            return None
         c.execute("""INSERT OR IGNORE INTO approvals(id,task_id,description,status,created_at,idempotency_key)
                      VALUES(?,?,?,'pending',?,?)""",
-                  (approval_id, tid, description, time.time(), idempotency_key))
-        approval = c.execute("SELECT id,status FROM approvals WHERE idempotency_key=?",
+                  (approval_id, tid, description, now, idempotency_key))
+        approval = c.execute("SELECT id FROM approvals WHERE idempotency_key=?",
                              (idempotency_key,)).fetchone()
-        c.execute("UPDATE tasks SET status='waiting_for_approval',updated_at=? WHERE id=?",
-                  (time.time(), tid))
-    event(tid, "approval_required", description)
-    return approval["id"]
+        if not approval:
+            raise RuntimeError("Approval record could not be created")
+        c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                  (tid, now, "approval_required", description[:2000]))
+        c.execute("UPDATE tasks SET updated_at=? WHERE id=?", (now, tid))
+        return approval["id"]
+
+
+def _save_artifact(tid: str, filename: str, content: str) -> str | None:
+    target = (WORKSPACE / (tid + "-" + filename)).resolve()
+    if target.parent != WORKSPACE:
+        raise ValueError("Invalid artifact path")
+    temporary = target.with_name(target.name + ".tmp-" + uuid.uuid4().hex)
+    now = time.time()
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        changed = c.execute("""UPDATE tasks SET lease_expires_at=?,updated_at=?
+            WHERE id=? AND status='running' AND cancel_requested=0
+            AND lease_owner=? AND lease_expires_at>?""",
+            (now + LEASE_SECONDS, now, tid, WORKER_ID, now)).rowcount
+        if not changed:
+            return None
+        try:
+            temporary.write_text(content[:100000], encoding="utf-8")
+            os.replace(temporary, target)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+    return target.name
 
 
 async def run_step(step: dict[str, Any], tid: str, idempotency_key: str):
@@ -361,14 +393,15 @@ async def run_step(step: dict[str, Any], tid: str, idempotency_key: str):
         name = Path(str(args.get("filename", "result.md"))).name[:100]
         if not name or name in {".", ".."}:
             raise ValueError("Invalid filename")
-        target = (WORKSPACE / (tid + "-" + name)).resolve()
-        if target.parent != WORKSPACE:
-            raise ValueError("Invalid artifact path")
-        target.write_text(str(args.get("content", ""))[:100000], encoding="utf-8")
-        return {"title": title, "status": "completed", "artifact": target.name}
+        artifact = await run_db(_save_artifact, tid, name, str(args.get("content", "")))
+        if artifact is None:
+            raise RuntimeError("Worker lease lost before artifact persistence")
+        return {"title": title, "status": "completed", "artifact": artifact}
     if action == "draft_external_action":
         description = str(args.get("description", "External action requested"))[:1000]
         approval_id = await run_db(_create_approval, tid, description, idempotency_key)
+        if approval_id is None:
+            raise RuntimeError("Worker lease lost before approval creation")
         return {"title": title, "status": "awaiting_approval", "approval_id": approval_id,
                 "detail": "No external action was executed. A service-specific connector is required."}
     raise ValueError("Unsupported tool: " + action)
