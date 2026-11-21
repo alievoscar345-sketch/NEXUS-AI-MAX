@@ -839,6 +839,13 @@ def _workspace_list(tid: str, relative_path: str = ".") -> dict[str, Any]:
 
 
 
+def _task_has_checkpoint(tid: str) -> bool:
+    with db() as c:
+        return c.execute(
+            "SELECT 1 FROM task_checkpoints WHERE task_id=? LIMIT 1", (tid,)
+        ).fetchone() is not None
+
+
 def _checkpoint_archive_path(tid: str, sequence: int) -> Path:
     safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", tid)
     task_dir = CHECKPOINT_ROOT / safe_id
@@ -1634,6 +1641,10 @@ async def _process_task(tid: str):
     try:
         if row["project_id"]:
             await run_db(_materialize_project_files, tid, row["owner_id"], row["project_id"])
+        if not await run_db(_task_has_checkpoint, tid):
+            baseline = await run_db(_create_task_checkpoint, tid, "baseline_workspace")
+            if baseline is None:
+                return
         if not row["plan_json"] or row["plan_json"] == "[]":
             planning = await run_db(_set_task_planning, tid)
             if not planning:
