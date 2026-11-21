@@ -112,6 +112,31 @@ class DurableTaskTests(unittest.TestCase):
             count = conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"]
         self.assertEqual(count, 1)
 
+    def test_cancel_request_cannot_be_overwritten_by_task_completion(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id) VALUES(?,?,?,?,?,?)",
+                ("task-cancel-race", "cancel before completion", "running", now, now, "tenant-cancel"),
+            )
+
+        response = main.cancel_task("task-cancel-race", owner_id="tenant-cancel")
+        self.assertEqual(response["status"], "cancellation_requested")
+        completed = main._complete_task("task-cancel-race", "should not complete", "[]")
+        self.assertFalse(completed)
+        main._mark_task_cancelled("task-cancel-race")
+
+        with main.db() as conn:
+            task = conn.execute("SELECT status,cancel_requested FROM tasks WHERE id=?",
+                                ("task-cancel-race",)).fetchone()
+            event_count = conn.execute(
+                "SELECT COUNT(*) AS n FROM events WHERE task_id=? AND kind='cancel_requested'",
+                ("task-cancel-race",),
+            ).fetchone()["n"]
+        self.assertEqual(task["status"], "cancelled")
+        self.assertEqual(task["cancel_requested"], 1)
+        self.assertEqual(event_count, 1)
+
     def test_concurrent_approval_decisions_have_single_winner(self):
         now = time.time()
         with main.db() as conn:
