@@ -161,6 +161,34 @@ class AgentTaskClientTest {
         assertEquals("Bearer test-token", transport.lastRequest!!.header("Authorization"))
     }
 
+    @Test fun memoryCrudUsesAuthenticatedOwnerScopedApiContracts() {
+        transport.responseBody = """{"memories":[{"id":"m-1","title":"NEXUS","content":"Build the Android app","category":"project","pinned":true,"updated_at":12.5}]}"""
+        val listed = client.listMemories("NEXUS Android", 20).single()
+        assertEquals("m-1", listed.id)
+        assertTrue(listed.pinned)
+        assertEquals("NEXUS Android", transport.lastRequest!!.url.queryParameter("q"))
+        assertEquals("Bearer test-token", transport.lastRequest!!.header("Authorization"))
+
+        transport.responseBody = """{"memory":{"id":"m-2","title":"Goal","content":"Build NEXUS","category":"goal","pinned":false,"updated_at":13.0}}"""
+        val created = client.createMemory("Goal", "Build NEXUS", "goal")
+        assertEquals("m-2", created.id)
+        assertEquals("POST", transport.lastRequest!!.method)
+        val createBody = Buffer()
+        transport.lastRequest!!.body!!.writeTo(createBody)
+        assertEquals("Build NEXUS", org.json.JSONObject(createBody.readUtf8()).getString("content"))
+
+        transport.responseBody = """{"memory":{"id":"m-2","title":"Goal v2","content":"Build NEXUS MAX","category":"goal","pinned":true,"updated_at":14.0}}"""
+        val updated = client.updateMemory("m-2", "Goal v2", "Build NEXUS MAX", "goal", true)
+        assertEquals("Goal v2", updated.title)
+        assertEquals("PATCH", transport.lastRequest!!.method)
+        assertEquals("/v1/memories/m-2", transport.lastRequest!!.url.encodedPath)
+
+        transport.responseBody = """{"id":"m-2","status":"deleted"}"""
+        client.deleteMemory("m-2")
+        assertEquals("DELETE", transport.lastRequest!!.method)
+        assertEquals("/v1/memories/m-2", transport.lastRequest!!.url.encodedPath)
+    }
+
     @Test fun rejectsNonHttpsServer() {
         try {
             AgentTaskClient("http://example.com", "token")
