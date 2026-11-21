@@ -1,5 +1,5 @@
 name: Build NEXUS AI APK
-run-name: NEXUS-${{ inputs.nexus_task_id || github.run_id }}
+run-name: NEXUS-${{ github.event.inputs.nexus_task_id || github.run_id }}-${{ github.sha }}
 
 on:
   workflow_dispatch:
