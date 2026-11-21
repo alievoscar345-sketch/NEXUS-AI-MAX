@@ -982,7 +982,7 @@ def _context_terms(value: str) -> set[str]:
         "про", "надо", "нужно", "можно", "пожалуйста", "сейчас", "тогда", "чтобы",
         "you", "your", "are", "was", "were", "will", "would", "can", "could",
     }
-    return {word.casefold() for word in re.findall(r"[\\w-]{3,}", value)
+    return {word.casefold() for word in re.findall(r"[\w-]{3,}", value)
             if word.casefold() not in stop_words}
 
 
@@ -1848,7 +1848,7 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
         message.get("role") == "system" and "[NEXUS_MEMORY_CONTEXT]" in str(message.get("content", ""))
         for message in messages
     ):
-        memory_text = "\\n".join(
+        memory_text = "\n".join(
             f"- [{item['category']}] {item['title']}: {item['content']}"
             for item in memories
         )
@@ -1869,7 +1869,7 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
     if not has_skill_context:
         skills = await run_db(_retrieve_relevant_skills, owner_id, query_text)
         if skills:
-            skill_text = "\\n".join(
+            skill_text = "\n".join(
                 f"- {item['name']} ({item['category']}): {item['description']}\\n{item['instructions']}"
                 for item in skills
             )
@@ -1888,7 +1888,7 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
     if not has_episode_context:
         episodes = await run_db(_retrieve_relevant_task_episodes, owner_id, query_text)
         if episodes:
-            episode_text = "\\n".join(
+            episode_text = "\n".join(
                 f"- Previous goal: {item['goal']}\\nOutcome: {item['outcome']}"
                 for item in episodes
             )
