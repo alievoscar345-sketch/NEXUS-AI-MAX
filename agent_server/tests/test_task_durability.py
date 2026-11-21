@@ -153,6 +153,72 @@ class DurableTaskTests(unittest.TestCase):
             self.assertEqual(traversal.exception.status_code, 422)
 
 
+    def test_binary_artifact_publication_is_lease_fenced_and_downloadable(self):
+        now = time.time()
+        worker = main.WORKER_ID + ":artifact-publisher"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,owner_id,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                ("binary-artifact", "publish APK", "running", now, now, "owner-a", worker, now + 600),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        task_root = workspace / "binary-artifact"
+        task_root.mkdir(parents=True)
+        payload = b"\x00\x01NEXUS-APK\xff"
+        (task_root / "app-release.apk").write_bytes(payload)
+        token = main._LEASE_OWNER.set(worker)
+        try:
+            with patch.object(main, "WORKSPACE", workspace):
+                published = main._publish_workspace_artifact(
+                    "binary-artifact", "app-release.apk", ""
+                )
+                listing = main.list_task_artifacts("binary-artifact", owner_id="owner-a")
+                response = main.download_task_artifact(
+                    "binary-artifact", "app-release.apk", owner_id="owner-a"
+                )
+                self.assertEqual(published["bytes"], len(payload))
+                self.assertEqual(published["sha256"], __import__("hashlib").sha256(payload).hexdigest())
+                self.assertEqual(listing["artifacts"][0]["content_type"], "application/vnd.android.package-archive")
+                self.assertEqual(Path(response.path).read_bytes(), payload)
+                self.assertEqual(response.filename, "app-release.apk")
+        finally:
+            main._LEASE_OWNER.reset(token)
+
+    def test_binary_artifact_publication_rejects_traversal_and_symlinks(self):
+        workspace = Path(self.temp.name) / "workspace"
+        task_root = workspace / "artifact-security"
+        task_root.mkdir(parents=True)
+        outside = Path(self.temp.name) / "outside.apk"
+        outside.write_bytes(b"private")
+        (task_root / "escape.apk").symlink_to(outside)
+        with patch.object(main, "WORKSPACE", workspace):
+            with self.assertRaises(ValueError):
+                main._publish_workspace_artifact("artifact-security", "../outside.apk")
+            with self.assertRaises(ValueError):
+                main._publish_workspace_artifact("artifact-security", "escape.apk")
+
+    def test_binary_artifact_publication_rejects_stale_worker(self):
+        now = time.time()
+        worker = main.WORKER_ID + ":current"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("artifact-fence", "publish artifact", "running", now, now, worker, now + 600),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        root = workspace / "artifact-fence"
+        root.mkdir(parents=True)
+        (root / "report.bin").write_bytes(b"content")
+        stale = main._LEASE_OWNER.set(main.WORKER_ID + ":stale")
+        try:
+            with patch.object(main, "WORKSPACE", workspace):
+                self.assertIsNone(main._publish_workspace_artifact("artifact-fence", "report.bin"))
+                self.assertFalse((workspace / "artifact-fence-report.bin").exists())
+        finally:
+            main._LEASE_OWNER.reset(stale)
+
     def test_memory_crud_is_scoped_to_owner(self):
         created = main.create_memory(
             main.MemoryInput(title="Nutrition preference", content="Prefers evidence-based nutrition advice",
