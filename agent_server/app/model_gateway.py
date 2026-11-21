@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -90,11 +91,20 @@ def load_models(allow_empty: bool = False) -> list[ModelConfig]:
             if not isinstance(scores, dict):
                 scores = {}
             try:
-                normalized_scores = {str(k): max(0.0, min(100.0, float(v))) for k, v in scores.items()}
+                normalized_scores = {}
+                for key, value in scores.items():
+                    score = float(value)
+                    if not math.isfinite(score):
+                        raise ValueError("Benchmark scores must be finite numbers")
+                    normalized_scores[str(key)] = max(0.0, min(100.0, score))
                 cost = float(item["cost_per_million_tokens"]) if item.get("cost_per_million_tokens") is not None else None
                 latency = float(item["latency_ms"]) if item.get("latency_ms") is not None else None
-                if cost is not None and cost < 0 or latency is not None and latency < 0:
-                    raise ValueError("Cost and latency cannot be negative")
+                priority = int(item.get("priority", 100))
+                if (cost is not None and (not math.isfinite(cost) or cost < 0)
+                        or latency is not None and (not math.isfinite(latency) or latency < 0)):
+                    raise ValueError("Cost and latency must be finite non-negative numbers")
+                if not 0 <= priority <= 100000:
+                    raise ValueError("Priority must be between 0 and 100000")
             except (TypeError, ValueError) as exc:
                 raise ModelGatewayError("Invalid benchmark, cost, or latency metadata") from exc
             configs.append(ModelConfig(
@@ -102,7 +112,7 @@ def load_models(allow_empty: bool = False) -> list[ModelConfig]:
                 base_url=str(item.get("base_url", "")).rstrip("/"),
                 model=str(item.get("model", "")).strip(),
                 api_key=os.getenv(key_env, "") if key_env else "",
-                priority=int(item.get("priority", 100)),
+                priority=priority,
                 purposes=tuple(str(x) for x in purposes),
                 enabled=bool(item.get("enabled", True)),
                 capabilities=tuple(str(x) for x in capabilities),

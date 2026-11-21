@@ -71,6 +71,30 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             await gateway.complete("system", "user", "coding")
 
 
+    def test_rejects_non_finite_benchmark_and_cost_metadata(self):
+        cases = [
+            {"benchmark_scores": {"general": float("nan")}},
+            {"benchmark_scores": {"general": float("inf")}},
+            {"cost_per_million_tokens": float("inf")},
+            {"latency_ms": float("nan")},
+            {"priority": -1},
+            {"priority": 100001},
+        ]
+        for metadata in cases:
+            with self.subTest(metadata=metadata):
+                item = {
+                    "id": "invalid", "base_url": "https://provider.example/v1",
+                    "model": "model", "api_key_env": "NEXUS_TEST_KEY",
+                }
+                item.update(metadata)
+                with unittest.mock.patch.dict(
+                    os.environ,
+                    {"NEXUS_MODEL_PROVIDERS": json.dumps([item]), "NEXUS_TEST_KEY": "secret"},
+                ):
+                    with self.assertRaises(ModelGatewayError):
+                        from app.model_gateway import load_models
+                        load_models()
+
     async def test_selects_highest_benchmark_fit_for_task(self):
         calls = []
         def handler(request):
