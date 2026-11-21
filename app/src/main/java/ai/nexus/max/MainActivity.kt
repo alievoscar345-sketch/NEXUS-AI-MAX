@@ -21,7 +21,6 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.io.ByteArrayOutputStream
 import java.util.zip.ZipInputStream
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
@@ -1005,11 +1004,11 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         while (true) {
                             val count = input.read(buffer)
                             if (count < 0) break
-                            if (output.size() + count > 50 * 1024 * 1024) throw IOException("Файл превышает 50 МиБ.")
+                            if (output.size() + count > 50 * 1024 * 1024) throw java.io.IOException("Файл превышает 50 МиБ.")
                             output.write(buffer, 0, count)
                         }
                         output.toByteArray()
-                    } ?: throw IOException("Не удалось открыть выбранный файл.")
+                    } ?: throw java.io.IOException("Не удалось открыть выбранный файл.")
                 }
                 val mime = resolver.getType(uri) ?: "application/octet-stream"
                 val safeName = displayName.replace(Regex("[\\\\/\\\\\\\\]"), "_").take(180).ifBlank { "upload.bin" }
@@ -1033,7 +1032,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 val bytes = withContext(Dispatchers.IO) { agentTaskClient().downloadProjectBinaryFile(projectId, path) }
                 withContext(Dispatchers.IO) {
                     getApplication<Application>().contentResolver.openOutputStream(destination, "w")?.use { it.write(bytes) }
-                        ?: throw IOException("Не удалось сохранить файл на устройстве.")
+                        ?: throw java.io.IOException("Не удалось сохранить файл на устройстве.")
                 }
                 projectFilesMessage = "Файл $path сохранён на устройстве (${bytes.size} байт)."
             } catch (e: Exception) { projectFilesMessage = e.message ?: "Не удалось скачать файл." }
