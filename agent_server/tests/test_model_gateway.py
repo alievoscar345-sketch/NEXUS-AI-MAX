@@ -68,8 +68,8 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_chat_endpoint_returns_sse_when_stream_requested(self):
         provider_body = (
-            'data: {"choices":[{"index":0,"delta":{"content":"streamed"}}]}\\n\\n'
-            'data: [DONE]\\n\\n'
+            'data: {"choices":[{"index":0,"delta":{"content":"streamed"}}]}\n\n'
+            'data: [DONE]\n\n'
         )
         transport = httpx.MockTransport(
             lambda request: httpx.Response(200, text=provider_body,
