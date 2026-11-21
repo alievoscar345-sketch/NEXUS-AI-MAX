@@ -54,6 +54,8 @@ MAX_CHECKOUT_FILES = max(1, int(os.getenv("NEXUS_AGENT_MAX_CHECKOUT_FILES", "500
 MAX_GITHUB_ARTIFACT_ARCHIVE_BYTES = max(1, int(os.getenv("NEXUS_AGENT_MAX_GITHUB_ARTIFACT_ARCHIVE_BYTES", str(512 * 1024 * 1024))))
 RETRY_BASE_SECONDS = max(1, min(int(os.getenv("NEXUS_AGENT_RETRY_BASE_SECONDS", "10")), 300))
 LEASE_SECONDS = 300
+WORKER_CONCURRENCY = max(1, min(int(os.getenv("NEXUS_AGENT_WORKER_CONCURRENCY", "2")), 8))
+WORKER_POLL_SECONDS = max(0.25, min(float(os.getenv("NEXUS_AGENT_WORKER_POLL_SECONDS", "2")), 30.0))
 WORKER_ID = str(uuid.uuid4())
 _LEASE_OWNER = contextvars.ContextVar("nexus_lease_owner", default=WORKER_ID)
 _TASK_MODEL_SELECTION = contextvars.ContextVar("nexus_task_model_selection", default="auto")
@@ -1541,34 +1543,53 @@ async def _worker_heartbeat_loop() -> None:
         await asyncio.sleep(20)
 
 
+async def _run_claimed_task(tid: str, owner: str) -> None:
+    context_token = _LEASE_OWNER.set(owner)
+    try:
+        await process(tid)
+    finally:
+        _LEASE_OWNER.reset(context_token)
+
+
 async def worker():
     logger = logging.getLogger("nexus.worker")
     await run_db(_write_worker_heartbeat, "running")
     heartbeat_task = asyncio.create_task(_worker_heartbeat_loop())
-    logger.info("Durable worker heartbeat reporting enabled")
+    active: set[asyncio.Task] = set()
+    logger.info("Durable worker heartbeat reporting enabled; concurrency=%s", WORKER_CONCURRENCY)
     try:
         while True:
             try:
                 await run_db(_recover_expired_task_leases)
                 await run_db(_dispatch_due_automations)
+                finished = {job for job in active if job.done()}
+                for job in finished:
+                    active.discard(job)
+                    try:
+                        job.result()
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        logger.exception("Claimed task runner exited unexpectedly")
+                if len(active) >= WORKER_CONCURRENCY:
+                    await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
+                    continue
                 claimed = await run_db(_claim_task_with_lease)
                 if claimed:
                     tid, owner = claimed
-                    context_token = _LEASE_OWNER.set(owner)
-                    try:
-                        await process(tid)
-                    finally:
-                        _LEASE_OWNER.reset(context_token)
+                    active.add(asyncio.create_task(_run_claimed_task(tid, owner)))
                 else:
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(WORKER_POLL_SECONDS)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # Keep the durable worker alive through transient DB/provider/runtime faults.
-                # Any task left with an expired lease is recovered on the next poll.
                 logger.exception("Unexpected durable worker loop failure")
                 await asyncio.sleep(5)
     finally:
+        for job in active:
+            job.cancel()
+        if active:
+            await asyncio.gather(*active, return_exceptions=True)
         heartbeat_task.cancel()
         try:
             await heartbeat_task
