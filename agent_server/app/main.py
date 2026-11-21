@@ -935,8 +935,8 @@ def _create_task_checkpoint(tid: str, reason: str = "step_completed",
             "sha256": digest.hexdigest()}
 
 
-def _restore_latest_task_checkpoint(tid: str) -> dict[str, Any] | None:
-    """Verify and restore the newest immutable workspace + DB-state checkpoint."""
+def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True) -> dict[str, Any] | None:
+    """Verify and restore the newest workspace checkpoint, optionally restoring its DB state."""
     with db() as c:
         checkpoint = c.execute("""SELECT * FROM task_checkpoints
             WHERE task_id=? ORDER BY sequence DESC LIMIT 1""", (tid,)).fetchone()
@@ -999,6 +999,10 @@ def _restore_latest_task_checkpoint(tid: str) -> dict[str, Any] | None:
     finally:
         if staging.exists():
             shutil.rmtree(staging)
+
+    if not restore_state:
+        return {"sequence": int(checkpoint["sequence"]), "files": file_count,
+                "bytes": total_bytes, "workspace_only": True}
 
     snapshot_steps = json.loads(checkpoint["steps_json"])
     with db() as c:
@@ -1716,6 +1720,10 @@ async def _process_task(tid: str):
                                      json.dumps(result, ensure_ascii=False))
                 if not saved:
                     return
+                if status == "failed":
+                    previous = await run_db(_restore_latest_task_checkpoint, tid, False)
+                    if previous is None:
+                        raise RuntimeError("No safe checkpoint exists to roll back a failed step")
                 checkpoint = await run_db(
                     _create_task_checkpoint, tid, f"step_{status}", claimed["id"]
                 )
@@ -1735,6 +1743,13 @@ async def _process_task(tid: str):
                 recorded = await run_db(_record_step_failure, tid, claimed["id"], retry, next_at, str(exc)[:2000])
                 if not recorded:
                     return
+                try:
+                    previous = await run_db(_restore_latest_task_checkpoint, tid, False)
+                    if previous is None:
+                        raise RuntimeError("No safe checkpoint exists to roll back the interrupted step")
+                except Exception as restore_exc:
+                    await run_db(_stop_task_after_checkpoint_failure, tid, str(restore_exc))
+                    return
                 if await run_db(_task_cancelled, tid):
                     await run_db(_mark_task_cancelled, tid)
                     await run_db(_worker_event, tid, "cancelled", "Task cancellation acknowledged")
@@ -1751,6 +1766,20 @@ async def _process_task(tid: str):
         else:
             await run_db(_worker_event, tid, "task_retry" if retry else "error", str(exc)[:1000])
 
+
+
+def _stop_task_after_checkpoint_failure(tid: str, error: str) -> None:
+    now = time.time()
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        c.execute("""UPDATE tasks SET status='failed',error=?,lease_owner='',
+            lease_expires_at=NULL,next_attempt_at=NULL,updated_at=?
+            WHERE id=? AND status IN ('running','retry_wait','planning')""",
+            ("Checkpoint recovery failed; task stopped to avoid inconsistent workspace: "
+             + error[:1500], now, tid))
+        c.execute("INSERT INTO events(task_id,created_at,kind,message) VALUES(?,?,?,?)",
+                  (tid, now, "checkpoint_restore_failed",
+                   "Task stopped because its last safe workspace checkpoint could not be restored"))
 
 def recover_interrupted_tasks():
     """Single-worker SQLite recovery. Safe because supported actions are read-only or idempotent."""
