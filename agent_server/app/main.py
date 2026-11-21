@@ -368,123 +368,174 @@ def _task_cancelled(tid: str) -> bool:
     return not row or row["status"] == "cancelled" or bool(row["cancel_requested"])
 
 
-async def process(tid: str):
+
+def _get_task_row(tid: str):
     with db() as c:
-        row = c.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+        return c.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+
+
+def _set_task_planning(tid: str):
+    with db() as c:
+        c.execute("UPDATE tasks SET status='planning',updated_at=? WHERE id=? AND status!='cancelled'",
+                  (time.time(), tid))
+
+
+def _mark_task_cancelled(tid: str):
+    with db() as c:
+        c.execute("UPDATE tasks SET status='cancelled',lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
+                  (time.time(), tid))
+
+
+def _next_pending_step(tid: str, now: float):
+    with db() as c:
+        return c.execute("""SELECT * FROM task_steps WHERE task_id=?
+            AND status IN ('pending','retry_wait') AND (next_attempt_at IS NULL OR next_attempt_at<=?)
+            ORDER BY step_index LIMIT 1""", (tid, now)).fetchone()
+
+
+def _step_summary(tid: str):
+    with db() as c:
+        waiting = c.execute("SELECT COUNT(*) AS n FROM task_steps WHERE task_id=? AND status='waiting_for_approval'",
+                            (tid,)).fetchone()["n"]
+        unfinished = c.execute("SELECT COUNT(*) AS n FROM task_steps WHERE task_id=? AND status NOT IN ('completed','skipped')",
+                               (tid,)).fetchone()["n"]
+        results_rows = c.execute("SELECT result_json FROM task_steps WHERE task_id=? AND result_json!='' ORDER BY step_index",
+                                 (tid,)).fetchall()
+    return waiting, unfinished, results_rows
+
+
+def _set_task_waiting_for_approval(tid: str):
+    with db() as c:
+        c.execute("UPDATE tasks SET status='waiting_for_approval',lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
+                  (time.time(), tid))
+
+
+def _set_task_retry_wait(tid: str, next_at: float):
+    with db() as c:
+        c.execute("UPDATE tasks SET status='retry_wait',next_attempt_at=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
+                  (next_at, time.time(), tid))
+
+
+def _complete_task(tid: str, summary: str, results_json: str):
+    with db() as c:
+        c.execute("UPDATE tasks SET status='completed',summary=?,results_json=?,error='',next_attempt_at=NULL,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
+                  (summary[:12000], results_json, time.time(), tid))
+
+
+def _claim_step(step_id: str):
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        changed = c.execute("""UPDATE task_steps SET status='running',attempt_count=attempt_count+1,
+            error='',updated_at=? WHERE id=? AND status IN ('pending','retry_wait')""",
+            (time.time(), step_id)).rowcount
+        if not changed:
+            return None
+        return c.execute("SELECT * FROM task_steps WHERE id=?", (step_id,)).fetchone()
+
+
+def _save_step_result(tid: str, step_id: str, status: str, result_json: str):
+    with db() as c:
+        c.execute("UPDATE task_steps SET status=?,result_json=?,updated_at=? WHERE id=?",
+                  (status, result_json, time.time(), step_id))
+        rows = c.execute("SELECT result_json FROM task_steps WHERE task_id=? AND result_json!='' ORDER BY step_index",
+                         (tid,)).fetchall()
+        all_results = [json.loads(x["result_json"]) for x in rows]
+        c.execute("UPDATE tasks SET results_json=?,updated_at=? WHERE id=?",
+                  (json.dumps(all_results, ensure_ascii=False), time.time(), tid))
+
+
+def _record_step_failure(tid: str, step_id: str, retry: bool, next_at: float | None, error: str):
+    with db() as c:
+        c.execute("UPDATE task_steps SET status=?,error=?,next_attempt_at=?,updated_at=? WHERE id=?",
+                  ("retry_wait" if retry else "failed", error[:2000], next_at, time.time(), step_id))
+        if retry:
+            c.execute("UPDATE tasks SET status='retry_wait',next_attempt_at=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
+                      (next_at, time.time(), tid))
+        else:
+            c.execute("UPDATE tasks SET status='failed',error=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
+                      (error[:2000], time.time(), tid))
+
+
+def _record_task_failure(tid: str, exc: Exception, error: str) -> bool:
+    with db() as c:
+        current = c.execute("SELECT attempt_count,max_attempts FROM tasks WHERE id=?", (tid,)).fetchone()
+        retry = bool(current and _is_transient(exc) and current["attempt_count"] < current["max_attempts"])
+        next_at = time.time() + _retry_delay(current["attempt_count"]) if retry else None
+        c.execute("UPDATE tasks SET status=?,error=?,next_attempt_at=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND status!='cancelled'",
+                  ("retry_wait" if retry else "failed", error[:2000], next_at, time.time(), tid))
+    return retry
+
+
+async def process(tid: str):
+    row = await run_db(_get_task_row, tid)
     if not row:
         return
     started = time.monotonic()
     try:
         if not row["plan_json"] or row["plan_json"] == "[]":
-            with db() as c:
-                c.execute("UPDATE tasks SET status='planning',updated_at=? WHERE id=? AND status!='cancelled'",
-                          (time.time(), tid))
-            event(tid, "status", "Planning task")
+            await run_db(_set_task_planning, tid)
+            await run_db(event, tid, "status", "Planning task")
             plan = await llm_json(
                 'You are NEXUS Agent Planner. Return strict JSON only: {"summary":"...","steps":[{"title":"...","action":"web_search|fetch_url|save_artifact|draft_external_action","input":{}}]}. Use only listed actions. For publishing, messaging, purchases or account changes use draft_external_action. Never claim external actions succeeded.',
                 row["prompt"], purpose="planning", task_id=tid, owner_id=row["owner_id"])
             steps = plan.get("steps", [])
             if not isinstance(steps, list):
                 raise ValueError("Planner did not return steps")
-            _persist_plan(tid, steps[:min(MAX_STEPS, int(row['max_steps']), 8)], MAX_STEP_ATTEMPTS)
+            await run_db(_persist_plan, tid, steps[:min(MAX_STEPS, int(row['max_steps']), 8)], MAX_STEP_ATTEMPTS)
 
         while True:
-            if _task_cancelled(tid):
-                with db() as c:
-                    c.execute("UPDATE tasks SET status='cancelled',lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
-                              (time.time(), tid))
-                event(tid, "cancelled", "Task cancellation acknowledged")
+            if await run_db(_task_cancelled, tid):
+                await run_db(_mark_task_cancelled, tid)
+                await run_db(event, tid, "cancelled", "Task cancellation acknowledged")
                 return
             if time.monotonic() - started > MAX_SECONDS:
                 raise TimeoutError("Task time limit reached")
-            with db() as c:
-                step = c.execute("""SELECT * FROM task_steps WHERE task_id=?
-                    AND status IN ('pending','retry_wait') AND (next_attempt_at IS NULL OR next_attempt_at<=?)
-                    ORDER BY step_index LIMIT 1""", (tid, time.time())).fetchone()
+            step = await run_db(_next_pending_step, tid, time.time())
             if not step:
-                with db() as c:
-                    waiting = c.execute("SELECT COUNT(*) AS n FROM task_steps WHERE task_id=? AND status='waiting_for_approval'",
-                                         (tid,)).fetchone()["n"]
-                    unfinished = c.execute("SELECT COUNT(*) AS n FROM task_steps WHERE task_id=? AND status NOT IN ('completed','skipped')",
-                                            (tid,)).fetchone()["n"]
-                    results_rows = c.execute("SELECT result_json FROM task_steps WHERE task_id=? AND result_json!='' ORDER BY step_index",
-                                              (tid,)).fetchall()
+                waiting, unfinished, results_rows = await run_db(_step_summary, tid)
                 if waiting:
-                    with db() as c:
-                        c.execute("UPDATE tasks SET status='waiting_for_approval',lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
-                                  (time.time(), tid))
+                    await run_db(_set_task_waiting_for_approval, tid)
                     return
                 if unfinished:
-                    with db() as c:
-                        c.execute("UPDATE tasks SET status='retry_wait',next_attempt_at=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
-                                  (time.time() + RETRY_BASE_SECONDS, time.time(), tid))
+                    await run_db(_set_task_retry_wait, tid, time.time() + RETRY_BASE_SECONDS)
                     return
                 results = [json.loads(x["result_json"]) for x in results_rows]
                 final = await llm_json(
                     'Return strict JSON only: {"summary":"..."}. Summarize only supplied results. Explicitly identify blocked or unavailable actions; do not claim they succeeded.',
                     json.dumps({"goal": row["prompt"], "results": results}, ensure_ascii=False)[:30000],
                     purpose="evaluation", task_id=tid, owner_id=row["owner_id"])
-                with db() as c:
-                    c.execute("UPDATE tasks SET status='completed',summary=?,results_json=?,error='',next_attempt_at=NULL,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
-                              (str(final.get("summary", "Task finished"))[:12000],
-                               json.dumps(results, ensure_ascii=False), time.time(), tid))
-                event(tid, "completed", "Task completed")
+                await run_db(_complete_task, tid, str(final.get("summary", "Task finished")),
+                             json.dumps(results, ensure_ascii=False))
+                await run_db(event, tid, "completed", "Task completed")
                 return
 
-            now = time.time()
-            with db() as c:
-                c.execute("BEGIN IMMEDIATE")
-                changed = c.execute("""UPDATE task_steps SET status='running',attempt_count=attempt_count+1,
-                    error='',updated_at=? WHERE id=? AND status IN ('pending','retry_wait')""",
-                    (now, step["id"])).rowcount
-                if not changed:
-                    continue
-                claimed = c.execute("SELECT * FROM task_steps WHERE id=?", (step["id"],)).fetchone()
-            event(tid, "step_started", f"{claimed['step_index'] + 1}: {claimed['title']}")
+            claimed = await run_db(_claim_step, step["id"])
+            if not claimed:
+                continue
+            await run_db(event, tid, "step_started", f"{claimed['step_index'] + 1}: {claimed['title']}")
             try:
                 step_data = {"title": claimed["title"], "action": claimed["action"],
                              "input": json.loads(claimed["input_json"])}
                 result = await run_step(step_data, tid, claimed["idempotency_key"])
                 status = "waiting_for_approval" if result.get("status") == "awaiting_approval" else "completed"
-                with db() as c:
-                    c.execute("UPDATE task_steps SET status=?,result_json=?,updated_at=? WHERE id=?",
-                              (status, json.dumps(result, ensure_ascii=False), time.time(), claimed["id"]))
-                    rows = c.execute("SELECT result_json FROM task_steps WHERE task_id=? AND result_json!='' ORDER BY step_index",
-                                     (tid,)).fetchall()
-                    all_results = [json.loads(x["result_json"]) for x in rows]
-                    c.execute("UPDATE tasks SET results_json=?,updated_at=? WHERE id=?",
-                              (json.dumps(all_results, ensure_ascii=False), time.time(), tid))
-                event(tid, "step_finished", f"{claimed['step_index'] + 1}: {status}")
+                await run_db(_save_step_result, tid, claimed["id"], status,
+                             json.dumps(result, ensure_ascii=False))
+                await run_db(event, tid, "step_finished", f"{claimed['step_index'] + 1}: {status}")
                 if status == "waiting_for_approval":
-                    with db() as c:
-                        c.execute("UPDATE tasks SET status='waiting_for_approval',lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
-                                  (time.time(), tid))
+                    await run_db(_set_task_waiting_for_approval, tid)
                     return
             except Exception as exc:
                 attempts = claimed["attempt_count"]
                 retry = _is_transient(exc) and attempts < claimed["max_attempts"]
                 next_at = time.time() + _retry_delay(attempts) if retry else None
-                with db() as c:
-                    c.execute("UPDATE task_steps SET status=?,error=?,next_attempt_at=?,updated_at=? WHERE id=?",
-                              ("retry_wait" if retry else "failed", str(exc)[:2000], next_at, time.time(), claimed["id"]))
-                    if retry:
-                        c.execute("UPDATE tasks SET status='retry_wait',next_attempt_at=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
-                                  (next_at, time.time(), tid))
-                    else:
-                        c.execute("UPDATE tasks SET status='failed',error=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=?",
-                                  (str(exc)[:2000], time.time(), tid))
-                event(tid, "step_retry" if retry else "error", str(exc)[:1000])
+                await run_db(_record_step_failure, tid, claimed["id"], retry, next_at, str(exc)[:2000])
+                await run_db(event, tid, "step_retry" if retry else "error", str(exc)[:1000])
                 if retry:
                     return
                 return
     except Exception as exc:
-        with db() as c:
-            current = c.execute("SELECT attempt_count,max_attempts FROM tasks WHERE id=?", (tid,)).fetchone()
-            retry = bool(current and _is_transient(exc) and current["attempt_count"] < current["max_attempts"])
-            next_at = time.time() + _retry_delay(current["attempt_count"]) if retry else None
-            c.execute("UPDATE tasks SET status=?,error=?,next_attempt_at=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND status!='cancelled'",
-                      ("retry_wait" if retry else "failed", str(exc)[:2000], next_at, time.time(), tid))
-        event(tid, "task_retry" if retry else "error", str(exc)[:1000])
+        retry = await run_db(_record_task_failure, tid, exc, str(exc)[:2000])
+        await run_db(event, tid, "task_retry" if retry else "error", str(exc)[:1000])
 
 
 def recover_interrupted_tasks():

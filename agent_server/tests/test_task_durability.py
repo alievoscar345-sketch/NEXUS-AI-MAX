@@ -225,6 +225,47 @@ class DurableTaskTests(unittest.TestCase):
         self.assertNotEqual(observed["provider_thread"], loop_thread)
         self.assertNotEqual(observed["event_thread"], loop_thread)
 
+    def test_process_offloads_database_helpers_from_event_loop(self):
+        now = time.time()
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("task-thread-process", "finish an empty task", "queued", now, now),
+            )
+
+        loop_thread = threading.get_ident()
+        observed = []
+        helper_names = [
+            "_get_task_row", "_set_task_planning", "_persist_plan",
+            "_task_cancelled", "_next_pending_step", "_step_summary",
+            "_complete_task", "event",
+        ]
+        patches = []
+        for name in helper_names:
+            original = getattr(main, name)
+
+            def wrapped(*args, _original=original, _name=name, **kwargs):
+                observed.append((_name, threading.get_ident()))
+                return _original(*args, **kwargs)
+
+            patches.append(patch.object(main, name, side_effect=wrapped))
+
+        async def run():
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], \
+                 patch.object(main, "llm_json",
+                              new=AsyncMock(side_effect=[{"steps": []}, {"summary": "finished"}])):
+                await main.process("task-thread-process")
+
+        asyncio.run(run())
+        self.assertTrue(observed)
+        self.assertTrue({name for name, _ in observed}.issuperset(set(helper_names)))
+        self.assertTrue(all(thread_id != loop_thread for _, thread_id in observed))
+        with main.db() as conn:
+            task = conn.execute("SELECT status,summary FROM tasks WHERE id=?",
+                                ("task-thread-process",)).fetchone()
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["summary"], "finished")
+
     def test_db_context_commits_and_closes_connection(self):
         now = time.time()
         with main.db() as conn:
