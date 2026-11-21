@@ -572,7 +572,11 @@ def recover_interrupted_tasks():
     now = time.time()
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
-        rows = c.execute("SELECT id FROM tasks WHERE status IN ('planning','running')").fetchall()
+        # Preserve work that may still be owned by another live worker.
+        # Missing leases are legacy/interrupted work; future leases remain valid.
+        rows = c.execute("""SELECT id FROM tasks
+            WHERE status IN ('planning','running')
+            AND (lease_expires_at IS NULL OR lease_expires_at<=?)""", (now,)).fetchall()
         for row in rows:
             tid = row["id"]
             c.execute("""UPDATE task_steps SET status='retry_wait',next_attempt_at=?,updated_at=?,
