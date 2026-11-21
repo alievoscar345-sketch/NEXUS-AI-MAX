@@ -303,6 +303,83 @@ class DurableTaskTests(unittest.TestCase):
         finally:
             main._LEASE_OWNER.reset(lease)
 
+    def test_github_workspace_commit_creates_one_feature_branch_commit(self):
+        from unittest.mock import AsyncMock
+        now = time.time()
+        worker = main.WORKER_ID + ":workspace-commit"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("workspace-commit", "commit workspace", "running", now, now, worker, now + 600),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        task_root = workspace / "workspace-commit"
+        (task_root / "app" / "src").mkdir(parents=True)
+        (task_root / "app" / "src" / "Main.kt").write_text("package sample", encoding="utf-8")
+        (task_root / ".nexus-github-checkout.json").write_text("{}", encoding="utf-8")
+        token = main._LEASE_OWNER.set(worker)
+        try:
+            with patch.object(main, "WORKSPACE", workspace), \
+                 patch.object(main, "_github_api", new=AsyncMock(side_effect=[
+                     {"object": {"sha": "parent-sha"}},
+                     {"tree": {"sha": "base-tree"}},
+                     {"tree": [], "truncated": False},
+                     {"sha": "blob-sha"},
+                     {"sha": "new-tree"},
+                     {"sha": "new-commit", "html_url": "https://github.com/owner/repo/commit/new-commit"},
+                     {},
+                 ])) as github_api:
+                result = asyncio.run(main._github_commit_task_workspace(
+                    "workspace-commit",
+                    {"token": "ghp_test", "repo_full_name": "owner/repo"},
+                    "nexus-agent/task-workspace-commit",
+                    "NEXUS: implement source",
+                ))
+            self.assertEqual(result["files_committed"], 1)
+            self.assertEqual(result["commit_sha"], "new-commit")
+            self.assertEqual(github_api.await_count, 7)
+            self.assertEqual(github_api.await_args_list[-1].args[1], "PATCH")
+            self.assertEqual(github_api.await_args_list[-1].args[3]["force"], False)
+        finally:
+            main._LEASE_OWNER.reset(token)
+
+    def test_github_workspace_commit_does_not_update_branch_after_lease_loss(self):
+        from unittest.mock import AsyncMock
+        now = time.time()
+        current = main.WORKER_ID + ":workspace-current"
+        with main.db() as conn:
+            conn.execute(
+                "INSERT INTO tasks(id,prompt,status,created_at,updated_at,lease_owner,lease_expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("workspace-stale-commit", "stale workspace commit", "running", now, now, current, now + 600),
+            )
+        workspace = Path(self.temp.name) / "workspace"
+        task_root = workspace / "workspace-stale-commit"
+        task_root.mkdir(parents=True)
+        (task_root / "README.md").write_text("updated", encoding="utf-8")
+        stale = main._LEASE_OWNER.set(main.WORKER_ID + ":workspace-stale")
+        try:
+            with patch.object(main, "WORKSPACE", workspace), \
+                 patch.object(main, "_github_api", new=AsyncMock(side_effect=[
+                     {"object": {"sha": "parent-sha"}},
+                     {"tree": {"sha": "base-tree"}},
+                     {"tree": [], "truncated": False},
+                     {"sha": "blob-sha"},
+                     {"sha": "new-tree"},
+                     {"sha": "new-commit", "html_url": "https://github.com/owner/repo/commit/new-commit"},
+                 ])) as github_api:
+                with self.assertRaises(RuntimeError):
+                    asyncio.run(main._github_commit_task_workspace(
+                        "workspace-stale-commit",
+                        {"token": "ghp_test", "repo_full_name": "owner/repo"},
+                        "nexus-agent/task-workspace-stale-commit",
+                    ))
+                self.assertEqual(github_api.await_count, 6)
+                self.assertTrue(all(call.args[1] != "PATCH" for call in github_api.await_args_list))
+        finally:
+            main._LEASE_OWNER.reset(stale)
+
     def test_github_write_actions_reject_protected_branches(self):
         for branch_name in ("main", "master", "nexus-1.0-development", "feature/unsafe"):
             with self.subTest(branch=branch_name):
