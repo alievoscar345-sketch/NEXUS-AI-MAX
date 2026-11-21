@@ -1477,13 +1477,13 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         activeCall?.cancel()
     }
 
-    fun send(text: String, useWebSearch: Boolean = false, editLineIndex: Int? = null, useReasoning: Boolean = false) {
-        if (busy || (text.isBlank() && pendingAttachments.isEmpty())) return
+    fun send(text: String, useWebSearch: Boolean = false, editLineIndex: Int? = null, useReasoning: Boolean = false): Boolean {
+        if (busy || (text.isBlank() && pendingAttachments.isEmpty())) return false
         if (editLineIndex == null && pendingAttachments.isEmpty()) {
             val reminder = try { ReminderParser.parse(text) } catch (_: Exception) { null }
             if (reminder != null) {
                 createReminder(text, reminder)
-                return
+                return true
             }
         }
         val cfg = settings
@@ -1492,27 +1492,27 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         val useCloudGateway = agentServerConfigured && agentServerUrl.startsWith("https://") && !useWebSearch && !useReasoning
         if (!useCloudGateway && (activeKey.isBlank() || activeModel.isBlank())) {
             error = if (cfg.provider == "OpenRouter") "Открой настройки и введи OpenRouter API key, затем выбери модель." else "Открой настройки API и введи ключ."
-            return
+            return false
         }
-        if (!useCloudGateway && cfg.provider == "AnyModel" && cfg.baseUrl.isBlank()) { error = "Укажи Base URL провайдера."; return }
+        if (!useCloudGateway && cfg.provider == "AnyModel" && cfg.baseUrl.isBlank()) { error = "Укажи Base URL провайдера."; return false }
         if (useWebSearch && cfg.provider != "AnyModel") {
             error = "Встроенный веб-поиск в этой версии доступен только через AnyModel / Claude."
-            return
+            return false
         }
         val selectedOpenRouterCapabilities = openRouterModels.firstOrNull { it.id == activeModel }?.supportedParameters.orEmpty()
         if (useReasoning && (cfg.provider != "OpenRouter" || "reasoning" !in selectedOpenRouterCapabilities)) {
             error = "Эта модель или провайдер не подтвердили поддержку режима reasoning. Функция не была отправлена."
-            return
+            return false
         }
         if (activeChatId == null) createChat()
-        val chatId = activeChatId ?: return
-        val oldChat = chats.firstOrNull { it.id == chatId } ?: return
+        val chatId = activeChatId ?: return false
+        val oldChat = chats.firstOrNull { it.id == chatId } ?: return false
         val history: List<ChatLine>
         val newTitle: String
         if (editLineIndex != null) {
             if (editLineIndex !in oldChat.lines.indices || oldChat.lines[editLineIndex].role != "user") {
                 error = "Не удалось найти исходное сообщение для редактирования."
-                return
+                return false
             }
             val editedLine = oldChat.lines[editLineIndex].copy(content = text.trim())
             history = oldChat.lines.take(editLineIndex) + editedLine
@@ -1529,7 +1529,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             val selectedModel = openRouterModels.firstOrNull { it.id == activeModel }
             if (selectedModel == null || "image" !in selectedModel.inputModalities) {
                 error = "Выбранная модель OpenRouter не подтвердила входные изображения. Выбери модель с пометкой «vision» в каталоге или подключи NEXUS Agent Server."
-                return
+                return false
             }
         }
         if (editLineIndex == null) pendingAttachments = emptyList()
@@ -1682,6 +1682,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 busy = false
             }
         }
+        return true
     }
 
 
@@ -2477,7 +2478,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                             enabled = vm.busy || input.isNotBlank() || vm.pendingAttachments.isNotEmpty(),
                             onClick = {
                                 if (vm.busy) vm.cancelGeneration()
-                                else { vm.send(input, webSearchEnabled, useReasoning = reasoningEnabled); input = "" }
+                                else if (vm.send(input, webSearchEnabled, useReasoning = reasoningEnabled)) input = ""
                             },
                             modifier = Modifier.size(38.dp)
                                 .background(if (vm.busy) Color(0xFF7A2631) else if (input.isNotBlank() || vm.pendingAttachments.isNotEmpty()) ambientAccent else Color(0xFF3A292B), CircleShape)
@@ -3433,8 +3434,9 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     onClick = {
                         val index = targetIndex
                         val revisedText = editMessageValue
-                        editTargetIndex = null
-                        vm.send(revisedText, webSearchEnabled, index, reasoningEnabled)
+                        if (vm.send(revisedText, webSearchEnabled, index, reasoningEnabled)) {
+                            editTargetIndex = null
+                        }
                     }
                 ) { Text("Сохранить и отправить", color = ambientAccent) }
             },
