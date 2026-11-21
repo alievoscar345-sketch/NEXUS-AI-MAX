@@ -1929,7 +1929,7 @@ class DurableTaskTests(unittest.TestCase):
     def test_binary_project_file_restore_preserves_binary_metadata(self):
         project_id = self._create_test_project()
         main._write_project_file_bytes(
-            project_id, "tenant-project", "assets/data.bin", b"\\x00\\xff",
+            project_id, "tenant-project", "assets/data.bin", bytes([0, 255]),
             "Original binary", "image/png", True,
         )
         main._write_project_file_bytes(
@@ -1950,8 +1950,8 @@ class DurableTaskTests(unittest.TestCase):
                 "AND path=? AND revision=3",
                 (project_id, "assets/data.bin"),
             ).fetchone()
-        self.assertEqual(bytes(row["content"]), b"\\x00\\xff")
-        self.assertEqual(hashlib.sha256(b"\\x00\\xff").hexdigest(), row["sha256"])
+        self.assertEqual(bytes(row["content"]), bytes([0, 255]))
+        self.assertEqual(hashlib.sha256(bytes([0, 255])).hexdigest(), row["sha256"])
 
     def test_binary_project_file_write_is_owner_scoped_and_size_limited(self):
         project_id = self._create_test_project()
