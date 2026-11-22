@@ -3476,6 +3476,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                             )
                                             if (line.actualDisplayName.isNotBlank()) {
                                                 Text("Ответила модель: " + line.actualDisplayName +
+                                                    (if (line.actualModel.isNotBlank() && line.actualModel != line.actualDisplayName) " (" + line.actualModel + ")" else "") +
                                                     (if (line.actualProvider.isNotBlank()) " · " + line.actualProvider.removePrefix("user-") else ""),
                                                     color = Muted, fontSize = 9.sp, modifier = Modifier.padding(top = 5.dp))
                                             }
