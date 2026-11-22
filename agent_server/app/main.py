@@ -38,6 +38,7 @@ from pydantic import BaseModel, Field, SecretStr
 from .model_gateway import ModelConfig, ModelGateway, ModelGatewayError, load_models
 from .credentials import CredentialEncryptionError, decrypt_secret, encrypt_secret
 from .sandbox import SandboxUnavailable, execute as execute_sandbox
+from .context_manager import compact_messages, configured_context_window
 
 DB_PATH = Path(os.getenv("NEXUS_AGENT_DB", "./data/nexus-agent.db"))
 CHECKPOINT_ROOT = (DB_PATH.parent / "checkpoints").resolve()
@@ -361,7 +362,7 @@ class MemoryInput(BaseModel):
 
 
 class MemorySuggestionRequest(BaseModel):
-    messages: list[dict[str, Any]] = Field(min_length=1, max_length=40)
+    messages: list[dict[str, Any]] = Field(min_length=1, max_length=500)
 
 
 class MemoryUpdateInput(BaseModel):
@@ -3191,6 +3192,32 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
         selected_model_id = body.model_selection
         if not any(model.id == selected_model_id and model.enabled for model in models):
             raise HTTPException(422, "Selected model is not configured for this account")
+    if selected_model_id:
+        context_model = next(model for model in models if model.id == selected_model_id)
+        context_window = configured_context_window(context_model.id, context_model.model)
+    else:
+        # Auto-routing can select any eligible general-purpose provider. Use the
+        # smallest declared window so fallback/routing cannot exceed a provider's limit.
+        eligible_context_models = [
+            model for model in models
+            if model.enabled and "general" in model.purposes
+            and (not requires_vision or "vision" in model.capabilities)
+        ]
+        if not eligible_context_models:
+            eligible_context_models = [model for model in models if model.enabled and "general" in model.purposes]
+        context_window = min(
+            (configured_context_window(model.id, model.model) for model in eligible_context_models),
+            default=configured_context_window("default", ""),
+        )
+    try:
+        output_reserve = int(os.getenv("NEXUS_CONTEXT_OUTPUT_RESERVE_TOKENS", "4096"))
+    except ValueError:
+        output_reserve = 4096
+    try:
+        messages, context_stats = compact_messages(messages, context_window, output_reserve)
+    except ValueError as exc:
+        raise HTTPException(413, str(exc)) from exc
+
     gateway = ModelGateway(models=models)
     if body.stream:
         stream_iterator = gateway.stream_messages(messages, purpose="general", selected_model_id=selected_model_id)
@@ -3216,8 +3243,14 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
         return StreamingResponse(
             event_stream(),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
-                     "Connection": "keep-alive"},
+            headers={
+                "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+                "X-Nexus-Context-Window": str(context_stats["context_window_tokens"]),
+                "X-Nexus-Context-Used": str(context_stats["estimated_input_tokens"]),
+                "X-Nexus-Context-Compacted": "true" if context_stats["compacted"] else "false",
+                "X-Nexus-Context-Dropped": str(context_stats["dropped_messages"]),
+            },
         )
     try:
         result = await gateway.complete_messages(messages, purpose="general", selected_model_id=selected_model_id)
@@ -3234,6 +3267,7 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
                      "finish_reason": "stop"}],
         "usage": result.usage,
         "vision": requires_vision,
+        "context": context_stats,
     }
 
 
