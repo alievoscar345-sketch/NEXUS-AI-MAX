@@ -43,11 +43,33 @@ class ModelResult:
 
 
 TASK_KEYWORDS = {
-    "coding": ("code", "coding", "program", "debug", "bug", "реализац", "код", "программ", "ошибк", "разработ"),
-    "research": ("research", "sources", "citation", "paper", "study", "исслед", "источник", "научн", "стать", "найди информацию"),
-    "math": ("math", "calculate", "equation", "proof", "математ", "посчитай", "вычисл", "уравнен", "доказательств"),
-    "vision": ("image", "photo", "picture", "screenshot", "изображен", "фото", "картин", "скриншот"),
-    "writing": ("rewrite", "write", "draft", "редактир", "напиши", "перепиши", "составь текст"),
+    # Keep these intent markers broad enough for natural requests in both languages,
+    # but prefer domain-specific terms over generic verbs to limit false positives.
+    "coding": (
+        "code", "coding", "program", "debug", "bug", "refactor", "repository", "android",
+        "kotlin", "python", "typescript", "app", "application", "software", "build",
+        "реализац", "код", "программ", "ошибк", "разработ", "приложен", "сайт",
+        "андроид", "сборк", "отлад", "рефактор", "репозитор", "архитектур", "модул",
+    ),
+    "research": (
+        "research", "sources", "citation", "paper", "study", "literature review",
+        "investigate", "evidence", "исслед", "источник", "научн", "стать", "литератур",
+        "доказательств", "научные данные", "найди информацию", "изучи тему",
+    ),
+    "math": (
+        "math", "calculate", "equation", "proof", "statistics", "solve", "математ",
+        "посчитай", "вычисл", "уравнен", "доказательств", "рассчитай", "формул",
+        "статистик", "задачу по математике",
+    ),
+    "vision": (
+        "image", "photo", "picture", "screenshot", "изображен", "фото", "картин",
+        "скриншот", "снимок экрана",
+    ),
+    "writing": (
+        "rewrite", "write", "draft", "edit text", "translate", "translation",
+        "редактир", "напиши текст", "перепиши", "составь текст", "письмо",
+        "пост", "переведи", "перевод", "сочини",
+    ),
 }
 
 
