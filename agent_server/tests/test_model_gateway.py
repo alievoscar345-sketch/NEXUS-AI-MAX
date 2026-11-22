@@ -112,6 +112,11 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/event-stream", response.headers["content-type"])
         self.assertIn('"content":"streamed"', response.text)
+        # The Android client reads this metadata from SSE and renders the actual
+        # responding model below the assistant message.
+        self.assertIn('"provider_id":"test"', response.text)
+        self.assertIn('"display_name":"test-model"', response.text)
+        self.assertIn('"model":"test-model"', response.text)
         self.assertTrue(response.text.rstrip().endswith("data: [DONE]"))
 
     async def test_manual_chat_selection_is_strict_and_returns_named_model(self):
