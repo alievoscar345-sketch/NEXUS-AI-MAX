@@ -31,6 +31,7 @@ class ModelConfig:
     ranking_source: str = ""
     ranking_updated_at: str = ""
     display_name: str = ""
+    context_window_tokens: int | None = None
 
 
 @dataclass(frozen=True)
