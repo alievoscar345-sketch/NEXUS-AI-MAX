@@ -220,6 +220,8 @@ def init_db():
             c.execute("ALTER TABLE provider_credentials ADD COLUMN supports_vision INTEGER NOT NULL DEFAULT 0")
         if "display_name" not in _columns(c, "provider_credentials"):
             c.execute("ALTER TABLE provider_credentials ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+        if "specialties_json" not in _columns(c, "provider_credentials"):
+            c.execute("ALTER TABLE provider_credentials ADD COLUMN specialties_json TEXT NOT NULL DEFAULT '[]'")
         c.executescript("""
         CREATE TABLE IF NOT EXISTS projects(
             id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL,
@@ -430,6 +432,7 @@ class ProviderCredentialInput(BaseModel):
     model: str = Field(min_length=1, max_length=160)
     api_key: SecretStr | None = None
     supports_vision: bool = False
+    specialties: list[str] = Field(default_factory=list, max_length=6)
 
 
 class ChatCompletionInput(BaseModel):
@@ -466,7 +469,7 @@ def provider_models_for_owner(owner_id: str) -> list[ModelConfig]:
     models = load_models(allow_empty=True)
     with db() as c:
         rows = c.execute(
-            "SELECT provider_id,display_name,base_url,model,encrypted_api_key,supports_vision FROM provider_credentials WHERE owner_id=?",
+            "SELECT provider_id,display_name,base_url,model,encrypted_api_key,supports_vision,specialties_json FROM provider_credentials WHERE owner_id=?",
             (owner_id,),
         ).fetchall()
     for row in rows:
@@ -477,7 +480,10 @@ def provider_models_for_owner(owner_id: str) -> list[ModelConfig]:
         models.append(ModelConfig(
             id="user-" + row["provider_id"], base_url=row["base_url"], model=row["model"],
             api_key=key, priority=50, purposes=("general", "planning", "evaluation"),
-            capabilities=("vision",) if row["supports_vision"] else (),
+            capabilities=tuple(
+                (json.loads(row["specialties_json"] or "[]") if row["specialties_json"] else [])
+                + (["vision"] if row["supports_vision"] else [])
+            ),
             display_name=str(row["display_name"] or row["model"]),
         ))
     return models
@@ -3249,9 +3255,13 @@ async def list_available_models(owner_id: str = Depends(auth)):
 @app.get("/v1/providers", dependencies=[Depends(auth)])
 def list_providers(owner_id: str = Depends(auth)):
     with db() as c:
-        rows = c.execute("""SELECT provider_id,display_name,base_url,model,supports_vision,created_at,updated_at
+        rows = c.execute("""SELECT provider_id,display_name,base_url,model,supports_vision,specialties_json,created_at,updated_at
             FROM provider_credentials WHERE owner_id=? ORDER BY provider_id""", (owner_id,)).fetchall()
-    return {"providers": [{**dict(row), "supports_vision": bool(row["supports_vision"])} for row in rows]}
+    return {"providers": [{
+        **dict(row),
+        "supports_vision": bool(row["supports_vision"]),
+        "specialties": json.loads(row["specialties_json"] or "[]"),
+    } for row in rows]}
 
 
 @app.post("/v1/github/connect", dependencies=[Depends(auth)])
@@ -4001,6 +4011,10 @@ def save_provider(body: ProviderCredentialInput, owner_id: str = Depends(auth)):
             encrypted = encrypt_secret(provider_key)
         except CredentialEncryptionError as exc:
             raise HTTPException(503, "Credential encryption is not configured") from exc
+    allowed_specialties = {"coding", "research", "math", "writing", "general"}
+    specialties = sorted({str(item).strip().lower() for item in body.specialties if str(item).strip()})
+    if not set(specialties).issubset(allowed_specialties):
+        raise HTTPException(422, "Specialties must be coding, research, math, writing, or general")
     now = time.time()
     with db() as c:
         if encrypted is None:
@@ -4012,12 +4026,12 @@ def save_provider(body: ProviderCredentialInput, owner_id: str = Depends(auth)):
                 raise HTTPException(422, "An API key is required when adding a new provider")
             encrypted = bytes(existing["encrypted_api_key"])
         c.execute("""INSERT INTO provider_credentials(owner_id,provider_id,display_name,base_url,model,
-            encrypted_api_key,supports_vision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)
+            encrypted_api_key,supports_vision,specialties_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(owner_id,provider_id) DO UPDATE SET display_name=excluded.display_name,
             base_url=excluded.base_url, model=excluded.model,encrypted_api_key=excluded.encrypted_api_key,
-            supports_vision=excluded.supports_vision,updated_at=excluded.updated_at""",
+            supports_vision=excluded.supports_vision,specialties_json=excluded.specialties_json,updated_at=excluded.updated_at""",
             (owner_id, body.provider_id, body.display_name.strip() or body.model, base_url, body.model, encrypted,
-             1 if body.supports_vision else 0, now, now))
+             1 if body.supports_vision else 0, json.dumps(specialties), now, now))
     return {"provider_id": body.provider_id, "display_name": body.display_name.strip() or body.model,
             "status": "saved", "secret_returned": False}
 
