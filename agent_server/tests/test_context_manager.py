@@ -82,10 +82,17 @@ class ContextManagerTests(unittest.TestCase):
             m["content"] for m in compacted
             if "[NEXUS_CONTEXT_COMPACTION]" in str(m.get("content", ""))
         )
-        for expected in ["history-0", "history-4", "oversized-gap"]:
-            self.assertIn(expected, digest)
+        # The digest is deliberately bounded; it must start with the oldest
+        # dropped turns, while the full originals remain in the local archive.
+        self.assertIn("history-0", digest)
+        self.assertIn("history-1", digest)
+        self.assertNotIn("recent-19", digest)
         self.assertGreater(stats["dropped_messages"], 6)
         self.assertEqual(compacted[-1], messages[-1])
+        self.assertEqual(
+            [m["content"].split()[0] for m in compacted if m.get("role") == "user" and "recent-" in m.get("content", "")][-1],
+            "recent-19",
+        )
 
     def test_extractive_digest_preserves_start_and_end_of_long_turns(self):
         messages = [
