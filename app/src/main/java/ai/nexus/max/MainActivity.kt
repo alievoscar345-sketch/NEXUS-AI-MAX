@@ -4073,7 +4073,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         Text("ДОСТУПНЫЕ МОДЕЛИ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                         vm.remoteModels.forEach { remoteModel ->
                             Text(
-                                remoteModel.model + " · " +
+                                remoteModel.displayName + " · " + remoteModel.model + " · " +
                                     (if (remoteModel.source == "built_in") "встроенная" else "свой ключ") +
                                     (if ("vision" in remoteModel.capabilities) " · vision" else ""),
                                 color = MainText,
