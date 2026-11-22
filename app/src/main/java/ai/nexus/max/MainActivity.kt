@@ -1791,6 +1791,10 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             providerVaultMessage = "Заполни ID, название, Base URL и Model ID."
             return
         }
+        if (contextWindowTokens !in 4096..2_000_000) {
+            providerVaultMessage = "Контекстное окно должно быть от 4096 до 2000000 токенов."
+            return
+        }
         providerVaultBusy = true
         viewModelScope.launch {
             try {
