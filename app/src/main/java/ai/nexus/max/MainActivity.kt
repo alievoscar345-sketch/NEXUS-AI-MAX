@@ -563,11 +563,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     var projectFiles by mutableStateOf<List<NexusProjectFile>>(emptyList())
         private set
     var projectFileVersions by mutableStateOf<List<NexusProjectFile>>(emptyList())
-        private set
     var projectFilesBusy by mutableStateOf(false)
         private set
     var projectFilesMessage by mutableStateOf<String?>(null)
-        private set
     var projectFilePathDraft by mutableStateOf("")
     var projectFileContentDraft by mutableStateOf("")
     var selectedProjectFilePath by mutableStateOf<String?>(null)
@@ -4562,36 +4560,7 @@ private fun ChatProjectPickerDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
             }
         }
     }
-    pendingCheckpointRestore?.let { checkpoint ->
-        AlertDialog(
-            onDismissRequest = { if (!vm.agentCheckpointBusy) pendingCheckpointRestore = null },
-            title = { Text("Восстановить контрольную точку #${checkpoint.sequence}?") },
-            text = {
-                Text(
-                    (if (checkpoint.legacy)
-                        "Это старая контрольная точка: будет восстановлена рабочая папка и план, но версии файлов проекта и опубликованные результаты останутся без изменений. "
-                    else
-                        "Рабочая папка, версии файлов проекта, опубликованные результаты и план будут заменены состоянием выбранного снимка. ") +
-                        "Более поздние изменения будут потеряны. После восстановления задача перейдёт в состояние «приостановлена»."
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val taskId = selectedTask
-                        if (taskId != null) vm.restoreAgentCheckpoint(taskId, checkpoint)
-                        pendingCheckpointRestore = null
-                    },
-                    enabled = !vm.agentCheckpointBusy
-                ) { Text(if (vm.agentCheckpointBusy) "Восстановление…" else "Восстановить") }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingCheckpointRestore = null }, enabled = !vm.agentCheckpointBusy) {
-                    Text("Отмена")
-                }
-            }
-        )
-    }
+
 }
 
 @Composable
@@ -5540,5 +5509,35 @@ private fun AgentConsoleDialog(vm: NexusViewModel, onDismiss: () -> Unit) {
                 }
             }
         }
+    }
+    pendingCheckpointRestore?.let { checkpoint ->
+        AlertDialog(
+            onDismissRequest = { if (!vm.agentCheckpointBusy) pendingCheckpointRestore = null },
+            title = { Text("Восстановить контрольную точку #${checkpoint.sequence}?") },
+            text = {
+                Text(
+                    (if (checkpoint.legacy)
+                        "Это старая контрольная точка: будет восстановлена рабочая папка и план, но версии файлов проекта и опубликованные результаты останутся без изменений. "
+                    else
+                        "Рабочая папка, версии файлов проекта, опубликованные результаты и план будут заменены состоянием выбранного снимка. ") +
+                        "Более поздние изменения будут потеряны. После восстановления задача перейдёт в состояние «приостановлена»."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val taskId = selectedTask
+                        if (taskId != null) vm.restoreAgentCheckpoint(taskId, checkpoint)
+                        pendingCheckpointRestore = null
+                    },
+                    enabled = !vm.agentCheckpointBusy
+                ) { Text(if (vm.agentCheckpointBusy) "Восстановление…" else "Восстановить") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingCheckpointRestore = null }, enabled = !vm.agentCheckpointBusy) {
+                    Text("Отмена")
+                }
+            }
+        )
     }
 }
