@@ -178,7 +178,7 @@ def compact_messages(
             # Keep a contiguous suffix of the conversation. Skipping an oversized
             # recent turn and then retaining older turns would scramble chronology.
             dropped_reversed.append(message)
-            dropped_reversed.extend(remaining[:len(remaining) - len(kept_reversed) - len(dropped_reversed) - 1])
+            dropped_reversed.extend(reversed(remaining[:len(remaining) - len(kept_reversed) - len(dropped_reversed) - 1]))
             break
 
     dropped = list(reversed(dropped_reversed))
