@@ -47,7 +47,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             _ = [chunk async for chunk in gateway.stream_messages([{"role":"user","content":"hi"}])]
 
     async def test_stream_rejects_invalid_choice_index(self):
-        body = 'data: {"choices":[{"index":"bad","delta":{"content":"x"}}]}\n\n'
+        body = "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": "ok"}}]}) + "\\n\\n"
         gateway = ModelGateway([config()], transport=httpx.MockTransport(
             lambda request: httpx.Response(200, text=body)
         ))
