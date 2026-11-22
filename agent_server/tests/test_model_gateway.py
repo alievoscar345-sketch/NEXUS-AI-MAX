@@ -38,6 +38,32 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chunks[1]["choices"][0]["delta"]["content"], "hello")
         self.assertEqual(len(chunks), 2)
 
+    async def test_completion_enforces_context_output_reserve(self):
+        def handler(request):
+            payload = json.loads(request.content)
+            self.assertEqual(payload["max_tokens"], 77)
+            return httpx.Response(200, json={
+                "choices": [{"message": {"role": "assistant", "content": "bounded"}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 1},
+            })
+        gateway = ModelGateway([config()], transport=httpx.MockTransport(handler))
+        result = await gateway.complete_messages(
+            [{"role": "user", "content": "hi"}], max_tokens=77
+        )
+        self.assertEqual(result.content, "bounded")
+
+    async def test_stream_enforces_context_output_reserve(self):
+        body = "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": "ok"}}]}) + "\n\n"
+        def handler(request):
+            payload = json.loads(request.content)
+            self.assertEqual(payload["max_tokens"], 88)
+            return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+        gateway = ModelGateway([config()], transport=httpx.MockTransport(handler))
+        chunks = [chunk async for chunk in gateway.stream_messages(
+            [{"role": "user", "content": "hi"}], max_tokens=88
+        )]
+        self.assertEqual(chunks[0]["choices"][0]["delta"]["content"], "ok")
+
     async def test_stream_rejects_oversized_sse_event(self):
         body = "data: " + ("x" * 1_000_001) + "\n\n"
         gateway = ModelGateway([config()], transport=httpx.MockTransport(
