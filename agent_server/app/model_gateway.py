@@ -30,6 +30,7 @@ class ModelConfig:
     latency_ms: float | None = None
     ranking_source: str = ""
     ranking_updated_at: str = ""
+    display_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class ModelResult:
     provider_id: str
     model: str
     usage: dict[str, Any]
+    display_name: str = ""
 
 
 TASK_KEYWORDS = {
@@ -189,7 +191,8 @@ class ModelGateway:
         return eligible
 
     async def complete_messages(self, messages: list[dict[str, Any]],
-                                purpose: str = "general") -> ModelResult:
+                                purpose: str = "general",
+                                selected_model_id: str | None = None) -> ModelResult:
         text_parts: list[str] = []
         requires_vision = False
         for message in messages:
@@ -208,6 +211,10 @@ class ModelGateway:
         candidates = self._select(
             purpose, task_type, required_capability="vision" if requires_vision else None
         )
+        if selected_model_id:
+            candidates = [model for model in candidates if model.id == selected_model_id]
+            if not candidates:
+                raise ModelGatewayError("The manually selected model is unavailable or lacks the required capability")
         last_error: Exception | None = None
         for index, model in enumerate(candidates):
             try:
@@ -240,6 +247,7 @@ class ModelGateway:
                     provider_id=model.id,
                     model=model.model,
                     usage=usage if isinstance(usage, dict) else {},
+                    display_name=model.display_name or model.model,
                 )
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
                 last_error = exc
@@ -258,8 +266,9 @@ class ModelGateway:
             detail = f"provider returned HTTP {last_error.response.status_code}"
         raise ModelGatewayError(f"All eligible model providers failed ({detail})") from last_error
 
-    async def stream_messages(self, messages: list[dict[str, Any]], purpose: str = "general"):
-        """Yield OpenAI-compatible chunk payloads; retry providers only before output starts."""
+    async def stream_messages(self, messages: list[dict[str, Any]], purpose: str = "general",
+                              selected_model_id: str | None = None):
+        """Yield OpenAI-compatible chunks with actual provider metadata; manual selection is strict."""
         text_parts: list[str] = []
         requires_vision = False
         for message in messages:
@@ -274,6 +283,10 @@ class ModelGateway:
                         requires_vision = True
         task_type = "vision" if requires_vision else infer_task_type("\n".join(text_parts))
         candidates = self._select(purpose, task_type, "vision" if requires_vision else None)
+        if selected_model_id:
+            candidates = [model for model in candidates if model.id == selected_model_id]
+            if not candidates:
+                raise ModelGatewayError("The manually selected model is unavailable or lacks the required capability")
         stream_id = "nexus-" + __import__("uuid").uuid4().hex
         created = int(__import__("time").time())
         last_error: Exception | None = None
@@ -319,6 +332,7 @@ class ModelGateway:
                                     emitted = True
                                     return {"id": stream_id, "object": "chat.completion.chunk",
                                             "created": created, "model": model.model,
+                                            "provider_id": model.id, "display_name": model.display_name or model.model,
                                             "choices": [], "usage": usage}
                                 return None
                             choice = choices[0]
@@ -332,6 +346,7 @@ class ModelGateway:
                                 raise ModelGatewayError("Provider returned an invalid streaming choice index")
                             normalized = {"id": stream_id, "object": "chat.completion.chunk",
                                           "created": created, "model": model.model,
+                                            "provider_id": model.id, "display_name": model.display_name or model.model,
                                           "choices": [{"index": choice_index,
                                                        "delta": delta,
                                                        "finish_reason": choice.get("finish_reason")}]}
@@ -362,6 +377,7 @@ class ModelGateway:
                         if emitted:
                             yield {"id": stream_id, "object": "chat.completion.chunk",
                                    "created": created, "model": model.model,
+                                            "provider_id": model.id, "display_name": model.display_name or model.model,
                                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
                             return
                         raise ModelGatewayError("Provider ended the stream without completion data")
