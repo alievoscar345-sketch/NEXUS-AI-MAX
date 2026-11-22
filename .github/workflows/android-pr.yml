@@ -17,6 +17,9 @@ permissions:
 jobs:
   assemble-debug:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent_server
     steps:
       - uses: actions/checkout@v4
 
@@ -34,6 +37,7 @@ jobs:
       - uses: android-actions/setup-android@v4.0.2
 
       - name: Install Android SDK packages
+        working-directory: .
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
 
       - name: Set up Python
@@ -42,15 +46,21 @@ jobs:
           python-version: '3.12'
 
       - name: Run backend syntax checks and tests
+        env:
+          PYTHONPATH: .
+          NEXUS_AGENT_DB: /tmp/nexus-agent-test.db
+          NEXUS_AGENT_WORKSPACE: /tmp/nexus-agent-workspace
         run: |
-          python -m pip install -r agent_server/requirements.txt pytest
-          python -m compileall -q agent_server/app agent_server/tests
-          python -m pytest -q agent_server/tests
+          python -m pip install -r requirements.txt
+          python -m compileall -q app tests
+          python -m unittest discover -s tests -v
 
       - name: Run Android unit tests
+        working-directory: .
         run: gradle --no-daemon :app:testDebugUnitTest
 
       - name: Assemble debug APK
+        working-directory: .
         run: gradle --no-daemon :app:assembleDebug
 
       - name: Upload debug APK
