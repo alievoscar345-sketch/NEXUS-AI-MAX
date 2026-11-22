@@ -3989,14 +3989,6 @@ async def _github_task_action(tid: str, owner_id: str, action: str,
     raise ValueError("Unsupported GitHub action")
 
 
-@app.get("/v1/providers", dependencies=[Depends(auth)])
-def list_providers(owner_id: str = Depends(auth)):
-    with db() as c:
-        rows = c.execute("""SELECT provider_id,display_name,base_url,model,supports_vision,created_at,updated_at
-            FROM provider_credentials WHERE owner_id=? ORDER BY provider_id""", (owner_id,)).fetchall()
-    return {"providers": [{**dict(row), "supports_vision": bool(row["supports_vision"])} for row in rows]}
-
-
 @app.post("/v1/providers", dependencies=[Depends(auth)])
 def save_provider(body: ProviderCredentialInput, owner_id: str = Depends(auth)):
     base_url = validate_provider_base_url(body.base_url)
