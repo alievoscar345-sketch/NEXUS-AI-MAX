@@ -114,6 +114,49 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"content":"streamed"', response.text)
         self.assertTrue(response.text.rstrip().endswith("data: [DONE]"))
 
+    async def test_manual_chat_selection_is_strict_and_returns_named_model(self):
+        calls = []
+        def handler(request):
+            calls.append(json.loads(request.content)["model"])
+            return httpx.Response(200, json={"choices":[{"message":{"content":"selected"}}]})
+        selected = ModelConfig(
+            id="user-selected", base_url="https://provider.example/v1",
+            model="selected-model", api_key="key", display_name="Claude — анализ",
+        )
+        other = ModelConfig(
+            id="user-other", base_url="https://provider.example/v1",
+            model="other-model", api_key="key",
+        )
+        gateway = ModelGateway([selected, other], transport=httpx.MockTransport(handler))
+        result = await gateway.complete_messages(
+            [{"role":"user","content":"hello"}], selected_model_id="user-selected"
+        )
+        self.assertEqual(calls, ["selected-model"])
+        self.assertEqual(result.provider_id, "user-selected")
+        self.assertEqual(result.display_name, "Claude — анализ")
+
+    async def test_manual_chat_selection_does_not_fallback_when_missing(self):
+        gateway = ModelGateway([config("configured")])
+        with self.assertRaises(ModelGatewayError):
+            await gateway.complete_messages(
+                [{"role":"user","content":"hello"}], selected_model_id="user-missing"
+            )
+
+    async def test_stream_reports_actual_model_identity(self):
+        body = 'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}\\n\\n'
+        model = ModelConfig(
+            id="user-visible", base_url="https://provider.example/v1",
+            model="visible-model", api_key="key", display_name="Модель для кода",
+        )
+        gateway = ModelGateway([model], transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, text=body)
+        ))
+        chunks = [chunk async for chunk in gateway.stream_messages(
+            [{"role":"user","content":"hello"}]
+        )]
+        self.assertEqual(chunks[0]["provider_id"], "user-visible")
+        self.assertEqual(chunks[0]["display_name"], "Модель для кода")
+
     async def test_parses_json_completion(self):
         def handler(request):
             payload = {"choices":[{"message":{"content":'{"summary":"ok"}'}}],"usage":{"total_tokens":12}}
