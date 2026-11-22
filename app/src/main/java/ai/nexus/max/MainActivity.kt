@@ -599,7 +599,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         prefs.getString("chat_model_selection", "auto")?.takeIf { it.isNotBlank() } ?: "auto"
     )
         private set
-    fun setChatModelSelection(value: String) {
+    fun persistChatModelSelection(value: String) {
         val normalized = value.trim().ifBlank { "auto" }
         chatModelSelection = normalized
         prefs.edit().putString("chat_model_selection", normalized).apply()
@@ -1741,7 +1741,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 remoteModels = loaded
                 if (chatModelSelection != "auto" && loaded.none { it.providerId == chatModelSelection }) {
-                    setChatModelSelection("auto")
+                    persistChatModelSelection("auto")
                 }
             } catch (e: Exception) {
                 providerVaultMessage = e.message ?: "Не удалось загрузить каталог моделей."
@@ -3135,9 +3135,9 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                 Text(if (vm.chatModelSelection == "auto") "Модель: автоматически" else "Модель: " + (chosen?.displayName ?: vm.chatModelSelection), color = ambientAccent, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
                             }
                             DropdownMenu(expanded = chatModelMenuExpanded, onDismissRequest = { chatModelMenuExpanded = false }) {
-                                DropdownMenuItem(text = { Text("Автоматически · NEXUS") }, onClick = { vm.setChatModelSelection("auto"); chatModelMenuExpanded = false })
+                                DropdownMenuItem(text = { Text("Автоматически · NEXUS") }, onClick = { vm.persistChatModelSelection("auto"); chatModelMenuExpanded = false })
                                 vm.remoteModels.forEach { model ->
-                                    DropdownMenuItem(text = { Text(model.displayName + " · " + model.model) }, onClick = { vm.setChatModelSelection(model.providerId); chatModelMenuExpanded = false })
+                                    DropdownMenuItem(text = { Text(model.displayName + " · " + model.model) }, onClick = { vm.persistChatModelSelection(model.providerId); chatModelMenuExpanded = false })
                                 }
                             }
                         }
