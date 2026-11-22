@@ -48,6 +48,22 @@ class ContextManagerTests(unittest.TestCase):
         self.assertTrue(any("[NEXUS_CONTEXT_COMPACTION]" in str(m.get("content", "")) for m in compacted))
         self.assertLessEqual(estimate_messages_tokens(compacted), stats["input_budget_tokens"])
 
+    def test_compaction_keeps_only_contiguous_recent_suffix(self):
+        messages = [{"role": "system", "content": "System."}]
+        messages.extend(
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"old-{i}"}
+            for i in range(12)
+        )
+        messages.append({"role": "assistant", "content": "oversized recent turn " * 5000})
+        messages.append({"role": "user", "content": "latest"})
+        compacted, stats = compact_messages(messages, 4096, 1024)
+        self.assertTrue(stats["compacted"])
+        conversational = [m for m in compacted if m.get("role") in {"user", "assistant"}]
+        self.assertEqual(conversational, [messages[-1]])
+        digest = next(m["content"] for m in compacted if "[NEXUS_CONTEXT_COMPACTION]" in str(m.get("content", "")))
+        self.assertIn("old-0", digest)
+        self.assertIn("oversized recent turn", digest)
+
     def test_compaction_does_not_mutate_original_messages(self):
         messages = [
             {"role": "system", "content": "System."},
