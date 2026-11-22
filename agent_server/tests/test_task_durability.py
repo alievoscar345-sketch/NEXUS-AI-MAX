@@ -1773,7 +1773,7 @@ class DurableTaskTests(unittest.TestCase):
         self.assertTrue(observed)
         self.assertTrue(all(thread_id != loop_thread for _, thread_id in observed))
         with main.db() as conn:
-            task = conn.execute("SELECT status,summary FROM tasks WHERE id=?",
+            task = conn.execute("SELECT status,summary,error FROM tasks WHERE id=?",
                                 ("task-thread-process",)).fetchone()
         self.assertEqual(task["status"], "completed", task["error"])
         self.assertEqual(task["summary"], "finished")
