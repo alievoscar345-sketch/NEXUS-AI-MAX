@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from app.sandbox import (
@@ -40,7 +41,8 @@ class SandboxValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             image = "registry.example/nexus-runner:1@sha256:" + "a" * 64
-            argv = build_docker_argv(image, root, "/tmp/cid", ["python3", "-m", "pytest"], 1000, 1000)
+            with patch.dict("os.environ", {"NEXUS_AGENT_WORKSPACE": str(root)}):
+                argv = build_docker_argv(image, root, "/tmp/cid", ["python3", "-m", "pytest"], 1000, 1000)
             joined = " ".join(argv)
             self.assertIn("--network=none", joined)
             self.assertIn("--read-only", joined)
