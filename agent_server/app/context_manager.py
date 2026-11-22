@@ -175,7 +175,11 @@ def compact_messages(
             kept_reversed.append(message)
             used_history += cost
         else:
+            # Keep a contiguous suffix of the conversation. Skipping an oversized
+            # recent turn and then retaining older turns would scramble chronology.
             dropped_reversed.append(message)
+            dropped_reversed.extend(remaining[:len(remaining) - len(kept_reversed) - len(dropped_reversed) - 1])
+            break
 
     dropped = list(reversed(dropped_reversed))
     summary = _extractive_history_summary(dropped, summary_budget)
