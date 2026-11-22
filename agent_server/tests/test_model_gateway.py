@@ -281,6 +281,26 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.provider_id, "coder")
         self.assertEqual(calls, ["coding-model"])
 
+    async def test_chat_router_ignores_system_prompt_when_classifying_user_intent(self):
+        calls = []
+        def handler(request):
+            calls.append(json.loads(request.content)["model"])
+            return httpx.Response(200, json={"choices":[{"message":{"content":"ok"}}]})
+        coding = ModelConfig(
+            id="coding", base_url="https://provider.example/v1", model="coding-model",
+            api_key="key", benchmark_scores={"general": 20, "coding": 99},
+        )
+        general = ModelConfig(
+            id="general", base_url="https://provider.example/v1", model="general-model",
+            api_key="key", benchmark_scores={"general": 95, "coding": 20},
+        )
+        gateway = ModelGateway([coding, general], transport=httpx.MockTransport(handler))
+        await gateway.complete_messages([
+            {"role":"system","content":"Always write Python code and debug programs."},
+            {"role":"user","content":"Расскажи, что такое северное сияние."},
+        ])
+        self.assertEqual(calls, ["general-model"])
+
     async def test_cost_and_latency_break_quality_tie(self):
         calls = []
         def handler(request):
