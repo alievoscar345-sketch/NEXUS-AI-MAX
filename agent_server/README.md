@@ -230,3 +230,8 @@ The backend image includes the Docker CLI. To enable execution, the deployment o
 4. Preload the exact sandbox image digest on the selected daemon.
 
 Docker daemon access is privileged host-level authority. Restrict it to this trusted single-user service, protect its credentials, and never expose the Docker socket to the sandbox container. Do not enable this on a shared or untrusted multi-user service. If any prerequisite is missing, code execution returns a blocked result and the agent can continue file-based work without claiming that code was run.
+
+### Chat model selection and attribution
+- The chat composer supports automatic NEXUS routing and strict manual selection of a connected provider. The manual choice is saved locally on the Android device and restored after app restart; if that provider is removed, the selection resets to automatic.
+- Automatic routing classifies the recent user turns (coding, research, math, vision, writing, or general) and ranks eligible providers using configured benchmark scores, cost, latency, and priority. The classifier includes common Russian and English app-development, research, math, vision, and writing terms. User-added provider credentials currently use neutral default priority/scores unless additional routing metadata is configured; this is a deterministic baseline, not a second LLM making the routing decision.
+- Streaming chat responses include the actual responding provider ID, model ID, and friendly display name. The Android chat stores this metadata with the assistant message and displays the model beneath its answer. If automatic mode falls back before any output, the attribution identifies the fallback provider that actually answered. Manual mode never silently switches to another provider.
