@@ -2273,7 +2273,11 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         val imageAttachments = if (historyIndex >= requestHistory.size - 24) {
                             line.attachments.filter { it.mimeType.startsWith("image/") }
                         } else emptyList()
-                        val textAttachments = line.attachments.filter { it.textContent.isNotBlank() }
+                        val textAttachments = line.attachments.filter { it.textContent.isNotBlank() }.map { attachment ->
+                            if (historyIndex < requestHistory.size - 24 && attachment.textContent.length > 1500) {
+                                attachment.copy(textContent = attachment.textContent.take(1500) + "\n[Содержимое старого вложения сокращено в запросе; полный оригинал сохранён локально.]")
+                            } else attachment
+                        }
                         if (line.role == "user" && (imageAttachments.isNotEmpty() || textAttachments.isNotEmpty())) {
                             val parts = JSONArray()
                             val textPart = buildChatTextWithAttachments(line.content, textAttachments)
