@@ -76,15 +76,16 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             if len(calls) == 1:
                 raise httpx.ConnectError("selected provider offline", request=request)
             return httpx.Response(200, text='data: {"choices":[{"delta":{"content":"wrong"}}]}\\n\\n')
-        gateway = ModelGateway(
-            [config("selected"), config("other", priority=2)],
-            transport=httpx.MockTransport(handler),
-        )
+        selected = ModelConfig(id="selected", base_url="https://provider.example/v1",
+                                model="selected-model", api_key="key")
+        other = ModelConfig(id="other", base_url="https://provider.example/v1",
+                            model="other-model", api_key="key", priority=2)
+        gateway = ModelGateway([selected, other], transport=httpx.MockTransport(handler))
         with self.assertRaises(ModelGatewayError):
             _ = [chunk async for chunk in gateway.stream_messages(
                 [{"role": "user", "content": "hello"}], selected_model_id="selected"
             )]
-        self.assertEqual(calls, ["test-model"])
+        self.assertEqual(calls, ["selected-model"])
 
     async def test_stream_does_not_fallback_after_partial_output(self):
         calls = []
