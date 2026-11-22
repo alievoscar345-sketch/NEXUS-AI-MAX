@@ -362,7 +362,7 @@ class MemoryInput(BaseModel):
 
 
 class MemorySuggestionRequest(BaseModel):
-    messages: list[dict[str, Any]] = Field(min_length=1, max_length=500)
+    messages: list[dict[str, Any]] = Field(min_length=1, max_length=2000)
 
 
 class MemoryUpdateInput(BaseModel):
