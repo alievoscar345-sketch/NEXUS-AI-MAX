@@ -11,6 +11,11 @@ on:
       - 'gradle.properties'
       - '.github/workflows/android-pr.yml'
 
+# Avoid spending CI minutes on obsolete commits when a newer PR revision exists.
+concurrency:
+  group: nexus-pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
