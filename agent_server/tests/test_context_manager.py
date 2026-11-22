@@ -90,6 +90,14 @@ class ContextManagerTests(unittest.TestCase):
             self.assertEqual(configured_context_window("other", "model-b"), 131072)
             self.assertEqual(configured_context_window("other", "other"), 32768)
 
+    def test_provider_context_window_overrides_environment_default(self):
+        with patch.dict(os.environ, {
+            "NEXUS_MODEL_CONTEXT_WINDOWS": '{"provider-a":65536}',
+            "NEXUS_DEFAULT_CONTEXT_WINDOW_TOKENS": "32768",
+        }, clear=False):
+            self.assertEqual(configured_context_window("provider-a", "other", 131072), 65536)
+            self.assertEqual(configured_context_window("provider-b", "other", 131072), 131072)
+
     def test_invalid_context_window_config_falls_back(self):
         with patch.dict(os.environ, {
             "NEXUS_MODEL_CONTEXT_WINDOWS": "not-json",
