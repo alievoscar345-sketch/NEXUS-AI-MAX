@@ -3596,10 +3596,15 @@ def _read_github_actions_log_archive(archive_path: Path, token: str) -> list[dic
             with archive.open(info, "r") as source:
                 raw = source.read(2 * 1024 * 1024 + 1)
             decoded = raw[:2 * 1024 * 1024].decode("utf-8", errors="replace")
-            decoded = decoded.replace(token, "[REDACTED_GITHUB_TOKEN]")
+            had_secret = bool(token and token in decoded) or bool(
+                re.search(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})", decoded)
+            )
+            decoded = decoded.replace(token, "[REDACTED_GITHUB_TOKEN]") if token else decoded
             decoded = re.sub(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})",
                              "[REDACTED_GITHUB_TOKEN]", decoded)
             excerpt = decoded[-12000:]
+            if had_secret and "[REDACTED_GITHUB_TOKEN]" not in excerpt:
+                excerpt = "[REDACTED_GITHUB_TOKEN]\n" + excerpt[:11970]
             if total_text + len(excerpt) > 48000:
                 excerpt = excerpt[:max(0, 48000 - total_text)]
             if excerpt:
