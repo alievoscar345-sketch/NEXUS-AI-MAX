@@ -1759,7 +1759,11 @@ class DurableTaskTests(unittest.TestCase):
         async def run():
             with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], \
                  patch.object(main, "llm_json",
-                              new=AsyncMock(side_effect=[{"steps": []}, {"summary": "finished"}])):
+                              new=AsyncMock(side_effect=[
+                                  {"steps": []},
+                                  {"complete": True, "summary": "finished", "steps": []},
+                                  {"summary": "finished"},
+                              ])):
                 await main.process("task-thread-process")
 
         try:
