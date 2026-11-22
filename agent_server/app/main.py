@@ -199,6 +199,7 @@ def init_db():
             model TEXT NOT NULL, encrypted_api_key BLOB NOT NULL,
             created_at REAL NOT NULL, updated_at REAL NOT NULL,
             supports_vision INTEGER NOT NULL DEFAULT 0,
+            context_window_tokens INTEGER NOT NULL DEFAULT 32768,
             PRIMARY KEY(owner_id, provider_id)
         )
         """)
@@ -219,6 +220,8 @@ def init_db():
         """)
         if "supports_vision" not in _columns(c, "provider_credentials"):
             c.execute("ALTER TABLE provider_credentials ADD COLUMN supports_vision INTEGER NOT NULL DEFAULT 0")
+        if "context_window_tokens" not in _columns(c, "provider_credentials"):
+            c.execute("ALTER TABLE provider_credentials ADD COLUMN context_window_tokens INTEGER NOT NULL DEFAULT 32768")
         if "display_name" not in _columns(c, "provider_credentials"):
             c.execute("ALTER TABLE provider_credentials ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
         if "specialties_json" not in _columns(c, "provider_credentials"):
@@ -434,6 +437,7 @@ class ProviderCredentialInput(BaseModel):
     api_key: SecretStr | None = None
     supports_vision: bool = False
     specialties: list[str] = Field(default_factory=list, max_length=6)
+    context_window_tokens: int = Field(default=32768, ge=4096, le=2000000)
 
 
 class ChatCompletionInput(BaseModel):
@@ -470,7 +474,7 @@ def provider_models_for_owner(owner_id: str) -> list[ModelConfig]:
     models = load_models(allow_empty=True)
     with db() as c:
         rows = c.execute(
-            "SELECT provider_id,display_name,base_url,model,encrypted_api_key,supports_vision,specialties_json FROM provider_credentials WHERE owner_id=?",
+            "SELECT provider_id,display_name,base_url,model,encrypted_api_key,supports_vision,specialties_json,context_window_tokens FROM provider_credentials WHERE owner_id=?",
             (owner_id,),
         ).fetchall()
     for row in rows:
@@ -486,6 +490,7 @@ def provider_models_for_owner(owner_id: str) -> list[ModelConfig]:
                 + (["vision"] if row["supports_vision"] else [])
             ),
             display_name=str(row["display_name"] or row["model"]),
+            context_window_tokens=int(row["context_window_tokens"] or 32768),
         ))
     return models
 
@@ -3194,7 +3199,9 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
             raise HTTPException(422, "Selected model is not configured for this account")
     if selected_model_id:
         context_model = next(model for model in models if model.id == selected_model_id)
-        context_window = configured_context_window(context_model.id, context_model.model)
+        context_window = configured_context_window(
+            context_model.id, context_model.model, context_model.context_window_tokens
+        )
     else:
         # Auto-routing can select any eligible general-purpose provider. Use the
         # smallest declared window so fallback/routing cannot exceed a provider's limit.
@@ -3206,7 +3213,7 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
         if not eligible_context_models:
             eligible_context_models = [model for model in models if model.enabled and "general" in model.purposes]
         context_window = min(
-            (configured_context_window(model.id, model.model) for model in eligible_context_models),
+            (configured_context_window(model.id, model.model, model.context_window_tokens) for model in eligible_context_models),
             default=configured_context_window("default", ""),
         )
     try:
@@ -3295,12 +3302,13 @@ async def list_available_models(owner_id: str = Depends(auth)):
 @app.get("/v1/providers", dependencies=[Depends(auth)])
 def list_providers(owner_id: str = Depends(auth)):
     with db() as c:
-        rows = c.execute("""SELECT provider_id,display_name,base_url,model,supports_vision,specialties_json,created_at,updated_at
+        rows = c.execute("""SELECT provider_id,display_name,base_url,model,supports_vision,specialties_json,context_window_tokens,created_at,updated_at
             FROM provider_credentials WHERE owner_id=? ORDER BY provider_id""", (owner_id,)).fetchall()
     return {"providers": [{
         **dict(row),
         "supports_vision": bool(row["supports_vision"]),
         "specialties": json.loads(row["specialties_json"] or "[]"),
+        "context_window_tokens": int(row["context_window_tokens"] or 32768),
     } for row in rows]}
 
 
@@ -4071,12 +4079,13 @@ def save_provider(body: ProviderCredentialInput, owner_id: str = Depends(auth)):
                 raise HTTPException(422, "An API key is required when adding a new provider")
             encrypted = bytes(existing["encrypted_api_key"])
         c.execute("""INSERT INTO provider_credentials(owner_id,provider_id,display_name,base_url,model,
-            encrypted_api_key,supports_vision,specialties_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)
+            encrypted_api_key,supports_vision,specialties_json,context_window_tokens,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(owner_id,provider_id) DO UPDATE SET display_name=excluded.display_name,
             base_url=excluded.base_url, model=excluded.model,encrypted_api_key=excluded.encrypted_api_key,
-            supports_vision=excluded.supports_vision,specialties_json=excluded.specialties_json,updated_at=excluded.updated_at""",
+            supports_vision=excluded.supports_vision,specialties_json=excluded.specialties_json,
+            context_window_tokens=excluded.context_window_tokens,updated_at=excluded.updated_at""",
             (owner_id, body.provider_id, body.display_name.strip() or body.model, base_url, body.model, encrypted,
-             1 if body.supports_vision else 0, json.dumps(specialties), now, now))
+             1 if body.supports_vision else 0, json.dumps(specialties), body.context_window_tokens, now, now))
     return {"provider_id": body.provider_id, "display_name": body.display_name.strip() or body.model,
             "status": "saved", "secret_returned": False}
 
