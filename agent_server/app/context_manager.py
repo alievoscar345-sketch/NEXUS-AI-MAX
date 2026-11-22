@@ -53,7 +53,7 @@ def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
     return sum(estimate_message_tokens(message) for message in messages)
 
 
-def configured_context_window(model_id: str, model_name: str = "") -> int:
+def configured_context_window(model_id: str, model_name: str = "", configured_tokens: int | None = None) -> int:
     """Resolve per-model limits from deployment config, then a conservative default.
 
     NEXUS_MODEL_CONTEXT_WINDOWS is a JSON object keyed by provider ID or exact model
@@ -70,6 +70,8 @@ def configured_context_window(model_id: str, model_name: str = "") -> int:
             # Invalid optional tuning must not prevent the chat service from starting.
             configured = {}
     value = configured.get(model_id, configured.get(model_name))
+    if value is None and configured_tokens is not None:
+        value = configured_tokens
     if value is None:
         value = os.getenv("NEXUS_DEFAULT_CONTEXT_WINDOW_TOKENS", str(DEFAULT_CONTEXT_WINDOW_TOKENS))
     try:
