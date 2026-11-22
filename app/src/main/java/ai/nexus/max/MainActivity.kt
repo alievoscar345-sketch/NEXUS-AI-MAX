@@ -413,7 +413,8 @@ data class RemoteProvider(
     val model: String,
     val supportsVision: Boolean = false,
     val displayName: String = model,
-    val specialties: List<String> = emptyList()
+    val specialties: List<String> = emptyList(),
+    val contextWindowTokens: Int = 32768
 )
 data class RemoteModel(
     val providerId: String,
@@ -1768,7 +1769,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         (0 until data.length()).mapNotNull { index ->
                             val item = data.optJSONObject(index) ?: return@mapNotNull null
                             val id = item.optString("provider_id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                            RemoteProvider(id, item.optString("base_url"), item.optString("model"), item.optBoolean("supports_vision", false), item.optString("display_name").ifBlank { item.optString("model") }, (item.optJSONArray("specialties")?.let { arr -> (0 until arr.length()).map { arr.optString(it) } } ?: emptyList()))
+                            RemoteProvider(id, item.optString("base_url"), item.optString("model"), item.optBoolean("supports_vision", false), item.optString("display_name").ifBlank { item.optString("model") }, (item.optJSONArray("specialties")?.let { arr -> (0 until arr.length()).map { arr.optString(it) } } ?: emptyList()), item.optInt("context_window_tokens", 32768))
                         }
                     }
                 }
@@ -1784,7 +1785,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun saveRemoteProvider(providerId: String, displayName: String, baseUrl: String, modelId: String, providerKey: String, supportsVision: Boolean, specialties: List<String>) {
+    fun saveRemoteProvider(providerId: String, displayName: String, baseUrl: String, modelId: String, providerKey: String, supportsVision: Boolean, specialties: List<String>, contextWindowTokens: Int) {
         if (providerVaultBusy) return
         if (providerId.isBlank() || baseUrl.isBlank() || modelId.isBlank()) {
             providerVaultMessage = "Заполни ID, название, Base URL и Model ID."
@@ -1802,6 +1803,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         .put("api_key", providerKey.trim())
                         .put("supports_vision", supportsVision)
                         .put("specialties", JSONArray(specialties))
+                        .put("context_window_tokens", contextWindowTokens)
                         .toString().toRequestBody("application/json".toMediaType())
                     val request = Request.Builder()
                         .url(agentServerUrl.trimEnd('/') + "/v1/providers")
@@ -1813,7 +1815,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 providerVaultMessage = "Ключ сохранён на сервере в зашифрованном виде."
                 remoteProviders = remoteProviders.filterNot { it.providerId == providerId.trim() } +
-                    RemoteProvider(providerId.trim(), baseUrl.trim().trimEnd('/'), modelId.trim(), supportsVision, displayName.trim().ifBlank { modelId.trim() }, specialties)
+                    RemoteProvider(providerId.trim(), baseUrl.trim().trimEnd('/'), modelId.trim(), supportsVision, displayName.trim().ifBlank { modelId.trim() }, specialties, contextWindowTokens)
                 loadRemoteModels()
             } catch (e: Exception) {
                 providerVaultMessage = e.message ?: "Не удалось сохранить ключ."
@@ -2911,6 +2913,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var vaultApiKey by remember { mutableStateOf("") }
     var vaultSupportsVision by remember { mutableStateOf(false) }
     var vaultSpecialties by remember { mutableStateOf("general") }
+    var vaultContextWindowTokens by remember { mutableStateOf("32768") }
     var selectedOpenRouterModel by remember { mutableStateOf(vm.settings.openRouterModel) }
     var freeModelsOnly by remember { mutableStateOf(false) }
     var modelSearch by remember { mutableStateOf("") }
@@ -4094,6 +4097,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                         vaultApiKey = ""
                                         vaultSupportsVision = remote.supportsVision
                                         vaultSpecialties = remote.specialties.joinToString(",").ifBlank { "general" }
+                                         vaultContextWindowTokens = remote.contextWindowTokens.toString()
                                     }) { Text("Изменить", color = Blue, fontSize = 10.sp) }
                                     Text(if (remote.supportsVision) "Поддерживает изображения" else "Только текст", color = Muted, fontSize = 9.sp)
                                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -4133,6 +4137,14 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     OutlinedTextField(vaultModelId, { vaultModelId = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Model ID") }, singleLine = true)
                     OutlinedTextField(vaultApiKey, { vaultApiKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("API-ключ провайдера (пусто — сохранить прежний)") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
                     OutlinedTextField(
+                        value = vaultContextWindowTokens,
+                        onValueChange = { value -> vaultContextWindowTokens = value.filter(Char::isDigit).take(7) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Контекстное окно модели (токенов)") },
+                        supportingText = { Text("Укажи лимит из документации провайдера. Допустимо 4096–2000000.") },
+                        singleLine = true
+                    )
+                    OutlinedTextField(
                         value = vaultSpecialties,
                         onValueChange = { vaultSpecialties = it },
                         modifier = Modifier.fillMaxWidth(),
@@ -4147,7 +4159,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         onClick = {
                             vm.updateAgentServer(agentServerUrl, agentServerToken)
                             agentServerToken = ""
-                            vm.saveRemoteProvider(vaultProviderId, vaultDisplayName, vaultBaseUrl, vaultModelId, vaultApiKey, vaultSupportsVision, vaultSpecialties.split(",").map { it.trim().lowercase(Locale.ROOT) }.filter { it.isNotBlank() }.distinct())
+                            vm.saveRemoteProvider(vaultProviderId, vaultDisplayName, vaultBaseUrl, vaultModelId, vaultApiKey, vaultSupportsVision, vaultSpecialties.split(",").map { it.trim().lowercase(Locale.ROOT) }.filter { it.isNotBlank() }.distinct(), vaultContextWindowTokens.toIntOrNull() ?: 32768)
                             vaultApiKey = ""
                         },
                         enabled = !vm.providerVaultBusy && vm.agentServerConfigured && agentServerUrl.startsWith("https://") &&
