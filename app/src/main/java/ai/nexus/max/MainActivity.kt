@@ -2278,9 +2278,13 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                                 attachment.copy(textContent = attachment.textContent.take(1500) + "\n[Содержимое старого вложения сокращено в запросе; полный оригинал сохранён локально.]")
                             } else attachment
                         }
+                        val earlierImageNote = if (
+                            historyIndex < requestHistory.size - 24 &&
+                            line.attachments.any { it.mimeType.startsWith("image/") }
+                        ) "\n[Изображение было прикреплено ранее; оригинал остаётся в локальной истории и не отправляется повторно.]" else ""
                         if (line.role == "user" && (imageAttachments.isNotEmpty() || textAttachments.isNotEmpty())) {
                             val parts = JSONArray()
-                            val textPart = buildChatTextWithAttachments(line.content, textAttachments)
+                            val textPart = buildChatTextWithAttachments(line.content, textAttachments) + earlierImageNote
                             if (textPart.isNotBlank()) parts.put(JSONObject().put("type", "text").put("text", textPart))
                             imageAttachments.forEach { image ->
                                 val bytes = File(image.localPath).readBytes()
@@ -2293,10 +2297,6 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                             }
                             messages.put(JSONObject().put("role", line.role).put("content", parts))
                         } else {
-                            val earlierImageNote = if (
-                                historyIndex < requestHistory.size - 24 &&
-                                line.attachments.any { it.mimeType.startsWith("image/") }
-                            ) "\n[Изображение было прикреплено ранее; оригинал остаётся в локальной истории и не отправляется повторно.]" else ""
                             messages.put(JSONObject().put("role", line.role).put("content", line.content + earlierImageNote))
                         }
                     }
