@@ -625,6 +625,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         refreshReminders()
         ensureRemindersChat()
         if (chats.none { !it.isSystem }) createChat()
+        if (agentServerConfigured) loadRemoteModels()
     }
 
     private fun sortChats(items: List<ChatSession>): List<ChatSession> =
@@ -1734,6 +1735,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 remoteModels = loaded
+                if (chatModelSelection != "auto" && loaded.none { it.providerId == chatModelSelection }) {
+                    chatModelSelection = "auto"
+                }
             } catch (e: Exception) {
                 providerVaultMessage = e.message ?: "Не удалось загрузить каталог моделей."
             }
@@ -2228,9 +2232,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         error = null
         var streamedAnswer = ""
         var providerMessagesJson: String? = null
-        var actualModel = ""
-        var actualProvider = ""
-        var actualDisplayName = ""
+        var actualModel = if (useCloudGateway) "" else activeModel
+        var actualProvider = if (useCloudGateway) "" else cfg.provider
+        var actualDisplayName = if (useCloudGateway) "" else activeModel
 
         viewModelScope.launch {
             try {
@@ -4082,7 +4086,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     OutlinedTextField(vaultDisplayName, { vaultDisplayName = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Название модели для списка") }, singleLine = true)
                     OutlinedTextField(vaultBaseUrl, { vaultBaseUrl = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Base URL") }, singleLine = true)
                     OutlinedTextField(vaultModelId, { vaultModelId = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Model ID") }, singleLine = true)
-                    OutlinedTextField(vaultApiKey, { vaultApiKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("API-ключ провайдера") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
+                    OutlinedTextField(vaultApiKey, { vaultApiKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("API-ключ провайдера (пусто — сохранить прежний)") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = vaultSupportsVision, onCheckedChange = { vaultSupportsVision = it })
                         Text("Эта модель поддерживает изображения", color = MainText, fontSize = 11.sp)
@@ -4094,10 +4098,11 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                             vm.saveRemoteProvider(vaultProviderId, vaultDisplayName, vaultBaseUrl, vaultModelId, vaultApiKey, vaultSupportsVision)
                             vaultApiKey = ""
                         },
-                        enabled = !vm.providerVaultBusy && vm.agentServerConfigured && agentServerUrl.startsWith("https://") && vaultApiKey.isNotBlank(),
+                        enabled = !vm.providerVaultBusy && vm.agentServerConfigured && agentServerUrl.startsWith("https://") &&
+                            (vaultApiKey.isNotBlank() || vm.remoteProviders.any { it.providerId == vaultProviderId.trim() }),
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(containerColor = ambientAccent)
-                    ) { Text(if (vm.providerVaultBusy) "Выполняется…" else "Сохранить ключ на сервере") }
+                    ) { Text(if (vm.providerVaultBusy) "Выполняется…" else "Сохранить настройки модели") }
                     vm.providerVaultMessage?.let { Text(it, color = Muted, fontSize = 10.sp, lineHeight = 14.sp) }
                     Divider(color = DividerTone, modifier = Modifier.padding(vertical = 4.dp))
                     Text("РЕЗЕРВНЫЙ ПРЯМОЙ РЕЖИМ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
