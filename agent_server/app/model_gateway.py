@@ -195,8 +195,11 @@ class ModelGateway:
                                 selected_model_id: str | None = None) -> ModelResult:
         text_parts: list[str] = []
         requires_vision = False
-        for message in messages:
-            content = message.get("content") if isinstance(message, dict) else None
+        # Route from recent user-authored turns only; system prompts and assistant
+        # history must not bias task classification toward unrelated categories.
+        recent_user_messages = [m for m in messages if isinstance(m, dict) and m.get("role") == "user"][-3:]
+        for message in recent_user_messages:
+            content = message.get("content")
             if isinstance(content, str):
                 text_parts.append(content)
             elif isinstance(content, list):
@@ -271,8 +274,11 @@ class ModelGateway:
         """Yield OpenAI-compatible chunks with actual provider metadata; manual selection is strict."""
         text_parts: list[str] = []
         requires_vision = False
-        for message in messages:
-            content = message.get("content") if isinstance(message, dict) else None
+        # Route from recent user-authored turns only; system prompts and assistant
+        # history must not bias task classification toward unrelated categories.
+        recent_user_messages = [m for m in messages if isinstance(m, dict) and m.get("role") == "user"][-3:]
+        for message in recent_user_messages:
+            content = message.get("content")
             if isinstance(content, str):
                 text_parts.append(content)
             elif isinstance(content, list):
