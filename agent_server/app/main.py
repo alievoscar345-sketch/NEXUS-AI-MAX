@@ -218,6 +218,8 @@ def init_db():
         """)
         if "supports_vision" not in _columns(c, "provider_credentials"):
             c.execute("ALTER TABLE provider_credentials ADD COLUMN supports_vision INTEGER NOT NULL DEFAULT 0")
+        if "display_name" not in _columns(c, "provider_credentials"):
+            c.execute("ALTER TABLE provider_credentials ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
         c.executescript("""
         CREATE TABLE IF NOT EXISTS projects(
             id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL,
@@ -423,6 +425,7 @@ class AutomationInput(BaseModel):
 
 class ProviderCredentialInput(BaseModel):
     provider_id: str = Field(min_length=2, max_length=64, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+    display_name: str = Field(default="", max_length=100)
     base_url: str = Field(min_length=12, max_length=300)
     model: str = Field(min_length=1, max_length=160)
     api_key: SecretStr
@@ -432,6 +435,7 @@ class ProviderCredentialInput(BaseModel):
 class ChatCompletionInput(BaseModel):
     messages: list[dict[str, Any]] = Field(min_length=1, max_length=40)
     stream: bool = False
+    model_selection: str = Field(default="auto", min_length=1, max_length=128)
 
 
 class GitHubConnectInput(BaseModel):
@@ -462,7 +466,7 @@ def provider_models_for_owner(owner_id: str) -> list[ModelConfig]:
     models = load_models(allow_empty=True)
     with db() as c:
         rows = c.execute(
-            "SELECT provider_id,base_url,model,encrypted_api_key,supports_vision FROM provider_credentials WHERE owner_id=?",
+            "SELECT provider_id,display_name,base_url,model,encrypted_api_key,supports_vision FROM provider_credentials WHERE owner_id=?",
             (owner_id,),
         ).fetchall()
     for row in rows:
@@ -474,6 +478,7 @@ def provider_models_for_owner(owner_id: str) -> list[ModelConfig]:
             id="user-" + row["provider_id"], base_url=row["base_url"], model=row["model"],
             api_key=key, priority=50, purposes=("general", "planning", "evaluation"),
             capabilities=("vision",) if row["supports_vision"] else (),
+            display_name=str(row["display_name"] or row["model"]),
         ))
     return models
 
@@ -3177,9 +3182,14 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
     models = await run_db(provider_models_for_owner, owner_id)
     if not models:
         raise HTTPException(503, "No model provider is configured for this account")
+    selected_model_id = None
+    if body.model_selection != "auto":
+        selected_model_id = body.model_selection
+        if not any(model.id == selected_model_id and model.enabled for model in models):
+            raise HTTPException(422, "Selected model is not configured for this account")
     gateway = ModelGateway(models=models)
     if body.stream:
-        stream_iterator = gateway.stream_messages(messages, purpose="general")
+        stream_iterator = gateway.stream_messages(messages, purpose="general", selected_model_id=selected_model_id)
         try:
             first_chunk = await anext(stream_iterator)
         except ModelGatewayError as exc:
@@ -3206,7 +3216,7 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
                      "Connection": "keep-alive"},
         )
     try:
-        result = await gateway.complete_messages(messages, purpose="general")
+        result = await gateway.complete_messages(messages, purpose="general", selected_model_id=selected_model_id)
     except ModelGatewayError as exc:
         status = 503 if "No configured model supports" in str(exc) else 502
         raise HTTPException(status, _chat_gateway_error_message(exc, requires_vision)) from exc
@@ -3215,6 +3225,7 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
         "object": "chat.completion",
         "model": result.model,
         "provider": result.provider_id,
+        "display_name": result.display_name or result.model,
         "choices": [{"index": 0, "message": {"role": "assistant", "content": result.content},
                      "finish_reason": "stop"}],
         "usage": result.usage,
@@ -3228,6 +3239,7 @@ async def list_available_models(owner_id: str = Depends(auth)):
     return {"models": [{
         "provider_id": model.id,
         "model": model.model,
+        "display_name": model.display_name or model.model,
         "source": "user" if model.id.startswith("user-") else "built_in",
         "capabilities": list(model.capabilities),
         "purposes": list(model.purposes),
@@ -3237,7 +3249,7 @@ async def list_available_models(owner_id: str = Depends(auth)):
 @app.get("/v1/providers", dependencies=[Depends(auth)])
 def list_providers(owner_id: str = Depends(auth)):
     with db() as c:
-        rows = c.execute("""SELECT provider_id,base_url,model,supports_vision,created_at,updated_at
+        rows = c.execute("""SELECT provider_id,display_name,base_url,model,supports_vision,created_at,updated_at
             FROM provider_credentials WHERE owner_id=? ORDER BY provider_id""", (owner_id,)).fetchall()
     return {"providers": [{**dict(row), "supports_vision": bool(row["supports_vision"])} for row in rows]}
 
@@ -3980,7 +3992,7 @@ async def _github_task_action(tid: str, owner_id: str, action: str,
 @app.get("/v1/providers", dependencies=[Depends(auth)])
 def list_providers(owner_id: str = Depends(auth)):
     with db() as c:
-        rows = c.execute("""SELECT provider_id,base_url,model,supports_vision,created_at,updated_at
+        rows = c.execute("""SELECT provider_id,display_name,base_url,model,supports_vision,created_at,updated_at
             FROM provider_credentials WHERE owner_id=? ORDER BY provider_id""", (owner_id,)).fetchall()
     return {"providers": [{**dict(row), "supports_vision": bool(row["supports_vision"])} for row in rows]}
 
@@ -3997,14 +4009,15 @@ def save_provider(body: ProviderCredentialInput, owner_id: str = Depends(auth)):
         raise HTTPException(503, "Credential encryption is not configured") from exc
     now = time.time()
     with db() as c:
-        c.execute("""INSERT INTO provider_credentials(owner_id,provider_id,base_url,model,
-            encrypted_api_key,supports_vision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)
-            ON CONFLICT(owner_id,provider_id) DO UPDATE SET base_url=excluded.base_url,
-            model=excluded.model,encrypted_api_key=excluded.encrypted_api_key,
+        c.execute("""INSERT INTO provider_credentials(owner_id,provider_id,display_name,base_url,model,
+            encrypted_api_key,supports_vision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(owner_id,provider_id) DO UPDATE SET display_name=excluded.display_name,
+            base_url=excluded.base_url, model=excluded.model,encrypted_api_key=excluded.encrypted_api_key,
             supports_vision=excluded.supports_vision,updated_at=excluded.updated_at""",
-            (owner_id, body.provider_id, base_url, body.model, encrypted,
+            (owner_id, body.provider_id, body.display_name.strip() or body.model, base_url, body.model, encrypted,
              1 if body.supports_vision else 0, now, now))
-    return {"provider_id": body.provider_id, "status": "saved", "secret_returned": False}
+    return {"provider_id": body.provider_id, "display_name": body.display_name.strip() or body.model,
+            "status": "saved", "secret_returned": False}
 
 
 @app.delete("/v1/providers/{provider_id}", dependencies=[Depends(auth)])
