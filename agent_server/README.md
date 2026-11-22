@@ -107,6 +107,14 @@ The Android workflow accepts `require_signed_release=true` for strict release bu
 
 The current implementation commits changed and deleted workspace source files as one Git tree/commit update; individual UTF-8 file writes use the Contents API (1 MB per-file text limit). Checkout is a source snapshot rather than a full Git clone and preserves executable file bits; local Git history, branches, and merge state are not synchronized. Build outputs are excluded from repository commits. `github_build_android` dispatches `.github/workflows/build-android.yml`, waits for the run, downloads the release APK artifact, and publishes it as a task artifact. Failed CI runs return bounded, token-redacted log excerpts to the autonomous repair planner. This requires GitHub Actions write permission and the workflow's signing secrets.
 
+## Chat model selection and response attribution
+
+The ordinary Android chat can use the server model catalog in two modes. The request field `model_selection` accepts `auto` or an exact configured model ID (for user-managed providers this is `user-<provider_id>`). Manual selection is strict: the gateway filters to that exact model and does not silently fall back to another provider. If the selected model is unavailable or lacks a required capability (for example, image input), the request fails with a clear error.
+
+In automatic mode, the Model Gateway classifies the request category, filters by required capabilities and configured purposes, then ranks eligible models using benchmark fit, cost, latency, provider priority, and optional route order. The current category classifier is deterministic and keyword-based; it is not yet a semantic LLM router. Streaming chat chunks include the actual selected `provider_id`, technical `model` ID, and configured `display_name`, so the Android client can show the model that really produced the answer beneath the response.
+
+User-managed provider records have a separate human-readable `display_name` in addition to provider ID and technical model ID. The provider settings API never returns API keys. Editing an existing provider with a blank API-key field preserves its encrypted key; supplying a nonblank key replaces it. Multiple model configurations from the same provider can be stored under distinct provider IDs.
+
 ## Chat and attachments
 
 `POST /v1/chat/completions` accepts OpenAI-style message history and returns a normalized completion. Set `stream=true` for an SSE response. The endpoint uses the same Model Gateway and merges built-in server providers with the authenticated owner's encrypted credentials.
