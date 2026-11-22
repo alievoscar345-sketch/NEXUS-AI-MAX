@@ -359,6 +359,10 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(infer_task_type("Проведи научное исследование и найди источники"), "research")
         self.assertEqual(infer_task_type("Реши математическое уравнение"), "math")
         self.assertEqual(infer_task_type("Напиши Python программу"), "coding")
+        self.assertEqual(infer_task_type("Собери Android-приложение"), "coding")
+        self.assertEqual(infer_task_type("Проведи рефакторинг репозитория"), "coding")
+        self.assertEqual(infer_task_type("Найди научные данные и источники"), "research")
+        self.assertEqual(infer_task_type("Переведи этот текст на английский"), "writing")
 
 
 if __name__ == "__main__":
