@@ -31,6 +31,38 @@ class DurableTaskTests(unittest.TestCase):
         self.patch.stop()
         self.temp.cleanup()
 
+    def test_database_context_commits_and_closes_connection(self):
+        with main.db() as connection:
+            connection.execute("CREATE TABLE lifecycle_commit (value TEXT)")
+            connection.execute("INSERT INTO lifecycle_commit VALUES ('persisted')")
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connection.execute("SELECT 1")
+        with main.db() as check:
+            self.assertEqual(check.execute("SELECT value FROM lifecycle_commit").fetchone()["value"], "persisted")
+
+    def test_database_context_rolls_back_and_closes_on_exception(self):
+        with main.db() as setup:
+            setup.execute("CREATE TABLE lifecycle_rollback (value TEXT)")
+        connection = None
+        with self.assertRaisesRegex(RuntimeError, "force rollback"):
+            with main.db() as connection:
+                connection.execute("INSERT INTO lifecycle_rollback VALUES ('must-not-persist')")
+                raise RuntimeError("force rollback")
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connection.execute("SELECT 1")
+        with main.db() as check:
+            self.assertEqual(check.execute("SELECT COUNT(*) AS n FROM lifecycle_rollback").fetchone()["n"], 0)
+
+    def test_run_db_executes_complete_operation_off_event_loop_thread(self):
+        loop_thread = threading.get_ident()
+
+        def operation():
+            return threading.get_ident(), sqlite3.connect(main.DB_PATH).execute("SELECT 42").fetchone()[0]
+
+        worker_thread, result = asyncio.run(main.run_db(operation))
+        self.assertNotEqual(worker_thread, loop_thread)
+        self.assertEqual(result, 42)
+
     def test_workspace_write_read_and_list_are_scoped_to_task(self):
         workspace = Path(self.temp.name) / "workspace"
         with patch.object(main, "WORKSPACE", workspace):
