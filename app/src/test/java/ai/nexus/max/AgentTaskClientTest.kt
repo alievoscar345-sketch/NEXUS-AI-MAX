@@ -317,7 +317,7 @@ class AgentTaskClientTest {
     }
 
     @Test fun connectGitHubRejectsHttpServerBeforeSendingCredential() {
-        val insecureClient = AgentTaskClient("http://example.com", "test-token", transport)
+        val insecureClient = AgentTaskClient("http://example.com", "test-token", OkHttpClient.Builder().addInterceptor(transport).build())
         try {
             insecureClient.connectGitHub("owner/app", "github_pat_test-secret")
             fail("Expected HTTPS requirement")
