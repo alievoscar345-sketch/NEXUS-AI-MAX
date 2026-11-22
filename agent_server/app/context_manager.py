@@ -104,13 +104,15 @@ def _extractive_history_summary(messages: list[dict[str, Any]], max_tokens: int)
     budget_chars = max(256, max_tokens * 3)
     entries: list[str] = []
     used = 0
-    for message in messages:
+    for index, message in enumerate(messages, start=1):
         role = str(message.get("role", "unknown")).upper()
         text = _message_text(message).strip()
         if not text:
             continue
-        excerpt = text[:900]
-        entry = f"{role}: {excerpt}"
+        # Keep both the opening request and the ending/result of long turns.
+        # A prefix-only excerpt systematically loses conclusions and corrections.
+        excerpt = text if len(text) <= 900 else text[:440] + " … [middle omitted] … " + text[-440:]
+        entry = f"[message {index}] {role}: {excerpt}"
         remaining = budget_chars - used
         if remaining <= 0:
             break
