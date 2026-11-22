@@ -1669,7 +1669,7 @@ def _materialize_project_files(tid: str, owner_id: str, project_id: str) -> dict
                             (project_id, owner_id)).fetchone()
         if not project:
             raise ValueError("Project not found for task workspace materialization")
-        rows = c.execute("""SELECT v.path,v.content FROM project_file_versions v
+        rows = c.execute("""SELECT v.path,v.content,v.size_bytes,v.sha256 FROM project_file_versions v
             JOIN (SELECT path,MAX(revision) AS revision FROM project_file_versions
                   WHERE project_id=? GROUP BY path) latest
             ON latest.path=v.path AND latest.revision=v.revision
