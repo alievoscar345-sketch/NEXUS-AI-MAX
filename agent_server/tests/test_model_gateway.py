@@ -375,6 +375,23 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ModelGatewayError):
             await gateway.complete_messages(messages)
 
+    async def test_explicit_task_specialty_preferred_over_general_benchmark(self):
+        calls = []
+        def handler(request):
+            calls.append(json.loads(request.content)["model"])
+            return httpx.Response(200, json={"choices":[{"message":{"content":"ok"}}]})
+        general = ModelConfig(
+            id="general", base_url="https://provider.example/v1", model="general-model",
+            api_key="key", benchmark_scores={"general": 99, "research": 99},
+        )
+        researcher = ModelConfig(
+            id="researcher", base_url="https://provider.example/v1", model="research-model",
+            api_key="key", capabilities=("research",), benchmark_scores={"general": 50, "research": 50},
+        )
+        gateway = ModelGateway([general, researcher], transport=httpx.MockTransport(handler))
+        await gateway.complete_messages([{"role":"user","content":"Проведи научное исследование этой темы"}])
+        self.assertEqual(calls, ["research-model"])
+
     def test_infers_task_categories_without_extra_model_call(self):
         self.assertEqual(infer_task_type("Проведи научное исследование и найди источники"), "research")
         self.assertEqual(infer_task_type("Реши математическое уравнение"), "math")
