@@ -1285,8 +1285,6 @@ def _restore_latest_task_checkpoint(tid: str, restore_state: bool = True,
 
 
 def _workspace_search(tid: str, query: str) -> dict[str, Any]:
-
-def _workspace_search(tid: str, query: str) -> dict[str, Any]:
     if not isinstance(query, str) or not query or len(query) > 200:
         raise ValueError("Search query must contain 1 to 200 characters")
     root = _task_workspace_root(tid)
