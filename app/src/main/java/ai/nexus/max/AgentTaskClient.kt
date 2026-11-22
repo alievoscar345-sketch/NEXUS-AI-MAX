@@ -301,7 +301,8 @@ class AgentTaskClient(
             .optJSONArray("artifacts") ?: JSONArray()
         return (0 until items.length()).mapNotNull { index ->
             val item = items.optJSONObject(index) ?: return@mapNotNull null
-            AgentArtifact(item.optString("name"), item.optLong("bytes"),\n                item.optString("content_type", "application/octet-stream"), item.optString("sha256"))
+            AgentArtifact(item.optString("name"), item.optLong("bytes"),
+                item.optString("content_type", "application/octet-stream"), item.optString("sha256"))
         }
     }
 
