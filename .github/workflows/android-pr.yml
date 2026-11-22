@@ -2,6 +2,14 @@ name: Android PR Build
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'agent_server/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/android-pr.yml'
 
 permissions:
   contents: read
@@ -27,6 +35,17 @@ jobs:
 
       - name: Install Android SDK packages
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run backend syntax checks and tests
+        run: |
+          python -m pip install -r agent_server/requirements.txt pytest
+          python -m compileall -q agent_server/app agent_server/tests
+          python -m pytest -q agent_server/tests
 
       - name: Run Android unit tests
         run: gradle --no-daemon :app:testDebugUnitTest
