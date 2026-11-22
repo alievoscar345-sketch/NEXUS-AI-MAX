@@ -544,12 +544,14 @@ class DurableTaskTests(unittest.TestCase):
         stale = main._LEASE_OWNER.set(main.WORKER_ID + ":github-stale")
         try:
             with patch.object(main, "decrypt_secret", return_value="ghp_test-token"), \
-                 patch.object(main, "_github_api", new=AsyncMock()) as github_api:
+                 patch.object(main, "_github_api", new=AsyncMock(side_effect=[
+                     None, {"object": {"sha": "base-sha"}}
+                 ])) as github_api:
                 with self.assertRaises(RuntimeError):
                     asyncio.run(main._github_task_action(
                         "github-stale-task", "owner-a", "github_create_branch", {}
                     ))
-                self.assertEqual(github_api.await_count, 1)
+                self.assertEqual(github_api.await_count, 2)
                 self.assertTrue(all(call.args[1] == "GET" for call in github_api.await_args_list))
         finally:
             main._LEASE_OWNER.reset(stale)
@@ -1769,7 +1771,7 @@ class DurableTaskTests(unittest.TestCase):
         with main.db() as conn:
             task = conn.execute("SELECT status,summary FROM tasks WHERE id=?",
                                 ("task-thread-process",)).fetchone()
-        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["status"], "completed", task["error"])
         self.assertEqual(task["summary"], "finished")
 
     def test_run_step_offloads_approval_database_work(self):
