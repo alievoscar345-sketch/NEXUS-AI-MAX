@@ -437,7 +437,7 @@ class ProviderCredentialInput(BaseModel):
 
 
 class ChatCompletionInput(BaseModel):
-    messages: list[dict[str, Any]] = Field(min_length=1, max_length=40)
+    messages: list[dict[str, Any]] = Field(min_length=1, max_length=2000)
     stream: bool = False
     model_selection: str = Field(default="auto", min_length=1, max_length=128)
 
