@@ -109,7 +109,7 @@ class AgentTaskClientTest {
         val request = transport.lastRequest!!
         assertEquals("PUT", request.method)
         assertEquals("Bearer test-token", request.header("Authorization"))
-        assertEquals("image/png", request.header("Content-Type")?.substringBefore(";"))
+        assertEquals("image/png", request.body!!.contentType()?.toString()?.substringBefore(";"))
         assertEquals("assets/photo.png", request.url.queryParameter("path"))
         val body = Buffer()
         request.body!!.writeTo(body)
@@ -317,9 +317,8 @@ class AgentTaskClientTest {
     }
 
     @Test fun connectGitHubRejectsHttpServerBeforeSendingCredential() {
-        val insecureClient = AgentTaskClient("http://example.com", "test-token", OkHttpClient.Builder().addInterceptor(transport).build())
         try {
-            insecureClient.connectGitHub("owner/app", "github_pat_test-secret")
+            AgentTaskClient("http://example.com", "test-token", OkHttpClient.Builder().addInterceptor(transport).build())
             fail("Expected HTTPS requirement")
         } catch (error: IllegalArgumentException) {
             assertTrue(error.message!!.contains("HTTPS"))
