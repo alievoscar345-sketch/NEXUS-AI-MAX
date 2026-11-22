@@ -64,6 +64,29 @@ class ContextManagerTests(unittest.TestCase):
         self.assertIn("old-0", digest)
         self.assertIn("oversized recent turn", digest)
 
+    def test_compaction_digest_includes_every_turn_before_recent_suffix(self):
+        messages = [{"role": "system", "content": "System."}]
+        messages.extend(
+            {"role": "user", "content": f"history-{i} " + ("detail " * 55)}
+            for i in range(5)
+        )
+        messages.append({"role": "assistant", "content": "oversized-gap " * 800})
+        messages.extend(
+            {"role": "user", "content": f"recent-{i} " + ("detail " * 55)}
+            for i in range(20)
+        )
+        messages.append({"role": "user", "content": "latest"})
+        compacted, stats = compact_messages(messages, 4096, 1024)
+        self.assertTrue(stats["compacted"])
+        digest = next(
+            m["content"] for m in compacted
+            if "[NEXUS_CONTEXT_COMPACTION]" in str(m.get("content", ""))
+        )
+        for expected in ["history-0", "history-4", "oversized-gap"]:
+            self.assertIn(expected, digest)
+        self.assertGreater(stats["dropped_messages"], 6)
+        self.assertEqual(compacted[-1], messages[-1])
+
     def test_extractive_digest_preserves_start_and_end_of_long_turns(self):
         messages = [
             {"role": "user", "content": "START-OF-REQUEST " + ("middle " * 5000) + " END-OF-REQUEST"},
