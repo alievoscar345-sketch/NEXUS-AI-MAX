@@ -486,6 +486,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var error by mutableStateOf<String?>(null)
         private set
+    var contextStatus by mutableStateOf<String?>(null)
+        private set
     var openRouterModels by mutableStateOf<List<OpenRouterModel>>(emptyList())
         private set
     var loadingOpenRouterModels by mutableStateOf(false)
@@ -2236,6 +2238,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         cancelRequested = false
         activeCall = null
         error = null
+        contextStatus = null
         var streamedAnswer = ""
         var providerMessagesJson: String? = null
         var actualModel = if (useCloudGateway) "" else activeModel
@@ -2323,6 +2326,18 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     activeCall = call
                     if (cancelRequested) call.cancel()
                     call.execute().use { response ->
+                        if (useCloudGateway) {
+                            val windowTokens = response.header("X-Nexus-Context-Window")?.toIntOrNull()
+                            val usedTokens = response.header("X-Nexus-Context-Used")?.toIntOrNull()
+                            val compacted = response.header("X-Nexus-Context-Compacted") == "true"
+                            val dropped = response.header("X-Nexus-Context-Dropped")?.toIntOrNull() ?: 0
+                            if (windowTokens != null && usedTokens != null && windowTokens > 0) {
+                                val percent = (usedTokens * 100 / windowTokens).coerceIn(0, 100)
+                                val status = "Контекст: ${percent}% · ~${usedTokens} / ${windowTokens} токенов" +
+                                    if (compacted) " · сжато старых сообщений: ${dropped}" else ""
+                                withContext(Dispatchers.Main) { contextStatus = status }
+                            }
+                        }
                         if (!response.isSuccessful) {
                             val raw = response.body?.string().orEmpty()
                             throw IllegalStateException("API " + response.code + ": " + raw.take(350))
@@ -3333,6 +3348,14 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     Surface(color = Color(0xFF321D20), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
                         Text(message, color = Color(0xFFD69A9F), fontSize = 12.sp, modifier = Modifier.padding(12.dp))
                     }
+                }
+                vm.contextStatus?.let { status ->
+                    Text(
+                        status,
+                        color = Muted,
+                        fontSize = 10.sp,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 3.dp)
+                    )
                 }
                 val chat = vm.activeChat
                 val lines = chat?.lines.orEmpty()
