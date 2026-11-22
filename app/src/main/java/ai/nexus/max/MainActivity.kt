@@ -2266,7 +2266,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     val messages = JSONArray().put(
                         JSONObject().put("role", "system").put("content", SYSTEM_PROMPT + (personalContext?.let { "\n\n" + it } ?: ""))
                     )
-                    val requestHistory = history.takeLast(500)
+                    val requestHistory = history.takeLast(2000)
                     requestHistory.forEachIndexed { historyIndex, line ->
                         // Keep recent images in the multimodal request; older image bytes stay
                         // in the local archive and are represented in the context digest.
@@ -2289,7 +2289,11 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                             }
                             messages.put(JSONObject().put("role", line.role).put("content", parts))
                         } else {
-                            messages.put(JSONObject().put("role", line.role).put("content", line.content))
+                            val earlierImageNote = if (
+                                historyIndex < requestHistory.size - 24 &&
+                                line.attachments.any { it.mimeType.startsWith("image/") }
+                            ) "\n[Изображение было прикреплено ранее; оригинал остаётся в локальной истории и не отправляется повторно.]" else ""
+                            messages.put(JSONObject().put("role", line.role).put("content", line.content + earlierImageNote))
                         }
                     }
                     val body = JSONObject()
