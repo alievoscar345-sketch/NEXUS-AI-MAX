@@ -3220,7 +3220,11 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
 
     gateway = ModelGateway(models=models)
     if body.stream:
-        stream_iterator = gateway.stream_messages(messages, purpose="general", selected_model_id=selected_model_id)
+        output_token_limit = context_stats["context_window_tokens"] - context_stats["input_budget_tokens"]
+        stream_iterator = gateway.stream_messages(
+            messages, purpose="general", selected_model_id=selected_model_id,
+            max_tokens=output_token_limit,
+        )
         try:
             first_chunk = await anext(stream_iterator)
         except ModelGatewayError as exc:
@@ -3253,7 +3257,11 @@ async def chat_completions(body: ChatCompletionInput, owner_id: str = Depends(au
             },
         )
     try:
-        result = await gateway.complete_messages(messages, purpose="general", selected_model_id=selected_model_id)
+        output_token_limit = context_stats["context_window_tokens"] - context_stats["input_budget_tokens"]
+        result = await gateway.complete_messages(
+            messages, purpose="general", selected_model_id=selected_model_id,
+            max_tokens=output_token_limit,
+        )
     except ModelGatewayError as exc:
         status = 503 if "No configured model supports" in str(exc) else 502
         raise HTTPException(status, _chat_gateway_error_message(exc, requires_vision)) from exc
