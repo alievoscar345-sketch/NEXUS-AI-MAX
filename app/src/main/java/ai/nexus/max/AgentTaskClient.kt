@@ -205,7 +205,10 @@ class AgentTaskClient(
 
     fun connectGitHub(repoFullName: String, token: String): NexusGitHubIntegration {
         require(base.isHttps) { "GitHub credentials may only be sent to an HTTPS NEXUS server" }
-        require(repoFullName.matches(Regex("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"))) {
+        val repositoryParts = repoFullName.split("/", limit = 3)
+        require(repositoryParts.size == 2 && repositoryParts.all { part ->
+            part.matches(Regex("[A-Za-z0-9_.-]+")) && part != "." && part != ".."
+        }) {
             "GitHub repository must use owner/repository format"
         }
         require(token.isNotBlank()) { "GitHub token is missing" }
