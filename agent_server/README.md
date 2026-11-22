@@ -28,10 +28,10 @@ Cloud backend for NEXUS AI MAX. It runs separately from Android so queued agent 
 - Provider connectivity checks and an image-understanding probe that can confirm and enable the provider's vision capability.
 - Task-scoped workspace files plus binary artifact publication, listing, text preview, SHA-256 metadata, and authenticated downloads; Android can save original files such as APKs to device storage.
 - Persistent project file storage in the shared SQLite database with immutable per-file revisions, SHA-256 metadata, version history, and restore-as-new-revision; project files are materialized into linked task workspaces and can be explicitly saved back with lease-fenced `project_save_file` steps.
-- Optional isolated Docker code execution with digest-pinned images, no network egress, read-only container root, no fixed CPU/memory/PID/wall-clock ceilings, and task-workspace-only writable mount; requires explicit operator configuration.
+- Optional isolated Docker code execution with digest-pinned images, no network egress, read-only container root, 1 GiB memory, 2 CPU, 128 PID, and task-workspace-only writable mount; requires explicit operator configuration.
 - Optional Tavily search and HTTPS text/JSON fetching with private-network destination protections.
 - Approval records for proposed external side effects.
-- Optional isolated code execution through a digest-pinned Docker runner with no default command timeout or fixed CPU/memory/PID ceilings, no network egress, bounded output capture, and task-workspace-only write access.
+- Optional isolated code execution through a digest-pinned Docker runner with no network egress, 1 GiB memory, 2 CPU, 128 PID, bounded output capture, and task-workspace-only write access.
 
 ## Not yet implemented
 
