@@ -1766,7 +1766,7 @@ def _context_terms(value: str) -> set[str]:
 
 def _context_tokens(value: str) -> list[str]:
     allowed = _context_terms(value)
-    return [token for token in re.findall(r"[\\w-]{3,}", value.casefold()) if token in allowed]
+    return [token for token in re.findall(r"[\w-]{3,}", value.casefold()) if token in allowed]
 
 
 def _bm25_rank_context(query: str, documents: list[dict[str, Any]],
