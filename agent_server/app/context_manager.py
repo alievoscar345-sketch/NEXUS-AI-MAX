@@ -167,27 +167,25 @@ def compact_messages(
         raise ValueError("The latest message and system instructions exceed the model context budget")
 
     remaining = conversation[:-1]
-    kept_reversed: list[dict[str, Any]] = []
-    dropped_reversed: list[dict[str, Any]] = []
     # Reserve space for a compact extractive digest before adding older turns.
     summary_budget = min(2_048, max(256, input_budget // 10))
     available_for_history = input_budget - fixed_tokens - latest_tokens - summary_budget
+    first_kept_index = len(remaining)
     used_history = 0
-    for message in reversed(remaining):
-        cost = estimate_message_tokens(message)
+    for index in range(len(remaining) - 1, -1, -1):
+        cost = estimate_message_tokens(remaining[index])
         if used_history + cost <= available_for_history:
-            kept_reversed.append(message)
             used_history += cost
+            first_kept_index = index
         else:
-            # Keep a contiguous suffix of the conversation. Skipping an oversized
-            # recent turn and then retaining older turns would scramble chronology.
-            dropped_reversed.append(message)
-            dropped_reversed.extend(reversed(remaining[:len(remaining) - len(kept_reversed) - len(dropped_reversed) - 1]))
+            # Keep a contiguous suffix. Every earlier message, including messages
+            # between this oversized turn and the kept suffix, belongs in the digest.
             break
 
-    dropped = list(reversed(dropped_reversed))
+    dropped = remaining[:first_kept_index]
+    kept = remaining[first_kept_index:]
     summary = _extractive_history_summary(dropped, summary_budget)
-    compacted = system_messages + ([summary] if summary else []) + list(reversed(kept_reversed)) + [latest]
+    compacted = system_messages + ([summary] if summary else []) + kept + [latest]
 
     # If actual summary overhead exceeds the reservation, shrink only the digest.
     while estimate_messages_tokens(compacted) > input_budget and summary:
