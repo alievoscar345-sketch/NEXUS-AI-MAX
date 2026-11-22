@@ -182,6 +182,12 @@ class ModelGateway:
             eligible = [m for m in models if m.enabled and "general" in m.purposes]
         if required_capability:
             eligible = [m for m in eligible if required_capability in m.capabilities]
+        elif task_type != "general":
+            # Prefer explicitly declared specialties, but retain a safe general fallback
+            # when no provider has been tagged for this task category.
+            specialized = [m for m in eligible if task_type in m.capabilities]
+            if specialized:
+                eligible = specialized
         if not eligible:
             detail = f" with capability {required_capability}" if required_capability else ""
             raise ModelGatewayError(f"No configured model supports purpose: {purpose}{detail}")
