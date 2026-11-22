@@ -596,9 +596,15 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var remoteModels by mutableStateOf<List<RemoteModel>>(emptyList())
         private set
-    var chatModelSelection by mutableStateOf("auto")
+    var chatModelSelection by mutableStateOf(
+        prefs.getString("chat_model_selection", "auto")?.takeIf { it.isNotBlank() } ?: "auto"
+    )
         private set
-    fun setChatModelSelection(value: String) { chatModelSelection = value }
+    fun setChatModelSelection(value: String) {
+        val normalized = value.trim().ifBlank { "auto" }
+        chatModelSelection = normalized
+        prefs.edit().putString("chat_model_selection", normalized).apply()
+    }
     var providerVaultBusy by mutableStateOf(false)
         private set
     var providerVaultMessage by mutableStateOf<String?>(null)
@@ -1736,7 +1742,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 remoteModels = loaded
                 if (chatModelSelection != "auto" && loaded.none { it.providerId == chatModelSelection }) {
-                    chatModelSelection = "auto"
+                    setChatModelSelection("auto")
                 }
             } catch (e: Exception) {
                 providerVaultMessage = e.message ?: "Не удалось загрузить каталог моделей."
