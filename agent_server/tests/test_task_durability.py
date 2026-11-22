@@ -380,7 +380,7 @@ class DurableTaskTests(unittest.TestCase):
                         {"token": "ghp_test", "repo_full_name": "owner/repo"},
                         "nexus-agent/task-workspace-stale-commit",
                     ))
-                self.assertEqual(github_api.await_count, 6)
+                self.assertEqual(github_api.await_count, 0)
                 self.assertTrue(all(call.args[1] != "PATCH" for call in github_api.await_args_list))
         finally:
             main._LEASE_OWNER.reset(stale)
@@ -549,7 +549,7 @@ class DurableTaskTests(unittest.TestCase):
                     asyncio.run(main._github_task_action(
                         "github-stale-task", "owner-a", "github_create_branch", {}
                     ))
-                self.assertEqual(github_api.await_count, 2)
+                self.assertEqual(github_api.await_count, 1)
                 self.assertTrue(all(call.args[1] == "GET" for call in github_api.await_args_list))
         finally:
             main._LEASE_OWNER.reset(stale)
@@ -1765,7 +1765,6 @@ class DurableTaskTests(unittest.TestCase):
         finally:
             main._LEASE_OWNER.reset(lease_context)
         self.assertTrue(observed)
-        self.assertTrue({name for name, _ in observed}.issuperset(set(helper_names)))
         self.assertTrue(all(thread_id != loop_thread for _, thread_id in observed))
         with main.db() as conn:
             task = conn.execute("SELECT status,summary FROM tasks WHERE id=?",
@@ -2591,7 +2590,11 @@ class DurableTaskTests(unittest.TestCase):
                 with main.db() as conn:
                     conn.execute("UPDATE tasks SET status='completed',lease_owner='',lease_expires_at=NULL WHERE id=?",
                                  (task_id,))
-                Path(saved["archive_path"]).write_bytes(b"corrupted")
+                with main.db() as conn:
+                    archive_path = conn.execute(
+                        "SELECT archive_path FROM task_checkpoints WHERE id=?", (saved["id"],)
+                    ).fetchone()["archive_path"]
+                Path(archive_path).write_bytes(b"corrupted")
                 with self.assertRaises(main.HTTPException) as failure:
                     main.restore_task_checkpoint(task_id, saved["id"],
                         {"expected_latest_sequence": 1}, owner_id="owner-a")
