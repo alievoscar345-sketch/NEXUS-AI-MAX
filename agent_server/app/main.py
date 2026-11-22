@@ -428,7 +428,7 @@ class ProviderCredentialInput(BaseModel):
     display_name: str = Field(default="", max_length=100)
     base_url: str = Field(min_length=12, max_length=300)
     model: str = Field(min_length=1, max_length=160)
-    api_key: SecretStr
+    api_key: SecretStr | None = None
     supports_vision: bool = False
 
 
@@ -4000,15 +4000,25 @@ def list_providers(owner_id: str = Depends(auth)):
 @app.post("/v1/providers", dependencies=[Depends(auth)])
 def save_provider(body: ProviderCredentialInput, owner_id: str = Depends(auth)):
     base_url = validate_provider_base_url(body.base_url)
-    provider_key = body.api_key.get_secret_value()
-    if not 8 <= len(provider_key) <= 4096:
-        raise HTTPException(422, "Provider API key must be between 8 and 4096 characters")
-    try:
-        encrypted = encrypt_secret(provider_key)
-    except CredentialEncryptionError as exc:
-        raise HTTPException(503, "Credential encryption is not configured") from exc
+    provider_key = body.api_key.get_secret_value().strip() if body.api_key else ""
+    encrypted = None
+    if provider_key:
+        if not 8 <= len(provider_key) <= 4096:
+            raise HTTPException(422, "Provider API key must be between 8 and 4096 characters")
+        try:
+            encrypted = encrypt_secret(provider_key)
+        except CredentialEncryptionError as exc:
+            raise HTTPException(503, "Credential encryption is not configured") from exc
     now = time.time()
     with db() as c:
+        if encrypted is None:
+            existing = c.execute(
+                "SELECT encrypted_api_key FROM provider_credentials WHERE owner_id=? AND provider_id=?",
+                (owner_id, body.provider_id),
+            ).fetchone()
+            if not existing:
+                raise HTTPException(422, "An API key is required when adding a new provider")
+            encrypted = bytes(existing["encrypted_api_key"])
         c.execute("""INSERT INTO provider_credentials(owner_id,provider_id,display_name,base_url,model,
             encrypted_api_key,supports_vision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)
             ON CONFLICT(owner_id,provider_id) DO UPDATE SET display_name=excluded.display_name,
