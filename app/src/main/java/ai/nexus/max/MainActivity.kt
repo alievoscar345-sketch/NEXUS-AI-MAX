@@ -2263,8 +2263,13 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     val messages = JSONArray().put(
                         JSONObject().put("role", "system").put("content", SYSTEM_PROMPT + (personalContext?.let { "\n\n" + it } ?: ""))
                     )
-                    history.takeLast(24).forEach { line ->
-                        val imageAttachments = line.attachments.filter { it.mimeType.startsWith("image/") }
+                    val requestHistory = history.takeLast(500)
+                    requestHistory.forEachIndexed { historyIndex, line ->
+                        // Keep recent images in the multimodal request; older image bytes stay
+                        // in the local archive and are represented in the context digest.
+                        val imageAttachments = if (historyIndex >= requestHistory.size - 24) {
+                            line.attachments.filter { it.mimeType.startsWith("image/") }
+                        } else emptyList()
                         val textAttachments = line.attachments.filter { it.textContent.isNotBlank() }
                         if (line.role == "user" && (imageAttachments.isNotEmpty() || textAttachments.isNotEmpty())) {
                             val parts = JSONArray()
