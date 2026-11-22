@@ -220,7 +220,8 @@ class ModelGateway:
 
     async def complete_messages(self, messages: list[dict[str, Any]],
                                 purpose: str = "general",
-                                selected_model_id: str | None = None) -> ModelResult:
+                                selected_model_id: str | None = None,
+                                max_tokens: int | None = None) -> ModelResult:
         text_parts: list[str] = []
         requires_vision = False
         # Route from recent user-authored turns only; system prompts and assistant
@@ -257,6 +258,7 @@ class ModelGateway:
                             "model": model.model,
                             "temperature": 0.2,
                             "messages": messages,
+                            **({"max_tokens": max_tokens} if max_tokens is not None else {}),
                         },
                     )
                     response.raise_for_status()
@@ -298,7 +300,8 @@ class ModelGateway:
         raise ModelGatewayError(f"All eligible model providers failed ({detail})") from last_error
 
     async def stream_messages(self, messages: list[dict[str, Any]], purpose: str = "general",
-                              selected_model_id: str | None = None):
+                              selected_model_id: str | None = None,
+                              max_tokens: int | None = None):
         """Yield OpenAI-compatible chunks with actual provider metadata; manual selection is strict."""
         text_parts: list[str] = []
         requires_vision = False
@@ -335,8 +338,11 @@ class ModelGateway:
                         model.base_url + "/chat/completions",
                         headers={"Authorization": "Bearer " + model.api_key,
                                  "Accept": "text/event-stream"},
-                        json={"model": model.model, "temperature": 0.2,
-                              "messages": messages, "stream": True},
+                        json={
+                            "model": model.model, "temperature": 0.2,
+                            "messages": messages, "stream": True,
+                            **({"max_tokens": max_tokens} if max_tokens is not None else {}),
+                        },
                     ) as response:
                         response.raise_for_status()
                         data_lines: list[str] = []
