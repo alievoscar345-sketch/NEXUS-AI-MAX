@@ -243,7 +243,10 @@ data class ChatLine(
     val role: String,
     val content: String,
     val attachments: List<ChatAttachment> = emptyList(),
-    val providerMessagesJson: String? = null
+    val providerMessagesJson: String? = null,
+    val actualModel: String = "",
+    val actualProvider: String = "",
+    val actualDisplayName: String = ""
 )
 
 private const val MAX_CHAT_ATTACHMENT_TEXT_CHARS = 180_000
@@ -408,13 +411,15 @@ data class RemoteProvider(
     val providerId: String,
     val baseUrl: String,
     val model: String,
-    val supportsVision: Boolean = false
+    val supportsVision: Boolean = false,
+    val displayName: String = model
 )
 data class RemoteModel(
     val providerId: String,
     val model: String,
     val source: String,
-    val capabilities: List<String>
+    val capabilities: List<String>,
+    val displayName: String = model
 )
 data class ChatSession(
     val id: String,
@@ -591,6 +596,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var remoteModels by mutableStateOf<List<RemoteModel>>(emptyList())
         private set
+    var chatModelSelection by mutableStateOf("auto")
+        private set
+    fun setChatModelSelection(value: String) { chatModelSelection = value }
     var providerVaultBusy by mutableStateOf(false)
         private set
     var providerVaultMessage by mutableStateOf<String?>(null)
@@ -1721,7 +1729,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                                     capabilitiesJson.optString(i).takeIf { it.isNotBlank() }?.let(::add)
                                 }
                             }
-                            RemoteModel(id, item.optString("model"), item.optString("source"), capabilities)
+                            RemoteModel(id, item.optString("model"), item.optString("source"), capabilities, item.optString("display_name").ifBlank { item.optString("model") })
                         }
                     }
                 }
@@ -1749,7 +1757,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         (0 until data.length()).mapNotNull { index ->
                             val item = data.optJSONObject(index) ?: return@mapNotNull null
                             val id = item.optString("provider_id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                            RemoteProvider(id, item.optString("base_url"), item.optString("model"), item.optBoolean("supports_vision", false))
+                            RemoteProvider(id, item.optString("base_url"), item.optString("model"), item.optBoolean("supports_vision", false), item.optString("display_name").ifBlank { item.optString("model") })
                         }
                     }
                 }
@@ -1765,10 +1773,10 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun saveRemoteProvider(providerId: String, baseUrl: String, modelId: String, providerKey: String, supportsVision: Boolean) {
+    fun saveRemoteProvider(providerId: String, displayName: String, baseUrl: String, modelId: String, providerKey: String, supportsVision: Boolean) {
         if (providerVaultBusy) return
-        if (providerId.isBlank() || baseUrl.isBlank() || modelId.isBlank() || providerKey.isBlank()) {
-            providerVaultMessage = "Заполни ID, Base URL, Model ID и API-ключ."
+        if (providerId.isBlank() || baseUrl.isBlank() || modelId.isBlank()) {
+            providerVaultMessage = "Заполни ID, название, Base URL и Model ID."
             return
         }
         providerVaultBusy = true
@@ -1777,6 +1785,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.IO) {
                     val body = JSONObject()
                         .put("provider_id", providerId.trim())
+                        .put("display_name", displayName.trim().ifBlank { modelId.trim() })
                         .put("base_url", baseUrl.trim())
                         .put("model", modelId.trim())
                         .put("api_key", providerKey.trim())
@@ -1792,7 +1801,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 providerVaultMessage = "Ключ сохранён на сервере в зашифрованном виде."
                 remoteProviders = remoteProviders.filterNot { it.providerId == providerId.trim() } +
-                    RemoteProvider(providerId.trim(), baseUrl.trim().trimEnd('/'), modelId.trim(), supportsVision)
+                    RemoteProvider(providerId.trim(), baseUrl.trim().trimEnd('/'), modelId.trim(), supportsVision, displayName.trim().ifBlank { modelId.trim() })
                 loadRemoteModels()
             } catch (e: Exception) {
                 providerVaultMessage = e.message ?: "Не удалось сохранить ключ."
@@ -2219,6 +2228,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         error = null
         var streamedAnswer = ""
         var providerMessagesJson: String? = null
+        var actualModel = ""
+        var actualProvider = ""
+        var actualDisplayName = ""
 
         viewModelScope.launch {
             try {
@@ -2266,6 +2278,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         .put("model", if (useCloudGateway) "auto" else activeModel)
                         .put("messages", messages)
                         .put("stream", true)
+                    if (useCloudGateway) body.put("model_selection", chatModelSelection)
                     if (useReasoning && cfg.provider == "OpenRouter") {
                         body.put("reasoning", JSONObject().put("effort", "high"))
                     }
@@ -2304,8 +2317,14 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         val decoder = ChatCompletionSseDecoder()
                         suspend fun processSseData(payload: String) {
                             if (payload.isBlank()) return
+                            val eventPayload = try { JSONObject(payload) } catch (_: Exception) { null }
+                            if (eventPayload != null) {
+                                actualModel = eventPayload.optString("model", actualModel)
+                                actualProvider = eventPayload.optString("provider_id", actualProvider)
+                                actualDisplayName = eventPayload.optString("display_name", actualDisplayName)
+                            }
                             val delta = try {
-                                JSONObject(payload).optJSONArray("choices")
+                                eventPayload?.optJSONArray("choices")
                                     ?.optJSONObject(0)?.optJSONObject("delta")
                                     ?.opt("content")
                             } catch (_: Exception) { null }
@@ -2324,7 +2343,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                             if (chunk.isNotEmpty()) {
                                 streamedAnswer += chunk
                                 withContext(Dispatchers.Main) {
-                                    updateChatLive(chatId, streamedAnswer)
+                                    updateChatLive(chatId, streamedAnswer, actualModel, actualProvider, actualDisplayName)
                                 }
                             }
                         }
@@ -2350,7 +2369,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 if (latest != null) updateChat(
                     chatId,
                     latest.copy(
-                        lines = latest.lines.dropLast(1) + ChatLine("assistant", answer, providerMessagesJson = providerMessagesJson),
+                        lines = latest.lines.dropLast(1) + ChatLine("assistant", answer, providerMessagesJson = providerMessagesJson,
+                            actualModel = actualModel, actualProvider = actualProvider, actualDisplayName = actualDisplayName),
                         updatedAt = System.currentTimeMillis()
                     )
                 )
@@ -2358,7 +2378,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 val latest = chats.firstOrNull { it.id == chatId }
                 if (latest != null) {
                     val lines = latest.lines.dropLast(1)
-                    val finalLines = if (streamedAnswer.isBlank()) lines else lines + ChatLine("assistant", streamedAnswer)
+                    val finalLines = if (streamedAnswer.isBlank()) lines else lines + ChatLine("assistant", streamedAnswer,
+                        actualModel = actualModel, actualProvider = actualProvider, actualDisplayName = actualDisplayName)
                     updateChat(chatId, latest.copy(lines = finalLines, updatedAt = System.currentTimeMillis()))
                 }
                 if (!cancelRequested) error = e.message ?: "Ошибка запроса"
@@ -2492,10 +2513,10 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         throw IllegalStateException("Не удалось завершить веб-поиск.")
     }
 
-    private fun updateChatLive(id: String, answer: String) {
+    private fun updateChatLive(id: String, answer: String, model: String = "", provider: String = "", displayName: String = "") {
         val current = chats.firstOrNull { it.id == id } ?: return
         if (current.lines.isEmpty()) return
-        val updatedLines = current.lines.dropLast(1) + ChatLine("assistant", answer)
+        val updatedLines = current.lines.dropLast(1) + ChatLine("assistant", answer, actualModel = model, actualProvider = provider, actualDisplayName = displayName)
         chats = chats.map {
             if (it.id == id) current.copy(lines = updatedLines, updatedAt = System.currentTimeMillis()) else it
         }
@@ -2522,6 +2543,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val lineObject = JSONObject().put("role", line.role).put("content", line.content).put("attachments", attachments)
                 line.providerMessagesJson?.let { lineObject.put("providerMessagesJson", it) }
+                if (line.actualModel.isNotBlank()) lineObject.put("actualModel", line.actualModel)
+                if (line.actualProvider.isNotBlank()) lineObject.put("actualProvider", line.actualProvider)
+                if (line.actualDisplayName.isNotBlank()) lineObject.put("actualDisplayName", line.actualDisplayName)
                 lineArray.put(lineObject)
             }
             array.put(
@@ -2567,6 +2591,9 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                                 .put("content", line.content)
                                 .put("attachments", attachmentArray)
                             line.providerMessagesJson?.let { lineObject.put("providerMessagesJson", it) }
+                            if (line.actualModel.isNotBlank()) lineObject.put("actualModel", line.actualModel)
+                            if (line.actualProvider.isNotBlank()) lineObject.put("actualProvider", line.actualProvider)
+                            if (line.actualDisplayName.isNotBlank()) lineObject.put("actualDisplayName", line.actualDisplayName)
                             lineArray.put(lineObject)
                         }
                         chatArray.put(
@@ -2635,7 +2662,10 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                                     line.optString("role", "user"),
                                     line.optString("content", ""),
                                     attachments,
-                                    line.optString("providerMessagesJson", "").takeIf { it.isNotBlank() }
+                                    line.optString("providerMessagesJson", "").takeIf { it.isNotBlank() },
+                                    line.optString("actualModel", ""),
+                                    line.optString("actualProvider", ""),
+                                    line.optString("actualDisplayName", "")
                                 )
                             }
                             ChatSession(
@@ -2688,7 +2718,10 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                         line.optString("role"),
                         line.optString("content"),
                         attachments,
-                        line.optString("providerMessagesJson", "").takeIf { it.isNotBlank() }
+                        line.optString("providerMessagesJson", "").takeIf { it.isNotBlank() },
+                        line.optString("actualModel", ""),
+                        line.optString("actualProvider", ""),
+                        line.optString("actualDisplayName", "")
                     )
                 }
                 ChatSession(
@@ -2834,6 +2867,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     var githubRepoDraft by remember { mutableStateOf("") }
     var githubTokenDraft by remember { mutableStateOf("") }
     var vaultProviderId by remember { mutableStateOf("anymodel") }
+    var vaultDisplayName by remember { mutableStateOf("Claude Fable 5.2") }
     var vaultBaseUrl by remember { mutableStateOf("https://anymodel.org/v1") }
     var vaultModelId by remember { mutableStateOf("claude-fable-5-2") }
     var vaultApiKey by remember { mutableStateOf("") }
@@ -2847,6 +2881,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
     val supportsDeepReasoning = vm.settings.provider == "OpenRouter" && "reasoning" in selectedModelCapabilities
     val supportsBuiltInSearch = vm.settings.provider == "AnyModel" && activeFeatureModel.contains("claude", ignoreCase = true)
     var featureMenuExpanded by remember { mutableStateOf(false) }
+    var chatModelMenuExpanded by remember { mutableStateOf(false) }
     var attachmentMenuExpanded by remember { mutableStateOf(false) }
     var webSearchEnabled by remember(featureModelKey) { mutableStateOf(false) }
     var reasoningEnabled by remember(featureModelKey) { mutableStateOf(false) }
@@ -3083,6 +3118,18 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         }
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = 5.dp)) {
+                        Box {
+                            TextButton(onClick = { chatModelMenuExpanded = true }, contentPadding = PaddingValues(horizontal = 7.dp, vertical = 3.dp)) {
+                                val chosen = vm.remoteModels.firstOrNull { it.providerId == vm.chatModelSelection }
+                                Text(if (vm.chatModelSelection == "auto") "Модель: автоматически" else "Модель: " + (chosen?.displayName ?: vm.chatModelSelection), color = ambientAccent, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                            }
+                            DropdownMenu(expanded = chatModelMenuExpanded, onDismissRequest = { chatModelMenuExpanded = false }) {
+                                DropdownMenuItem(text = { Text("Автоматически · NEXUS") }, onClick = { vm.setChatModelSelection("auto"); chatModelMenuExpanded = false })
+                                vm.remoteModels.forEach { model ->
+                                    DropdownMenuItem(text = { Text(model.displayName + " · " + model.model) }, onClick = { vm.setChatModelSelection(model.providerId); chatModelMenuExpanded = false })
+                                }
+                            }
+                        }
                         Box {
                             TextButton(
                                 onClick = { featureMenuExpanded = true },
@@ -3423,6 +3470,11 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                                     }
                                                 )
                                             )
+                                            if (line.actualDisplayName.isNotBlank()) {
+                                                Text("Ответила модель: " + line.actualDisplayName +
+                                                    (if (line.actualProvider.isNotBlank()) " · " + line.actualProvider.removePrefix("user-") else ""),
+                                                    color = Muted, fontSize = 9.sp, modifier = Modifier.padding(top = 5.dp))
+                                            }
                                         }
                                     }
                                 }
@@ -3984,8 +4036,16 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         vm.remoteProviders.forEach { remote ->
                             Surface(color = PanelRaised, shape = RoundedCornerShape(10.dp)) {
                                 Column(Modifier.fillMaxWidth().padding(9.dp)) {
-                                    Text(remote.providerId, color = MainText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                    Text(remote.model + " · " + remote.baseUrl, color = Muted, fontSize = 9.sp)
+                                    Text(remote.displayName, color = MainText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                    Text(remote.providerId + " · " + remote.model + " · " + remote.baseUrl, color = Muted, fontSize = 9.sp)
+                                    TextButton(onClick = {
+                                        vaultProviderId = remote.providerId
+                                        vaultDisplayName = remote.displayName
+                                        vaultBaseUrl = remote.baseUrl
+                                        vaultModelId = remote.model
+                                        vaultApiKey = ""
+                                        vaultSupportsVision = remote.supportsVision
+                                    }) { Text("Изменить", color = Blue, fontSize = 10.sp) }
                                     Text(if (remote.supportsVision) "Поддерживает изображения" else "Только текст", color = Muted, fontSize = 9.sp)
                                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                         TextButton(
@@ -4019,6 +4079,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                     }
                     Text("ДОБАВИТЬ ИЛИ ЗАМЕНИТЬ КЛЮЧ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     OutlinedTextField(vaultProviderId, { vaultProviderId = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Provider ID, например anymodel") }, singleLine = true)
+                    OutlinedTextField(vaultDisplayName, { vaultDisplayName = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Название модели для списка") }, singleLine = true)
                     OutlinedTextField(vaultBaseUrl, { vaultBaseUrl = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Base URL") }, singleLine = true)
                     OutlinedTextField(vaultModelId, { vaultModelId = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Model ID") }, singleLine = true)
                     OutlinedTextField(vaultApiKey, { vaultApiKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("API-ключ провайдера") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
@@ -4030,7 +4091,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         onClick = {
                             vm.updateAgentServer(agentServerUrl, agentServerToken)
                             agentServerToken = ""
-                            vm.saveRemoteProvider(vaultProviderId, vaultBaseUrl, vaultModelId, vaultApiKey, vaultSupportsVision)
+                            vm.saveRemoteProvider(vaultProviderId, vaultDisplayName, vaultBaseUrl, vaultModelId, vaultApiKey, vaultSupportsVision)
                             vaultApiKey = ""
                         },
                         enabled = !vm.providerVaultBusy && vm.agentServerConfigured && agentServerUrl.startsWith("https://") && vaultApiKey.isNotBlank(),
