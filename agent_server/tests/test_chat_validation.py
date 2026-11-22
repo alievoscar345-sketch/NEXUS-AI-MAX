@@ -3,7 +3,7 @@ import unittest
 
 from fastapi import HTTPException
 
-from app.main import validate_chat_messages
+from app.main import ChatCompletionInput, validate_chat_messages
 
 
 class ChatValidationTests(unittest.TestCase):
@@ -25,6 +25,12 @@ class ChatValidationTests(unittest.TestCase):
 
         error = ModelGatewayError("All eligible model providers failed (HTTP 401)")
         self.assertEqual(_chat_gateway_error_message(error, requires_vision=False), str(error))
+
+    def test_chat_request_accepts_extended_history(self):
+        request = ChatCompletionInput(messages=[
+            {"role": "user", "content": f"message-{index}"} for index in range(2000)
+        ])
+        self.assertEqual(len(request.messages), 2000)
 
     def test_accepts_text_only_chat(self):
         self.assertFalse(validate_chat_messages([
