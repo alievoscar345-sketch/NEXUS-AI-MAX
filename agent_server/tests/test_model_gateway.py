@@ -168,7 +168,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_stream_reports_actual_model_identity(self):
-        body = 'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}\\n\\n'
+        body = "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": "ok"}}]}) + chr(10) * 2
         model = ModelConfig(
             id="user-visible", base_url="https://provider.example/v1",
             model="visible-model", api_key="key", display_name="Модель для кода",
