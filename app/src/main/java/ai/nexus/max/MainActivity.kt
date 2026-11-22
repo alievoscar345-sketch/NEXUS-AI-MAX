@@ -4093,6 +4093,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                                 Column(Modifier.fillMaxWidth().padding(9.dp)) {
                                     Text(remote.displayName, color = MainText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                     Text(remote.providerId + " · " + remote.model + " · " + remote.baseUrl, color = Muted, fontSize = 9.sp)
+                                    Text("Контекстное окно: ${remote.contextWindowTokens} токенов", color = Muted, fontSize = 9.sp)
                                     TextButton(onClick = {
                                         vaultProviderId = remote.providerId
                                         vaultDisplayName = remote.displayName
@@ -4145,7 +4146,7 @@ fun NexusApp(vm: NexusViewModel = viewModel()) {
                         onValueChange = { value -> vaultContextWindowTokens = value.filter(Char::isDigit).take(7) },
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("Контекстное окно модели (токенов)") },
-                        supportingText = { Text("Укажи лимит из документации провайдера. Допустимо 4096–2000000.") },
+                        supportingText = { Text("Полный лимит из документации провайдера, не лимит ответа. Допустимо 4096–2000000.") },
                         singleLine = true
                     )
                     OutlinedTextField(
