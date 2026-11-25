@@ -16,7 +16,6 @@ import asyncio
 import base64
 import json
 import os
-import socket
 import sys
 import tempfile
 import time
@@ -27,17 +26,11 @@ import uvicorn
 
 # ---------------------------------------------------------------------------
 # Environment must be configured before importing app.main (it reads API key,
-# DB path, workspace, and worker flag at import time).
+# DB path, workspace, and worker flag at import time). Ports are NOT allocated
+# here: both servers bind port 0 inside uvicorn and report their real ports
+# afterwards, which avoids the pre-allocation race where two _free_port()
+# calls could return the same port and the mock silently lost the bind.
 # ---------------------------------------------------------------------------
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-
-
-MOCK_PORT = _free_port()
-APP_PORT = _free_port()
-
 _TMP = tempfile.mkdtemp(prefix="nexus-smoke-")
 os.environ["NEXUS_AGENT_API_KEY"] = "smoke-api-key"
 os.environ["NEXUS_CREDENTIAL_ENCRYPTION_KEY"] = base64.b64encode(
@@ -47,16 +40,20 @@ os.environ["NEXUS_AGENT_DB"] = str(Path(_TMP) / "nexus.sqlite3")
 os.environ["NEXUS_AGENT_WORKSPACE"] = str(Path(_TMP) / "workspace")
 os.environ["NEXUS_AGENT_WORKER_ENABLED"] = "true"
 os.environ["NEXUS_SMOKE_MOCK_KEY"] = "mock-provider-secret"
-os.environ["NEXUS_MODEL_PROVIDERS"] = json.dumps([{
-    "id": "smoke-primary",
-    "base_url": f"http://127.0.0.1:{MOCK_PORT}/v1",
-    "model": "smoke-model",
-    "api_key_env": "NEXUS_SMOKE_MOCK_KEY",
-    "purposes": ["general", "planning", "evaluation"],
-}])
 
 from app import main  # noqa: E402  (env must be set first)
 from app.credentials import decrypt_secret  # noqa: E402
+
+
+def _configure_model_providers(mock_port: int) -> None:
+    """Point the gateway at the mock provider; read by load_models per request."""
+    os.environ["NEXUS_MODEL_PROVIDERS"] = json.dumps([{
+        "id": "smoke-primary",
+        "base_url": f"http://127.0.0.1:{mock_port}/v1",
+        "model": "smoke-model",
+        "api_key_env": "NEXUS_SMOKE_MOCK_KEY",
+        "purposes": ["general", "planning", "evaluation"],
+    }])
 
 PLAINTEXT_PROVIDER_KEY = "smoke-plaintext-secret-123"
 
@@ -296,23 +293,48 @@ async def run_checks(client: httpx.AsyncClient, db_path: Path) -> None:
           f"{deleted.status_code}/{deleted_again.status_code}")
 
 
+async def _wait_started(server: "_NoSignalServer", task: "asyncio.Task", timeout: float = 30.0) -> None:
+    """Wait until uvicorn finished startup, surfacing early task crashes."""
+    deadline = time.monotonic() + timeout
+    while not server.started:
+        if task.done():
+            exc = task.exception()
+            if exc is not None:
+                raise RuntimeError(f"{task.get_name()} died during startup: {exc!r}") from exc
+            raise RuntimeError(f"{task.get_name()} exited before startup completed")
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"{task.get_name()} did not start within {timeout}s")
+        await asyncio.sleep(0.05)
+
+
+def _bound_port(server: "_NoSignalServer") -> int:
+    return int(server.servers[0].sockets[0].getsockname()[1])
+
+
 async def amain() -> int:
     _gh_command("notice", "phase=startup (python %s)" % sys.version.split()[0])
     mock_server = _NoSignalServer(uvicorn.Config(
-        mock_provider_app, host="127.0.0.1", port=MOCK_PORT, log_level="warning", lifespan="off",
+        mock_provider_app, host="127.0.0.1", port=0, log_level="warning", lifespan="off",
     ))
     app_server = _NoSignalServer(uvicorn.Config(
-        "app.main:app", host="127.0.0.1", port=APP_PORT, log_level="warning",
+        "app.main:app", host="127.0.0.1", port=0, log_level="warning",
     ))
     tasks = [
         asyncio.create_task(mock_server.serve(), name="mock-provider"),
         asyncio.create_task(app_server.serve(), name="nexus-app"),
     ]
     try:
-        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{APP_PORT}", timeout=30.0) as client:
+        await _wait_started(mock_server, tasks[0])
+        mock_port = _bound_port(mock_server)
+        _configure_model_providers(mock_port)
+        await _wait_started(app_server, tasks[1])
+        app_port = _bound_port(app_server)
+        _gh_command("notice", f"listening app=127.0.0.1:{app_port} mock=127.0.0.1:{mock_port}")
+
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{app_port}", timeout=30.0) as client:
             app_ready = await _wait_for(client, "/health")
             check("uvicorn app started and serves /health", app_ready)
-            async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{MOCK_PORT}", timeout=10.0) as mock_client:
+            async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{mock_port}", timeout=10.0) as mock_client:
                 mock_ready = await _wait_for(mock_client, "/health")
             check("mock provider started", mock_ready)
             if app_ready and mock_ready:
