@@ -87,12 +87,18 @@ class ContextManagerTests(unittest.TestCase):
         self.assertIn("history-0", digest)
         self.assertIn("history-1", digest)
         self.assertNotIn("recent-19", digest)
-        self.assertGreater(stats["dropped_messages"], 6)
+        # Every turn before the retained recent suffix is dropped: the five
+        # history turns plus the oversized gap. Before the contiguity fix the
+        # reverse scan dropped only four history turns, losing history-4
+        # entirely (1 system + 5 + 1 dropped + 20 kept + 1 latest = 28).
+        self.assertEqual(stats["dropped_messages"], 6)
         self.assertEqual(compacted[-1], messages[-1])
-        self.assertEqual(
-            [m["content"].split()[0] for m in compacted if m.get("role") == "user" and "recent-" in m.get("content", "")][-1],
-            "recent-19",
-        )
+        retained_recent = [
+            m["content"].split()[0]
+            for m in compacted
+            if m.get("role") == "user" and "recent-" in m.get("content", "")
+        ]
+        self.assertEqual(retained_recent, [f"recent-{i}" for i in range(20)])
 
     def test_extractive_digest_preserves_start_and_end_of_long_turns(self):
         messages = [
