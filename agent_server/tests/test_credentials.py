@@ -30,6 +30,11 @@ class CredentialEncryptionTests(unittest.TestCase):
             with self.assertRaises(CredentialEncryptionError):
                 decrypt_secret(bytes(encrypted))
 
+    def test_invalid_base64_characters_are_rejected(self):
+        with patch.dict(os.environ, {"NEXUS_CREDENTIAL_ENCRYPTION_KEY": "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY$"}):
+            with self.assertRaises(CredentialEncryptionError):
+                encrypt_secret("secret-value")
+
     def test_missing_encryption_key_fails_closed(self):
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(CredentialEncryptionError):

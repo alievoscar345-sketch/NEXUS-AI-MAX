@@ -295,3 +295,29 @@ The Agent Server now exposes a normalized authenticated chat-completions endpoin
 Android settings now include the Agent Server connection, an encrypted local server access token (Android Keystore), provider credential management, and a vision-capability flag. When the server is configured, ordinary chat and supported image attachments are routed through the server gateway. Provider-specific web search and reasoning still use the legacy direct-provider path. The cloud chat endpoint is currently non-streaming.
 
 Remaining boundaries: the server bearer token still maps to the single `personal` owner; account/JWT authentication is required before multi-user exposure. The backend must be deployed and its encryption key configured before the Android vault can connect. Streaming, server-side web-search adapters, reasoning controls, provider capability verification, quotas, and billing are future work.
+
+
+## Implementation update — 2026-11-21
+
+The current feature branch now includes the following product-facing pieces in addition to the baseline above:
+
+- Android chat can extract candidate long-term memories from the current conversation. Candidates are user-reviewed drafts; saving requires an explicit action. Existing memory retrieval remains lexical/title-weighted and is not yet semantic embedding search.
+- The cloud agent backend stores one-time, daily, weekly, and interval automations. Daily/weekly schedules use IANA time zones; due schedules are converted into normal durable agent tasks.
+- Android exposes an automation manager for creation, listing, pause/resume, immediate execution, and deletion.
+- Scheduled execution currently depends on the single backend instance remaining online. It is not a distributed/high-availability scheduler.
+- The autonomous agent still has a constrained tool set. Arbitrary code execution and general browser automation are not implemented; do not represent the current workspace file tools as a secure code sandbox.
+
+The user's current delivery order is feature-first: finish the agreed product functionality before the comprehensive test pass, APK assembly, and release verification. Do not use earlier CI results as validation of newer commits. Keep the pull request in Draft and do not merge without explicit permission.
+
+
+## Project and skill systems — implementation update
+
+- Owner-scoped projects store a durable project brief and can be attached to new autonomous tasks. The planner receives the project brief before planning. Project deletion preserves tasks and clears the association.
+- Owner-scoped reusable skills can be created, edited, enabled/disabled, and deleted from Android. Relevant enabled skills are selected using lexical token overlap and injected into normal chat and autonomous task planning.
+- Skill text is treated as user preference data and cannot override system rules, tool permissions, or safety controls.
+- Skill relevance is currently keyword-based; embedding-based semantic retrieval remains future work.
+
+
+## Personal context in autonomous tasks
+
+Before the planner creates a task plan, it retrieves a bounded set of relevant user-approved memories, the selected project's brief, and enabled reusable skills. The planner is instructed to treat these as user-provided context rather than higher-priority system instructions. Normal chat separately retrieves relevant memories and a small set of skills based on lexical overlap.
