@@ -19,6 +19,7 @@ import os
 import socket
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import httpx
@@ -64,12 +65,22 @@ MOCK_STATE = {"last_model": None, "request_count": 0}
 FAILURES: list[str] = []
 
 
+def _gh_command(level: str, message: str) -> None:
+    """Emit a GitHub Actions workflow command so results are visible as
+    annotations (CI job logs are not fetchable from every environment)."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::{level}::smoke_e2e: {escaped}")
+
+
 def check(name: str, condition: bool, detail: str = "") -> None:
     if condition:
         print(f"PASS: {name}")
     else:
         message = f"FAIL: {name}" + (f" — {detail}" if detail else "")
         print(message)
+        _gh_command("error", message)
         FAILURES.append(message)
 
 
@@ -143,8 +154,8 @@ class _NoSignalServer(uvicorn.Server):
 
 
 async def _wait_for(client: httpx.AsyncClient, url: str, timeout: float = 30.0) -> bool:
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         try:
             response = await client.get(url)
             if response.status_code < 500:
@@ -166,8 +177,8 @@ async def run_checks(client: httpx.AsyncClient, db_path: Path) -> None:
     # 2. Worker heartbeat (worker is enabled via lifespan).
     worker_ok = False
     worker_detail = ""
-    deadline = asyncio.get_event_loop().time() + 20.0
-    while asyncio.get_event_loop().time() < deadline:
+    deadline = time.monotonic() + 20.0
+    while time.monotonic() < deadline:
         worker = await client.get("/health/worker")
         if worker.status_code == 200:
             worker_ok = True
@@ -286,6 +297,7 @@ async def run_checks(client: httpx.AsyncClient, db_path: Path) -> None:
 
 
 async def amain() -> int:
+    _gh_command("notice", "phase=startup (python %s)" % sys.version.split()[0])
     mock_server = _NoSignalServer(uvicorn.Config(
         mock_provider_app, host="127.0.0.1", port=MOCK_PORT, log_level="warning", lifespan="off",
     ))
@@ -304,6 +316,7 @@ async def amain() -> int:
                 mock_ready = await _wait_for(mock_client, "/health")
             check("mock provider started", mock_ready)
             if app_ready and mock_ready:
+                _gh_command("notice", "phase=checks")
                 await run_checks(client, Path(os.environ["NEXUS_AGENT_DB"]))
     finally:
         mock_server.should_exit = True
@@ -312,10 +325,20 @@ async def amain() -> int:
 
     if FAILURES:
         print(f"\n{len(FAILURES)} check(s) FAILED")
+        _gh_command("error", f"{len(FAILURES)} check(s) failed")
         return 1
     print("\nAll smoke checks passed")
+    _gh_command("notice", "phase=done: all checks passed")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(amain()))
+    try:
+        sys.exit(asyncio.run(amain()))
+    except SystemExit:
+        raise
+    except BaseException as exc:  # surface crashes as CI annotations
+        import traceback
+        traceback.print_exc()
+        _gh_command("error", f"crashed: {type(exc).__name__}: {exc}")
+        sys.exit(1)
