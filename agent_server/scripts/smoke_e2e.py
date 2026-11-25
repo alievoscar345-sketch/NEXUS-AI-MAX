@@ -193,7 +193,63 @@ async def run_checks(client: httpx.AsyncClient, db_path: Path) -> None:
     check("protected route rejects wrong bearer", wrong_auth.status_code == 401, str(wrong_auth.status_code))
     check("protected route accepts configured bearer", good_auth.status_code == 200, good_auth.text)
 
-    # 4. Provider CRUD + encryption at rest.
+    # 4. Chat checks run BEFORE any provider row exists: auto-routing then only
+    # sees the mock env provider. If a real saved provider (e.g. anymodel.org)
+    # were present, CI with live internet would hard-fail on its non-retryable
+    # HTTP 401 before reaching the mock (gateway breaks on non-retryable status).
+    # 5. Auto chat (actual-model metadata).
+    auto_chat = await client.post("/v1/chat/completions", headers=headers, json={
+        "messages": [{"role": "user", "content": "ping"}],
+    })
+    auto_body = auto_chat.json() if auto_chat.status_code == 200 else {}
+    check("POST /v1/chat/completions auto-routing returns 200",
+          auto_chat.status_code == 200, auto_chat.text)
+    check("response names the actual model/provider",
+          auto_body.get("model") == "smoke-model" and auto_body.get("provider") == "smoke-primary",
+          json.dumps(auto_body)[:300])
+    check("response content comes from the provider",
+          auto_body.get("choices", [{}])[0].get("message", {}).get("content") == "smoke-ok",
+          json.dumps(auto_body)[:300])
+    check("response exposes context stats",
+          isinstance(auto_body.get("context"), dict) and auto_body["context"].get("context_window_tokens", 0) >= 4096,
+          json.dumps(auto_body.get("context")))
+    check("gateway actually called the mock provider with the routed model",
+          MOCK_STATE["last_model"] == "smoke-model", str(MOCK_STATE["last_model"]))
+
+    # 6. Strict manual selection.
+    ghost = await client.post("/v1/chat/completions", headers=headers, json={
+        "messages": [{"role": "user", "content": "ping"}],
+        "model_selection": "ghost-model",
+    })
+    check("manual selection of an unconfigured model is rejected (422)",
+          ghost.status_code == 422, ghost.text)
+    manual = await client.post("/v1/chat/completions", headers=headers, json={
+        "messages": [{"role": "user", "content": "ping"}],
+        "model_selection": "smoke-primary",
+    })
+    check("manual selection of the configured model succeeds",
+          manual.status_code == 200 and manual.json().get("model") == "smoke-model", manual.text)
+
+    # 7. Streaming with context headers and actual-model metadata.
+    stream = await client.post("/v1/chat/completions", headers=headers, json={
+        "messages": [{"role": "user", "content": "ping"}],
+        "stream": True,
+    })
+    stream_text = stream.text
+    check("stream returns text/event-stream",
+          stream.status_code == 200 and "text/event-stream" in stream.headers.get("content-type", ""),
+          f"status={stream.status_code}")
+    check("stream carries X-Nexus-Context headers",
+          "x-nexus-context-window" in stream.headers and "x-nexus-context-dropped" in stream.headers,
+          str(dict(stream.headers)))
+    check("stream chunks carry actual-model metadata and terminate with [DONE]",
+          '"provider_id":"smoke-primary"' in stream_text
+          and '"display_name":"smoke-model"' in stream_text
+          and stream_text.rstrip().endswith("data: [DONE]"),
+          stream_text[-200:])
+
+
+    # 8. Provider CRUD + encryption at rest.
     saved = await client.post("/v1/providers", headers=headers, json={
         "provider_id": "anymodel",
         "display_name": "AnyModel",
@@ -226,7 +282,7 @@ async def run_checks(client: httpx.AsyncClient, db_path: Path) -> None:
     check("stored ciphertext decrypts to the original key",
           decrypted == PLAINTEXT_PROVIDER_KEY, decrypted[:8] if decrypted else "no row")
 
-    # 5. Catalog.
+    # 9. Catalog.
     catalog = await client.get("/v1/models", headers=headers)
     catalog_text = catalog.text
     check("GET /v1/models lists the env provider",
@@ -234,58 +290,7 @@ async def run_checks(client: httpx.AsyncClient, db_path: Path) -> None:
     check("catalog does not leak provider secrets",
           "mock-provider-secret" not in catalog_text and PLAINTEXT_PROVIDER_KEY not in catalog_text)
 
-    # 6. Auto chat (actual-model metadata).
-    auto_chat = await client.post("/v1/chat/completions", headers=headers, json={
-        "messages": [{"role": "user", "content": "ping"}],
-    })
-    auto_body = auto_chat.json() if auto_chat.status_code == 200 else {}
-    check("POST /v1/chat/completions auto-routing returns 200",
-          auto_chat.status_code == 200, auto_chat.text)
-    check("response names the actual model/provider",
-          auto_body.get("model") == "smoke-model" and auto_body.get("provider") == "smoke-primary",
-          json.dumps(auto_body)[:300])
-    check("response content comes from the provider",
-          auto_body.get("choices", [{}])[0].get("message", {}).get("content") == "smoke-ok",
-          json.dumps(auto_body)[:300])
-    check("response exposes context stats",
-          isinstance(auto_body.get("context"), dict) and auto_body["context"].get("context_window_tokens", 0) >= 4096,
-          json.dumps(auto_body.get("context")))
-    check("gateway actually called the mock provider with the routed model",
-          MOCK_STATE["last_model"] == "smoke-model", str(MOCK_STATE["last_model"]))
-
-    # 7. Strict manual selection.
-    ghost = await client.post("/v1/chat/completions", headers=headers, json={
-        "messages": [{"role": "user", "content": "ping"}],
-        "model_selection": "ghost-model",
-    })
-    check("manual selection of an unconfigured model is rejected (422)",
-          ghost.status_code == 422, ghost.text)
-    manual = await client.post("/v1/chat/completions", headers=headers, json={
-        "messages": [{"role": "user", "content": "ping"}],
-        "model_selection": "smoke-primary",
-    })
-    check("manual selection of the configured model succeeds",
-          manual.status_code == 200 and manual.json().get("model") == "smoke-model", manual.text)
-
-    # 8. Streaming with context headers and actual-model metadata.
-    stream = await client.post("/v1/chat/completions", headers=headers, json={
-        "messages": [{"role": "user", "content": "ping"}],
-        "stream": True,
-    })
-    stream_text = stream.text
-    check("stream returns text/event-stream",
-          stream.status_code == 200 and "text/event-stream" in stream.headers.get("content-type", ""),
-          f"status={stream.status_code}")
-    check("stream carries X-Nexus-Context headers",
-          "x-nexus-context-window" in stream.headers and "x-nexus-context-dropped" in stream.headers,
-          str(dict(stream.headers)))
-    check("stream chunks carry actual-model metadata and terminate with [DONE]",
-          '"provider_id":"smoke-primary"' in stream_text
-          and '"display_name":"smoke-model"' in stream_text
-          and stream_text.rstrip().endswith("data: [DONE]"),
-          stream_text[-200:])
-
-    # 9. Cleanup CRUD.
+    # 10. Cleanup CRUD.
     deleted = await client.delete("/v1/providers/anymodel", headers=headers)
     deleted_again = await client.delete("/v1/providers/anymodel", headers=headers)
     check("DELETE /v1/providers removes the row",
