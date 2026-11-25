@@ -4,6 +4,11 @@ All facts below were verified live against GitHub and by running the test suite
 locally on the stated commits. Historical claims from earlier chat exports are
 explicitly marked as unverified.
 
+> **Update (2026-11-25, after user-approved merge):** PR #18 was merged into
+> the PR #17 head branch with user permission. PR #17 head is now `a54ef69`;
+> CI (`Backend syntax and tests`, `Android unit tests and debug APK`) passes on
+> that head; `mergeStateStatus=CLEAN`; PR #17 remains Draft and unmerged.
+
 ## Repository
 
 - Repo: `alievoscar345-sketch/NEXUS-AI-MAX`, default branch `main`.
@@ -13,12 +18,13 @@ explicitly marked as unverified.
 
 ## PR #17 (Draft — do not merge without user permission)
 
-- State: OPEN · Draft · MERGEABLE (no conflicts).
+- State: OPEN · Draft · mergeStateStatus **CLEAN** (all checks green).
 - Base: `nexus-agent/recover-cancelled-tasks-20261121`.
-- Head: `nexus-agent/per-claim-lease-fencing-20261121` @ `cff7bd4`.
-- 537 commits, 40 changed files vs base (+14418 / −2346).
-- CI on `cff7bd4`: **Android unit tests and debug APK — success**;
-  **Backend syntax and tests — failure** (one assertion, see below).
+- Head: `nexus-agent/per-claim-lease-fencing-20261121` @ `a54ef69`
+  (540 commits, 41 files vs base; includes the CI fix and this doc).
+- CI on `a54ef69` (run `45522880946`): **Backend syntax and tests — success**;
+  **Android unit tests and debug APK — success**.
+- Prior head `cff7bd4` had a failing backend job (fixed, see below).
 
 ## CI fix (this session)
 
@@ -29,10 +35,11 @@ explicitly marked as unverified.
   messages.
 - Fix pushed as commit `77bdcaf` on `arena/e327ab55-nexus-ai-max`,
   PR #18 (base = PR #17 head branch, contains only the fix).
+- **PR #18 merged (user-approved) → PR #17 head `a54ef69`.**
 - Verified: `python -m compileall -q app tests` OK;
   `python -m unittest discover -s tests` → **186 tests OK**.
-- CI on PR #18 run `45521632148`: **both jobs pass**; artifact
-  `nexus-ai-debug-apk` (39 593 359 bytes) built from this commit.
+- CI on PR #18 run `45522294576` and on PR #17 head run `45522880946`:
+  **both jobs pass**; artifact `nexus-ai-debug-apk` (~39.6 MB) built.
 
 ## Artifacts
 
