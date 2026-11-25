@@ -262,6 +262,66 @@ internal fun validateChatRequestSize(payload: String, maxBytes: Int = MAX_CHAT_R
     }
 }
 
+// Token-budgeted history selection mirrors app/context_manager.py on the agent
+// server: keep the newest turns within an estimated token budget instead of a
+// fixed message count. Estimates use ceil(UTF-8 bytes / 3.2) per text with a
+// fixed per-message overhead, matching the backend estimator.
+internal const val CHAT_HISTORY_TOKEN_BUDGET = 24_000
+internal const val WEB_SEARCH_HISTORY_TOKEN_BUDGET = 100_000
+internal const val HISTORY_MESSAGE_OVERHEAD_TOKENS = 8
+internal const val HISTORY_IMAGE_TOKEN_ESTIMATE = 4_096
+
+internal fun estimateUtf8Tokens(text: String): Int {
+    if (text.isEmpty()) return 0
+    val bytes = text.toByteArray(Charsets.UTF_8).size
+    return kotlin.math.max(1, kotlin.math.ceil(bytes / 3.2).toInt())
+}
+
+internal fun estimateChatLineTokens(line: ChatLine): Int {
+    var tokens = HISTORY_MESSAGE_OVERHEAD_TOKENS + estimateUtf8Tokens(line.role)
+    tokens += estimateUtf8Tokens(line.content)
+    for (attachment in line.attachments) {
+        tokens += if (attachment.mimeType.startsWith("image/")) {
+            HISTORY_IMAGE_TOKEN_ESTIMATE
+        } else {
+            estimateUtf8Tokens(attachment.textContent)
+        }
+    }
+    return tokens
+}
+
+internal fun estimateWebSearchLineTokens(line: ChatLine): Int {
+    // The web-search path replays preserved provider messages verbatim (they may
+    // embed base64 images), so estimate from that payload when present.
+    val preserved = line.providerMessagesJson
+    return if (!preserved.isNullOrEmpty()) {
+        HISTORY_MESSAGE_OVERHEAD_TOKENS + estimateUtf8Tokens(line.role) + estimateUtf8Tokens(preserved)
+    } else {
+        estimateChatLineTokens(line)
+    }
+}
+
+internal fun selectHistoryForRequest(
+    history: List<ChatLine>,
+    tokenBudget: Int,
+    maxMessages: Int = 2000,
+    estimateTokens: (ChatLine) -> Int = ::estimateChatLineTokens,
+): List<ChatLine> {
+    val capped = history.takeLast(maxMessages)
+    if (capped.isEmpty()) return emptyList()
+    // The newest turn is always kept (same contract as the backend compactor,
+    // which only shrinks history when the latest turn no longer fits).
+    var used = estimateTokens(capped[capped.size - 1])
+    var start = capped.size - 1
+    for (i in (capped.size - 2 downTo 0)) {
+        val cost = estimateTokens(capped[i])
+        if (used + cost > tokenBudget) break
+        used += cost
+        start = i
+    }
+    return capped.subList(start, capped.size)
+}
+
 /**
  * Builds one bounded text part for document attachments.
  * The backend accepts at most 200,000 characters per text part; keep headroom
@@ -2272,7 +2332,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                     val messages = JSONArray().put(
                         JSONObject().put("role", "system").put("content", SYSTEM_PROMPT + (personalContext?.let { "\n\n" + it } ?: ""))
                     )
-                    val requestHistory = if (useCloudGateway) history.takeLast(2000) else history.takeLast(24)
+                    val requestHistory = if (useCloudGateway) history.takeLast(2000) else selectHistoryForRequest(history, CHAT_HISTORY_TOKEN_BUDGET)
                     requestHistory.forEachIndexed { historyIndex, line ->
                         // Keep recent images in the multimodal request; older image bytes stay
                         // in the local archive and are represented in the context digest.
@@ -2439,7 +2499,8 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun requestWithWebSearch(cfg: ApiSettings, history: List<ChatLine>, memoryContext: String? = null): WebSearchAnswer {
         val messages = JSONArray()
-        history.takeLast(24).forEach { line ->
+        val requestHistory = selectHistoryForRequest(history, WEB_SEARCH_HISTORY_TOKEN_BUDGET, estimateTokens = ::estimateWebSearchLineTokens)
+        requestHistory.forEach { line ->
             if (line.role == "assistant" && !line.providerMessagesJson.isNullOrBlank()) {
                 val preserved = JSONArray(line.providerMessagesJson)
                 for (i in 0 until preserved.length()) {

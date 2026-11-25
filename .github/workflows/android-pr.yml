@@ -47,6 +47,11 @@ jobs:
           NEXUS_AGENT_WORKSPACE: /tmp/nexus-agent-workspace
         run: python -m unittest discover -s tests -v
 
+      - name: Run live server smoke test
+        env:
+          PYTHONPATH: .
+        run: python scripts/smoke_e2e.py
+
   android-build:
     name: Android unit tests and debug APK
     runs-on: ubuntu-latest
