@@ -9,6 +9,40 @@ explicitly marked as unverified.
 > CI (`Backend syntax and tests`, `Android unit tests and debug APK`) passes on
 > that head; `mergeStateStatus=CLEAN`; PR #17 remains Draft and unmerged.
 
+> **Update 2 (2026-11-25, P1 hardening session):** PR **#19** opened from
+> `arena/e327ab55-nexus-ai-max` (head `5c92066`) into
+> `nexus-agent/per-claim-lease-fencing-20261121`; **both CI jobs green**
+> (run `45540362054`), `mergeStateStatus=CLEAN`, not Draft, **not merged**
+> (awaiting user permission). Contents:
+> 1. **24-message limit removed** — `MainActivity.kt` now selects chat history
+>    with `selectHistoryForRequest` (token budgets: 24 000 direct-connect,
+>    100 000 Anthropic web-search; estimator mirrors backend
+>    `context_manager.py`: `ceil(UTF-8 bytes/3.2)` + 8/message, images 4 096,
+>    preserved `providerMessagesJson` estimated verbatim; newest turn always
+>    kept). Covered by `ChatHistorySelectionTest` (11 tests, green in CI).
+> 2. **Backend integration tests** — `agent_server/tests/test_api_integration.py`
+>    (8 tests, ASGI transport): auth matrix 401/503, provider CRUD roundtrip,
+>    encryption at rest (no plaintext in DB; ciphertext decrypts), validation
+>    rejections, catalog secret redaction, chat auto/manual/strict-422,
+>    SSE `X-Nexus-Context-*` headers + actual-model metadata.
+>    Suite grew **186 → 194 tests, all green** locally (Py3.11) and in CI (Py3.12).
+> 3. **Live-server smoke test** — `agent_server/scripts/smoke_e2e.py` runs a real
+>    uvicorn `app.main:app` + mock OpenAI provider in one process (25 checks:
+>    health, worker heartbeat, auth, CRUD+encryption, catalog, auto/manual chat,
+>    streaming, cleanup) and is now a **CI step** after unit tests.
+>    Two CI-only bugs were found and fixed via workflow-command annotations
+>    (job logs unreachable from sandbox): a `_free_port()` race (both servers
+>    could get the same port → gateway 401 against the app itself; fixed by
+>    binding port 0 inside uvicorn), and chat checks running after a saved
+>    `anymodel.org` provider existed (CI has live internet → its non-retryable
+>    HTTP 401 aborted gateway fallback before the mock; chat checks now run on
+>    an empty provider table).
+> 4. **Debug APK refreshed from green CI**: run `45540362054`, artifact
+>    `nexus-ai-debug-apk` id `14988459485`, 39 597 023 B,
+>    `sha256:9092544c3487cece62951dee1a3322081497ddb5181e9a182475e8cddb8b3bd1`,
+>    built from head `5c92066`, expires 2026-12-02 (download blocked from this
+>    sandbox — blob host not on egress allowlist; fetch from the Actions page).
+
 ## Repository
 
 - Repo: `alievoscar345-sketch/NEXUS-AI-MAX`, default branch `main`.
@@ -43,8 +77,9 @@ explicitly marked as unverified.
 
 ## Artifacts
 
-- Latest debug APK: run `45521632148`, not expired, ~39.6 MB
-  (build-android.yml `nexus-ai-debug-apk`).
+- Latest debug APK: PR #19 run `45540362054`, artifact id `14988459485`,
+  39 597 023 B, sha256 `9092544c…b3bd1`, head `5c92066`, expires 2026-12-02
+  (see Update 2 above). Prior: run `45521632148` (~39.6 MB).
 - APKs are debug builds; no signed release APK verified.
 
 ## Branch inventory (verified)
@@ -81,20 +116,22 @@ Android `app/src/main/java/ai/nexus/max/` (Kotlin, Compose):
 `ReminderScheduler.kt`, `OfficeDocumentTextExtractor.kt`,
 `AgentTaskNotificationWorker.kt`.
 
-CI: `.github/workflows/` — `android-pr.yml` (backend tests + Android unit
-tests + debug APK), `agent-server.yml`, `build-android.yml`.
+CI: `.github/workflows/` — `android-pr.yml` (backend tests + live server
+smoke test + Android unit tests + debug APK; path-filtered to
+`app/** agent_server/**`), `agent-server.yml`, `build-android.yml`.
 
 ## Known gaps (verified, not yet fixed)
 
-1. **24-message request limit** for direct (non-cloud-gateway) chat:
-   `MainActivity.kt:2275` sends `history.takeLast(24)` unless
-   `useCloudGateway` (then 2000). Cloud path also caps at 2000.
+1. ~~24-message request limit~~ **Fixed in PR #19** (head `5c92066`): both the
+   direct-connect and web-search paths use token-budgeted selection; cloud
+   path remains `takeLast(2000)` + server-side compaction. Awaiting merge.
 2. Backend is not deployed; no persistent HTTPS server, encryption key or
    backups exist outside this repo.
 3. No signed release APK; only debug artifacts.
 4. Node 20 deprecation warnings in CI (non-blocking).
 5. Android unit tests were not re-run locally this session (no Android SDK
-   in sandbox); CI job passed on PR #18.
+   in sandbox); CI job passed on PR #18 and PR #19 (includes
+   `ChatHistorySelectionTest`).
 
 ## Not verified / out of scope this session
 
